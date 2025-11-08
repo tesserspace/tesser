@@ -1,0 +1,22 @@
+[package]
+name = "tesser-bybit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_urlencoded.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tesser-broker = { path = "../../tesser-broker" }
+tesser-core = { path = "../../tesser-core" }
+hex.workspace = true
+hmac.workspace = true
+sha2.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "tesser-execution"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+tesser-broker = { path = "../tesser-broker" }
+tesser-core = { path = "../tesser-core" }
+tesser-strategy = { path = "../tesser-strategy" }

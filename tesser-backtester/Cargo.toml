@@ -1,0 +1,20 @@
+[package]
+name = "tesser-backtester"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tesser-broker = { path = "../tesser-broker" }
+tesser-core = { path = "../tesser-core" }
+tesser-data = { path = "../tesser-data" }
+tesser-execution = { path = "../tesser-execution" }
+tesser-portfolio = { path = "../tesser-portfolio" }
+tesser-strategy = { path = "../tesser-strategy" }
+tesser-paper = { path = "../connectors/tesser-paper" }

@@ -1,0 +1,16 @@
+[package]
+name = "tesser-paper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tesser-broker = { path = "../../tesser-broker" }
+tesser-core = { path = "../../tesser-core" }
+uuid.workspace = true

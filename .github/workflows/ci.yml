@@ -1,0 +1,57 @@
+# GitHub Actions workflow for the Tesser project
+# This workflow runs on every push and pull request to the main branch.
+# It performs checks for formatting, linting, building, and testing.
+
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+# Cancel any in-progress runs of the same workflow for a given PR/branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build_and_test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Check out the repository code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Install Rust toolchain and set up caching for dependencies
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # 3. Check code formatting
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      # 4. Run Clippy linter to catch common issues.
+      #    The -D warnings flag elevates all warnings to errors, failing the CI run.
+      - name: Run Clippy Linter
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      # 5. Build the entire workspace in release mode to ensure it compiles
+      - name: Build project
+        run: cargo build --release --all-targets
+
+      # 6. Run all tests in the workspace
+      - name: Run tests
+        run: cargo test --release --all-targets

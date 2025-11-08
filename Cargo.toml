@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = [
+    "tesser-core",
+    "tesser-broker",
+    "tesser-strategy",
+    "tesser-portfolio",
+    "tesser-data",
+    "tesser-execution",
+    "tesser-backtester",
+    "tesser-cli",
+    "connectors/tesser-bybit",
+    "connectors/tesser-paper",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+authors = ["Tesser Contributors <dev@tesser.local>"]
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+clap = { version = "4.5", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+hex = "0.4"
+hmac = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_urlencoded = "0.7"
+sha2 = "0.10"
+thiserror = "1.0"
+tokio = { version = "1.38", features = ["macros", "rt-multi-thread", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+uuid = { version = "1.10", features = ["v4", "serde"] }
