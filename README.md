@@ -143,10 +143,11 @@ tesser/
     cargo run -p tesser-cli -- \
         backtest run \
         --strategy-config research/strategies/sma_cross_optimal.toml \
+        --data data/bybit_testnet/BTCUSDT/1m_20231201-20240201.csv \
         --candles 500 \
         --quantity 0.02
     ```
-    (Synthetic candles are generated automatically; wiring to real data happens through the `data` subcommands.)
+    (Omit `--data` to fall back to synthetic candles; supply one or more CSVs to replay exchange data produced by `tesser-cli data download`.)
 
 ### CLI Overview
 
@@ -156,8 +157,8 @@ tesser/
 tesser-cli --env default <COMMAND>
 
 Commands:
-  data download|validate|resample   # Data engineering utilities (scaffolding)
-  backtest run --strategy-config    # Executes a backtest driven by a strategy TOML
+  data download|validate|resample   # Download/inspect historical data
+  backtest run --strategy-config    # Executes a backtest driven by a strategy TOML (+ optional CSVs)
   live run --strategy-config        # Bootstraps a live session (scaffolding)
   strategies                        # Lists compiled strategies
 ```
@@ -206,7 +207,7 @@ The upgraded `tesser-strategy` crate bundles a diverse suite for pressure-testin
 | `PairsTradingArbitrage` | Statistical arbitrage | Operates on two correlated symbols |
 | `OrderBookImbalance` | Microstructure | Consumes order-book snapshots to trade short-term imbalances |
 
-Each strategy exposes a typed configuration schema and registers the symbols (one or many) it operates on. This makes it trivial for the CLI, backtester, or future engines to instantiate strategies based on files generated during research.
+Each strategy exposes a typed configuration schema and registers the symbols (one or many) it operates on. Sample configs live in `research/strategies/` and the ML artifact in `research/models/`, so you can run them directly with the CLI.
 
 ## Contributing
 

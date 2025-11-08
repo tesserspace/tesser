@@ -1,0 +1,8 @@
+strategy_name = "OrderBookImbalance"
+
+[params]
+symbol = "BTCUSDT"
+depth = 5
+long_threshold = 0.25
+short_threshold = -0.25
+neutral_zone = 0.05

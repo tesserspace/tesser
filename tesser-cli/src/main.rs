@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
@@ -154,6 +155,9 @@ struct DataResampleArgs {
 struct BacktestRunArgs {
     #[arg(long)]
     strategy_config: PathBuf,
+    /// One or more CSV files with historical candles (symbol,timestamp,...)
+    #[arg(long = "data", value_name = "PATH", num_args = 0.., action = clap::ArgAction::Append)]
+    data_paths: Vec<PathBuf>,
     #[arg(long, default_value_t = 500)]
     candles: usize,
     #[arg(long, default_value_t = 0.01)]
@@ -240,11 +244,23 @@ impl BacktestRunArgs {
             return Err(anyhow::anyhow!("strategy did not declare subscriptions"));
         }
 
-        let mut candles = Vec::new();
-        for (idx, symbol) in symbols.iter().enumerate() {
-            let offset = idx as i64 * 10;
-            candles.extend(synth_candles(symbol, self.candles, offset));
+        let mut candles = if self.data_paths.is_empty() {
+            let mut generated = Vec::new();
+            for (idx, symbol) in symbols.iter().enumerate() {
+                let offset = idx as i64 * 10;
+                generated.extend(synth_candles(symbol, self.candles, offset));
+            }
+            generated
+        } else {
+            load_candles_from_paths(&self.data_paths)?
+        };
+
+        if candles.is_empty() {
+            return Err(anyhow!(
+                "no candles loaded; provide --data or allow synthetic generation"
+            ));
         }
+
         candles.sort_by_key(|c| c.timestamp);
 
         let execution = ExecutionEngine::new(
@@ -331,6 +347,64 @@ fn parse_datetime(value: &str) -> Result<DateTime<Utc>> {
         return Ok(DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc));
     }
     Err(anyhow!("unable to parse datetime '{value}'"))
+}
+
+#[derive(Deserialize)]
+struct CandleCsvRow {
+    symbol: Option<String>,
+    timestamp: String,
+    open: f64,
+    high: f64,
+    low: f64,
+    close: f64,
+    volume: f64,
+}
+
+fn load_candles_from_paths(paths: &[PathBuf]) -> Result<Vec<Candle>> {
+    let mut candles = Vec::new();
+    for path in paths {
+        let mut reader = csv::Reader::from_path(path)
+            .with_context(|| format!("failed to open {}", path.display()))?;
+        for record in reader.deserialize::<CandleCsvRow>() {
+            let row = record.with_context(|| format!("invalid row in {}", path.display()))?;
+            let timestamp = parse_datetime(&row.timestamp)?;
+            let symbol = row
+                .symbol
+                .clone()
+                .or_else(|| infer_symbol_from_path(path))
+                .ok_or_else(|| {
+                    anyhow!(
+                        "missing symbol column and unable to infer from path {}",
+                        path.display()
+                    )
+                })?;
+            let interval = infer_interval_from_path(path).unwrap_or(Interval::OneMinute);
+            candles.push(Candle {
+                symbol,
+                interval,
+                open: row.open,
+                high: row.high,
+                low: row.low,
+                close: row.close,
+                volume: row.volume,
+                timestamp,
+            });
+        }
+    }
+    Ok(candles)
+}
+
+fn infer_symbol_from_path(path: &Path) -> Option<String> {
+    path.parent()
+        .and_then(|p| p.file_name())
+        .map(|os| os.to_string_lossy().to_string())
+}
+
+fn infer_interval_from_path(path: &Path) -> Option<Interval> {
+    path.file_stem()
+        .and_then(|os| os.to_str())
+        .and_then(|stem| stem.split('_').next())
+        .and_then(|token| Interval::from_str(token).ok())
 }
 
 fn default_output_path(

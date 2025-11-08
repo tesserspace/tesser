@@ -1,0 +1,7 @@
+strategy_name = "BollingerBreakout"
+
+[params]
+symbol = "BTCUSDT"
+period = 20
+std_multiplier = 2.2
+lookback = 400

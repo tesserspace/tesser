@@ -1,0 +1,7 @@
+strategy_name = "PairsTradingArbitrage"
+
+[params]
+symbols = ["BTCUSDT", "ETHUSDT"]
+lookback = 300
+entry_z = 2.0
+exit_z = 0.5

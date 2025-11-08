@@ -1,0 +1,7 @@
+strategy_name = "SmaCross"
+
+[params]
+symbol = "BTCUSDT"
+fast_period = 12
+slow_period = 30
+min_samples = 45

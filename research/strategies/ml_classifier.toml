@@ -1,0 +1,8 @@
+strategy_name = "MlClassifier"
+
+[params]
+symbol = "BTCUSDT"
+model_path = "research/models/ml_linear.toml"
+lookback = 20
+threshold_long = 0.15
+threshold_short = -0.15

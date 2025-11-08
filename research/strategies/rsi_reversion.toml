@@ -1,0 +1,8 @@
+strategy_name = "RsiReversion"
+
+[params]
+symbol = "BTCUSDT"
+period = 14
+oversold = 28.0
+overbought = 70.0
+lookback = 400
