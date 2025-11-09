@@ -40,9 +40,8 @@ tesser/
 ├── tesser-cli          # The command-line user interface
 |
 └── connectors/         # Directory for specific exchange implementations
-    ├── tesser-binance  # Concrete implementation for Binance
-    ├── tesser-coinbase # Concrete implementation for Coinbase
-    └── tesser-paper    # A simulated exchange for backtesting
+    ├── tesser-bybit    # Concrete Bybit connector (REST + WebSocket)
+    └── tesser-paper    # A simulated exchange for backtesting/paper fills
 ```
 
 ---
@@ -93,9 +92,14 @@ tesser/
 
 #### `connectors/` (Directory)
 **Responsibility**: This is where all the specific, concrete exchange logic lives.
-*   **Contents**: A collection of crates, one for each supported exchange (e.g., `tesser-binance`, `tesser-ftx`). Each crate implements the traits defined in `tesser-broker`.
-*   **`tesser-paper`**: A special connector that implements the broker traits to simulate an exchange. It is used by the backtester and for paper trading.
+*   **Contents**: One crate per exchange. Today that includes `tesser-bybit` (production-grade REST + WebSocket client based on the official v5 docs) and `tesser-paper` (deterministic connector used by the backtester and paper trading engine).
 *   **Rule**: All code that is specific to one exchange (e.g., endpoint URLs, authentication methods, JSON payload formats) must be confined to a crate within this directory.
+
+##### `tesser-bybit`
+* Implements the Bybit v5 REST API (`ExecutionClient`) plus a resilient WebSocket stream (`MarketStream`) that powers live trading. Configurable via `config/[env].toml` exchange profiles.
+
+##### `tesser-paper`
+* Simulates fills instantly and replays deterministic ticks/candles. Used by the backtester and as the default execution target for `live run` until you're ready to wire real capital.
 
 #### `tesser-backtester`
 **Responsibility**: An offline engine that simulates a strategy's performance against historical data.
@@ -191,6 +195,21 @@ What happens under the hood:
 - **Structured logging**: When running `live`, a JSON file is written to `config.live.log_path` (default `./logs/live.json`). Point Promtail/Loki/Grafana at that file to build dashboards without touching stdout logs.
 - **Metrics**: A Prometheus endpoint is exposed at `config.live.metrics_addr` (default `127.0.0.1:9100`). Scrape `/metrics` to monitor tick/candle throughput, portfolio equity, order errors, and data-gap gauges.
 - **Alerting**: The `[live.alerting]` section lets you enforce guardrails (max data gap, consecutive order failures, drawdown limit). Provide a `webhook_url` (Slack, Telegram, Alertmanager, etc.) or leave it empty for log-only alerts.
+
+Key CLI flags:
+
+| Flag | Description | Default |
+| --- | --- | --- |
+| `--exchange` | Exchange profile defined under `[exchange.*]` | `bybit_testnet` |
+| `--category` | Bybit channel (`linear`, `inverse`, `spot`, …) | `linear` |
+| `--interval` | Candle interval understood by `tesser_core::Interval` | `1m` |
+| `--quantity` | Fixed order size routed through `FixedOrderSizer` | `1.0` |
+| `--slippage-bps` / `--fee-bps` | Synthetic execution frictions in basis points | `0` |
+| `--latency-ms` | Delay between signal and fill simulation | `0` |
+| `--state-path`, `--metrics-addr`, `--log-path` | Override the `[live]` config block | see config |
+| `--webhook-url` | Per-run override for `[live.alerting].webhook_url` | empty |
+
+Inspect all options with `cargo run -p tesser-cli -- live run --help`.
 
 Sample snippet from `config/default.toml`:
 
