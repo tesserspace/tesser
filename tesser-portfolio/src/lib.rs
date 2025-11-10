@@ -176,10 +176,10 @@ impl Portfolio {
     pub fn signed_position_qty(&self, symbol: &str) -> f64 {
         self.positions
             .get(symbol)
-            .and_then(|position| match position.side {
-                Some(Side::Buy) => Some(position.quantity),
-                Some(Side::Sell) => Some(-position.quantity),
-                None => Some(0.0),
+            .map(|position| match position.side {
+                Some(Side::Buy) => position.quantity,
+                Some(Side::Sell) => -position.quantity,
+                None => 0.0,
             })
             .unwrap_or(0.0)
     }
