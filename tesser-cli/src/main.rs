@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use tesser_backtester::{BacktestConfig, BacktestReport, Backtester};
 use tesser_broker::ExecutionClient;
 use tesser_bybit::PublicChannel;
-use tesser_config::{load_config, AppConfig};
+use tesser_config::{load_config, AppConfig, RiskManagementConfig};
 use tesser_core::{Candle, Interval, Symbol};
 use tesser_data::download::{BybitDownloader, KlineRequest};
 use tesser_execution::{ExecutionEngine, FixedOrderSizer, NoopRiskChecker};
@@ -353,6 +353,8 @@ struct LiveRunArgs {
     metrics_addr: Option<String>,
     #[arg(long)]
     log_path: Option<PathBuf>,
+    #[arg(long)]
+    initial_equity: Option<f64>,
     #[arg(long, default_value_t = 0.0)]
     slippage_bps: f64,
     #[arg(long, default_value_t = 0.0)]
@@ -363,6 +365,18 @@ struct LiveRunArgs {
     history: usize,
     #[arg(long)]
     webhook_url: Option<String>,
+    #[arg(long)]
+    alert_max_data_gap_secs: Option<u64>,
+    #[arg(long)]
+    alert_max_order_failures: Option<u32>,
+    #[arg(long)]
+    alert_max_drawdown: Option<f64>,
+    #[arg(long)]
+    risk_max_order_qty: Option<f64>,
+    #[arg(long)]
+    risk_max_position_qty: Option<f64>,
+    #[arg(long)]
+    risk_max_drawdown: Option<f64>,
 }
 
 impl LiveRunArgs {
@@ -387,6 +401,12 @@ impl LiveRunArgs {
             .with_context(|| format!("invalid metrics address '{addr}'"))
     }
 
+    fn resolved_initial_equity(&self, config: &AppConfig) -> f64 {
+        self.initial_equity
+            .unwrap_or(config.backtest.initial_equity)
+            .max(0.0)
+    }
+
     fn build_alerting(&self, config: &AppConfig) -> tesser_config::AlertingConfig {
         let mut alerting = config.live.alerting.clone();
         let webhook = self
@@ -394,7 +414,30 @@ impl LiveRunArgs {
             .clone()
             .or_else(|| alerting.webhook_url.clone());
         alerting.webhook_url = sanitize_webhook(webhook);
+        if let Some(sec) = self.alert_max_data_gap_secs {
+            alerting.max_data_gap_secs = sec;
+        }
+        if let Some(limit) = self.alert_max_order_failures {
+            alerting.max_order_failures = limit;
+        }
+        if let Some(limit) = self.alert_max_drawdown {
+            alerting.max_drawdown = limit.max(0.0);
+        }
         alerting
+    }
+
+    fn build_risk_config(&self, config: &AppConfig) -> RiskManagementConfig {
+        let mut risk = config.risk_management.clone();
+        if let Some(limit) = self.risk_max_order_qty {
+            risk.max_order_quantity = limit.max(0.0);
+        }
+        if let Some(limit) = self.risk_max_position_qty {
+            risk.max_position_quantity = limit.max(0.0);
+        }
+        if let Some(limit) = self.risk_max_drawdown {
+            risk.max_drawdown = limit.max(0.0);
+        }
+        risk
     }
 }
 
@@ -629,10 +672,10 @@ impl LiveRunArgs {
             history,
             metrics_addr,
             state_path,
-            initial_equity: config.backtest.initial_equity,
+            initial_equity: self.resolved_initial_equity(config),
             alerting,
             exec_backend: self.exec,
-            risk: config.risk_management.clone(),
+            risk: self.build_risk_config(config),
         };
 
         info!(
