@@ -1,9 +1,13 @@
 //! Portfolio accounting primitives.
 
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 
+use chrono::{DateTime, Utc};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use tesser_core::{Fill, Position, Price, Side, Symbol};
+use tesser_core::{Fill, Order, Position, Price, Side, Symbol};
 use thiserror::Error;
 
 /// Result alias for portfolio operations.
@@ -260,6 +264,107 @@ pub struct PortfolioState {
     pub drawdown_limit: Option<f64>,
     pub peak_equity: Price,
     pub liquidate_only: bool,
+}
+
+/// Durable snapshot of the live trading runtime persisted on disk.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct LiveState {
+    pub portfolio: Option<PortfolioState>,
+    pub open_orders: Vec<Order>,
+    pub last_prices: HashMap<String, f64>,
+    pub last_candle_ts: Option<DateTime<Utc>>,
+}
+
+/// Abstraction over state persistence backends.
+pub trait StateRepository: Send + Sync + 'static {
+    /// Load the most recent state from durable storage or defaults if none exists.
+    fn load(&self) -> PortfolioResult<LiveState>;
+    /// Atomically save the provided state snapshot.
+    fn save(&self, state: &LiveState) -> PortfolioResult<()>;
+}
+
+const STATE_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    payload TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"#;
+
+/// [`StateRepository`] implementation backed by a SQLite database file.
+#[derive(Clone)]
+pub struct SqliteStateRepository {
+    path: PathBuf,
+}
+
+impl SqliteStateRepository {
+    /// Create a new repository that stores state inside the provided file path.
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    fn connect(&self) -> PortfolioResult<Connection> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).map_err(|err| {
+                PortfolioError::Internal(format!(
+                    "failed to create state directory {}: {err}",
+                    parent.display()
+                ))
+            })?;
+        }
+        let conn = Connection::open(&self.path).map_err(|err| {
+            PortfolioError::Internal(format!(
+                "failed to open state database {}: {err}",
+                self.path.display()
+            ))
+        })?;
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")
+            .map_err(|err| {
+                PortfolioError::Internal(format!("failed to configure sqlite: {err}"))
+            })?;
+        conn.execute_batch(STATE_SCHEMA)
+            .map_err(|err| PortfolioError::Internal(format!("failed to apply schema: {err}")))?;
+        Ok(conn)
+    }
+}
+
+impl StateRepository for SqliteStateRepository {
+    fn load(&self) -> PortfolioResult<LiveState> {
+        let conn = self.connect()?;
+        let payload: Option<String> = conn
+            .query_row("SELECT payload FROM state WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(|err| PortfolioError::Internal(format!("failed to read state: {err}")))?;
+        if let Some(json) = payload {
+            serde_json::from_str(&json).map_err(|err| {
+                PortfolioError::Internal(format!("failed to decode persisted state: {err}"))
+            })
+        } else {
+            Ok(LiveState::default())
+        }
+    }
+
+    fn save(&self, state: &LiveState) -> PortfolioResult<()> {
+        let mut conn = self.connect()?;
+        let payload = serde_json::to_string(state).map_err(|err| {
+            PortfolioError::Internal(format!("failed to serialize live state: {err}"))
+        })?;
+        let tx = conn.transaction().map_err(|err| {
+            PortfolioError::Internal(format!("failed to begin transaction: {err}"))
+        })?;
+        tx.execute(
+            "INSERT INTO state (id, payload, updated_at)
+             VALUES (1, ?, CURRENT_TIMESTAMP)
+             ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, updated_at=CURRENT_TIMESTAMP",
+            params![payload],
+        )
+        .map_err(|err| PortfolioError::Internal(format!("failed to upsert state row: {err}")))?;
+        tx.commit()
+            .map_err(|err| PortfolioError::Internal(format!("failed to commit state: {err}")))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
