@@ -214,12 +214,12 @@ impl BybitClient {
 
     fn map_order_status(status: &str) -> OrderStatus {
         match status {
-            "New" | "Created" | "PendingNew" => OrderStatus::PendingNew,
-            "Accepted" => OrderStatus::Accepted,
+            "New" | "Created" | "PendingNew" | "Untriggered" => OrderStatus::PendingNew,
+            "Accepted" | "Active" | "Triggered" => OrderStatus::Accepted,
             "Rejected" => OrderStatus::Rejected,
             "PartiallyFilled" | "PartiallyFilledCanceled" => OrderStatus::PartiallyFilled,
             "Filled" => OrderStatus::Filled,
-            "Cancelled" | "Canceled" => OrderStatus::Canceled,
+            "Cancelled" | "Canceled" | "Deactivated" => OrderStatus::Canceled,
             other => {
                 warn!(status = other, "unhandled Bybit order status");
                 OrderStatus::PendingNew

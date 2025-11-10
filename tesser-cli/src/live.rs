@@ -33,7 +33,7 @@ use crate::telemetry::{spawn_metrics_server, LiveMetrics};
 #[value(rename_all = "kebab-case")]
 pub enum ExecutionBackend {
     Paper,
-    Bybit,
+    Live,
 }
 
 impl ExecutionBackend {
@@ -90,7 +90,7 @@ pub async fn run_live(
     }
 
     let execution_client = build_execution_client(&exchange, &settings)?;
-    if matches!(settings.exec_backend, ExecutionBackend::Bybit) {
+    if matches!(settings.exec_backend, ExecutionBackend::Live) {
         info!(
             rest = %exchange.rest_url,
             category = ?settings.category,
@@ -114,7 +114,7 @@ fn build_execution_client(
 ) -> Result<Arc<dyn ExecutionClient>> {
     match settings.exec_backend {
         ExecutionBackend::Paper => Ok(Arc::new(PaperExecutionClient::default())),
-        ExecutionBackend::Bybit => {
+        ExecutionBackend::Live => {
             let api_key = exchange.api_key.trim();
             let api_secret = exchange.api_secret.trim();
             if api_key.is_empty() || api_secret.is_empty() {

@@ -187,18 +187,18 @@ cargo run -p tesser-cli -- \
   --interval 1m
 ```
 
-Add `--exec bybit` (and populate your `[exchange.<name>]` `api_key`/`api_secret`) to forward orders to the real Bybit REST API instead of the paper engine. **This will route live capital**; use the testnet profile while validating your setup.
+Add `--exec live` (and populate your `[exchange.<name>]` `api_key`/`api_secret`) to forward orders to the real Bybit REST API instead of the paper engine. **This will route live capital**; use the testnet profile while validating your setup.
 
 What happens under the hood:
 
 - **Market data**: `tesser-bybit` maintains a resilient WebSocket connection to the public `linear` stream (`kline.<interval>.<symbol>` and `publicTrade.<symbol>` topics). The connection automatically heartbeats every 20s and reconnects on transient errors.
-- **Execution**: Signals are routed through `tesser-execution` into the selected backend. `--exec paper` keeps the previous behavior (instant synthetic fills). `--exec bybit` submits real REST orders and records their IDs in `live_state.json` so you can reconcile with the exchange.
+- **Execution**: Signals are routed through `tesser-execution` into the selected backend. `--exec paper` keeps the previous behavior (instant synthetic fills). `--exec live` submits real REST orders and records their IDs in `live_state.json` so you can reconcile with the exchange.
 - **State persistence**: Portfolio equity, open orders and last prices are serialized to `config.live.state_path` (default `./reports/live_state.json`). Restart the process and it will resume from this snapshot.
 - **Structured logging**: When running `live`, a JSON file is written to `config.live.log_path` (default `./logs/live.json`). Point Promtail/Loki/Grafana at that file to build dashboards without touching stdout logs.
 - **Metrics**: A Prometheus endpoint is exposed at `config.live.metrics_addr` (default `127.0.0.1:9100`). Scrape `/metrics` to monitor tick/candle throughput, portfolio equity, order errors, and data-gap gauges.
 - **Alerting**: The `[live.alerting]` section lets you enforce guardrails (max data gap, consecutive order failures, drawdown limit). Provide a `webhook_url` (Slack, Telegram, Alertmanager, etc.) or leave it empty for log-only alerts.
 
-> ⚠️ **Risk warning**: `--exec bybit` forwards orders exactly as produced by your strategy—there is no extra confirmation prompt, and portfolio P&L stays paper-based until a future release. Always dry-run on Bybit testnet before pointing to mainnet keys.
+> ⚠️ **Risk warning**: `--exec live` forwards orders exactly as produced by your strategy—there is no extra confirmation prompt, and portfolio P&L stays paper-based until a future release. Always dry-run on Bybit testnet before pointing to mainnet keys.
 
 Key CLI flags:
 
@@ -208,7 +208,7 @@ Key CLI flags:
 | `--category` | Bybit channel (`linear`, `inverse`, `spot`, …) | `linear` |
 | `--interval` | Candle interval understood by `tesser_core::Interval` | `1m` |
 | `--quantity` | Fixed order size routed through `FixedOrderSizer` | `1.0` |
-| `--exec` | Execution backend (`paper` or `bybit`) | `paper` |
+| `--exec` | Execution backend (`paper` or `live`) | `paper` |
 | `--slippage-bps` / `--fee-bps` | Synthetic execution frictions in basis points | `0` |
 | `--latency-ms` | Delay between signal and fill simulation | `0` |
 | `--state-path`, `--metrics-addr`, `--log-path` | Override the `[live]` config block | see config |
