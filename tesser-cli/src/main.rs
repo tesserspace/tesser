@@ -60,6 +60,11 @@ enum Commands {
         #[command(subcommand)]
         action: LiveCommand,
     },
+    /// Inspect or repair persisted runtime state
+    State {
+        #[command(subcommand)]
+        action: StateCommand,
+    },
     /// Strategy management helpers
     Strategies,
 }
@@ -86,6 +91,12 @@ enum BacktestCommand {
 enum LiveCommand {
     /// Start a live trading session (scaffolding)
     Run(LiveRunArgs),
+}
+
+#[derive(Subcommand)]
+enum StateCommand {
+    /// Inspect the SQLite state database
+    Inspect(StateInspectArgs),
 }
 
 #[derive(Args)]
@@ -116,6 +127,24 @@ struct DataDownloadArgs {
     /// Allowed divergence between primary and reference closes (fractional)
     #[arg(long, default_value_t = 0.002)]
     validation_reference_tolerance: f64,
+}
+
+#[derive(Args)]
+struct StateInspectArgs {
+    /// Path to the SQLite state database (defaults to live.state_path)
+    #[arg(long)]
+    path: Option<PathBuf>,
+    /// Emit the raw JSON payload stored inside the database
+    #[arg(long)]
+    raw: bool,
+}
+
+impl StateInspectArgs {
+    fn resolved_path(&self, config: &AppConfig) -> PathBuf {
+        self.path
+            .clone()
+            .unwrap_or_else(|| config.live.state_path.clone())
+    }
 }
 
 impl DataDownloadArgs {
@@ -441,6 +470,7 @@ async fn main() -> Result<()> {
         Commands::Live {
             action: LiveCommand::Run(args),
         } => args.run(&config).await?,
+        Commands::State { action } => handle_state(action, &config).await?,
         Commands::Strategies => list_strategies(),
     }
 
@@ -462,6 +492,15 @@ async fn handle_data(cmd: DataCommand, config: &AppConfig) -> Result<()> {
                 args.output.display(),
                 args.interval
             );
+        }
+    }
+    Ok(())
+}
+
+async fn handle_state(cmd: StateCommand, config: &AppConfig) -> Result<()> {
+    match cmd {
+        StateCommand::Inspect(args) => {
+            state::inspect_state(args.resolved_path(config), args.raw).await?;
         }
     }
     Ok(())
