@@ -1,12 +1,17 @@
 //! Strategy trait definitions, shared context, and a portfolio of reference strategies.
 
-use std::collections::VecDeque;
-use std::fs;
+extern crate self as tesser_strategy;
 
+pub use tesser_strategy_macros::register_strategy;
+pub use toml::Value;
+
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
+use std::fs;
+use std::sync::{Arc, RwLock};
 use tesser_core::{Candle, Fill, OrderBook, Position, Signal, SignalKind, Symbol, Tick};
 use thiserror::Error;
-use toml::Value;
 
 /// Result alias used within strategy implementations.
 pub type StrategyResult<T> = Result<T, StrategyError>;
@@ -154,6 +159,136 @@ pub trait Strategy: Send + Sync {
 
     /// Allows the strategy to emit one or more signals after processing events.
     fn drain_signals(&mut self) -> Vec<Signal>;
+}
+
+// -------------------------------------------------------------------------------------------------
+// Strategy registry
+// -------------------------------------------------------------------------------------------------
+
+static STRATEGY_REGISTRY: Lazy<StrategyRegistry> = Lazy::new(StrategyRegistry::new);
+
+/// Returns a handle to the global registry.
+pub fn strategy_registry() -> &'static StrategyRegistry {
+    &STRATEGY_REGISTRY
+}
+
+/// Registers a strategy factory with the global registry.
+pub fn register_strategy_factory(factory: Arc<dyn StrategyFactory>) {
+    strategy_registry().register(factory);
+}
+
+/// Builds a strategy by name using the registered factories.
+pub fn load_strategy(name: &str, params: Value) -> StrategyResult<Box<dyn Strategy>> {
+    strategy_registry().build(name, params)
+}
+
+/// Returns the list of built-in strategy identifiers in sorted order.
+pub fn builtin_strategy_names() -> Vec<&'static str> {
+    strategy_registry().names()
+}
+
+/// Factory contract used to construct strategies from configuration.
+pub trait StrategyFactory: Send + Sync {
+    /// Canonical, user-facing identifier for the strategy (e.g. "SmaCross").
+    fn canonical_name(&self) -> &'static str;
+
+    /// Additional aliases that should resolve to the same strategy.
+    fn aliases(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Builds and configures a strategy instance with the provided parameters.
+    fn build(&self, params: Value) -> StrategyResult<Box<dyn Strategy>>;
+}
+
+#[derive(Default)]
+struct RegistryInner {
+    by_canonical: HashMap<&'static str, Arc<dyn StrategyFactory>>,
+    by_alias: HashMap<String, Arc<dyn StrategyFactory>>,
+}
+
+/// Thread-safe registry used to manage available strategies.
+pub struct StrategyRegistry {
+    inner: RwLock<RegistryInner>,
+}
+
+impl StrategyRegistry {
+    /// Creates an empty registry.
+    pub fn new() -> Self {
+        Self {
+            inner: RwLock::new(RegistryInner::default()),
+        }
+    }
+
+    fn register(&self, factory: Arc<dyn StrategyFactory>) {
+        let mut inner = self.inner.write().expect("registry poisoned");
+        let canonical = factory.canonical_name();
+        if inner
+            .by_canonical
+            .insert(canonical, factory.clone())
+            .is_some()
+        {
+            tracing::warn!(
+                strategy = canonical,
+                "duplicate strategy registration detected; overriding previous factory"
+            );
+        }
+        inner
+            .by_alias
+            .insert(normalize_name(canonical), factory.clone());
+        for alias in factory.aliases() {
+            self.insert_alias(&mut inner.by_alias, alias, factory.clone(), canonical);
+        }
+    }
+
+    fn insert_alias(
+        &self,
+        aliases: &mut HashMap<String, Arc<dyn StrategyFactory>>,
+        alias: &str,
+        factory: Arc<dyn StrategyFactory>,
+        canonical: &'static str,
+    ) {
+        let normalized = normalize_name(alias);
+        if let Some(existing) = aliases.get(&normalized) {
+            if !Arc::ptr_eq(existing, &factory) {
+                tracing::warn!(
+                    alias = alias,
+                    strategy = canonical,
+                    "alias already registered for another strategy; overriding"
+                );
+            }
+        }
+        aliases.insert(normalized, factory);
+    }
+
+    fn build(&self, name: &str, params: Value) -> StrategyResult<Box<dyn Strategy>> {
+        let factory = self
+            .get(name)
+            .ok_or_else(|| StrategyError::InvalidConfig(format!("unknown strategy: {name}")))?;
+        factory.build(params)
+    }
+
+    fn get(&self, name: &str) -> Option<Arc<dyn StrategyFactory>> {
+        let inner = self.inner.read().expect("registry poisoned");
+        inner.by_alias.get(&normalize_name(name)).cloned()
+    }
+
+    fn names(&self) -> Vec<&'static str> {
+        let inner = self.inner.read().expect("registry poisoned");
+        let mut names: Vec<&'static str> = inner.by_canonical.keys().copied().collect();
+        names.sort_unstable();
+        names
+    }
+}
+
+impl Default for StrategyRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn normalize_name(name: &str) -> String {
+    name.trim().to_ascii_lowercase()
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -376,6 +511,8 @@ impl Strategy for SmaCross {
     }
 }
 
+register_strategy!(SmaCross, "SmaCross");
+
 /// Relative Strength Index mean-reversion strategy.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -470,6 +607,8 @@ impl Strategy for RsiReversion {
         std::mem::take(&mut self.signals)
     }
 }
+
+register_strategy!(RsiReversion, "RsiReversion");
 
 /// Bollinger band breakout strategy.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -571,6 +710,8 @@ impl Strategy for BollingerBreakout {
         std::mem::take(&mut self.signals)
     }
 }
+
+register_strategy!(BollingerBreakout, "BollingerBreakout");
 
 // -------------------------------------------------------------------------------------------------
 // Modern Strategies
@@ -710,6 +851,8 @@ impl Strategy for MlClassifier {
     }
 }
 
+register_strategy!(MlClassifier, "MlClassifier");
+
 /// Statistical arbitrage pairs-trading strategy.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -840,38 +983,11 @@ impl Strategy for PairsTradingArbitrage {
     }
 }
 
-/// Returns the list of built-in strategy identifiers.
-pub fn builtin_strategy_names() -> &'static [&'static str] {
-    &[
-        "SmaCross",
-        "RsiReversion",
-        "BollingerBreakout",
-        "MlClassifier",
-        "PairsTradingArbitrage",
-        "OrderBookImbalance",
-    ]
-}
-
-/// Builds and configures a strategy by name using the provided parameters.
-pub fn build_builtin_strategy(name: &str, params: Value) -> StrategyResult<Box<dyn Strategy>> {
-    let mut strategy: Box<dyn Strategy> = match name.to_lowercase().as_str() {
-        "smacross" => Box::new(SmaCross::default()),
-        "rsireversion" => Box::new(RsiReversion::default()),
-        "bollingerbreakout" => Box::new(BollingerBreakout::default()),
-        "mlclassifier" => Box::new(MlClassifier::default()),
-        "pairstradingarbitrage" | "pairstrading" | "pairs" => {
-            Box::new(PairsTradingArbitrage::default())
-        }
-        "orderbookimbalance" | "obi" => Box::new(OrderBookImbalance::default()),
-        other => {
-            return Err(StrategyError::InvalidConfig(format!(
-                "unknown strategy: {other}"
-            )))
-        }
-    };
-    strategy.configure(params)?;
-    Ok(strategy)
-}
+register_strategy!(
+    PairsTradingArbitrage,
+    "PairsTradingArbitrage",
+    aliases = ["PairsTrading", "Pairs"]
+);
 
 /// Order book imbalance strategy operating on depth snapshots.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -970,6 +1086,8 @@ impl Strategy for OrderBookImbalance {
         std::mem::take(&mut self.signals)
     }
 }
+
+register_strategy!(OrderBookImbalance, "OrderBookImbalance", aliases = ["OBI"]);
 
 #[cfg(test)]
 mod tests {

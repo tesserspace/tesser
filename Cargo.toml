@@ -4,6 +4,7 @@ members = [
     "tesser-core",
     "tesser-broker",
     "tesser-strategy",
+    "tesser-strategy-macros",
     "tesser-portfolio",
     "tesser-data",
     "tesser-execution",

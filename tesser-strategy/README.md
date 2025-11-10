@@ -9,7 +9,7 @@ Reference implementations of the `Strategy` trait plus shared strategy utilities
 
 ## Adding a Strategy
 1. Implement the `Strategy` trait in a new module.
-2. Register it in `build_builtin_strategy` and `builtin_strategy_names()`.
+2. Add a `register_strategy!(YourType, "YourType")` invocation (optionally with aliases) so the registry discovers it automatically.
 3. Provide a TOML config schema in `research/strategies/` for easy CLI usage.
 
 ## Tests

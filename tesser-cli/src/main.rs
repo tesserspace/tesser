@@ -27,7 +27,7 @@ use tesser_core::{Candle, Interval, Symbol};
 use tesser_data::download::{BybitDownloader, KlineRequest};
 use tesser_execution::{ExecutionEngine, FixedOrderSizer, NoopRiskChecker};
 use tesser_paper::PaperExecutionClient;
-use tesser_strategy::{build_builtin_strategy, builtin_strategy_names};
+use tesser_strategy::{builtin_strategy_names, load_strategy};
 use tracing::{info, warn};
 
 #[derive(Parser)]
@@ -555,7 +555,7 @@ impl BacktestRunArgs {
             .with_context(|| format!("failed to read {}", self.strategy_config.display()))?;
         let def: StrategyConfigFile =
             toml::from_str(&contents).context("failed to parse strategy config file")?;
-        let strategy = build_builtin_strategy(&def.name, def.params)
+        let strategy = load_strategy(&def.name, def.params)
             .with_context(|| format!("failed to configure strategy {}", def.name))?;
         let symbols = strategy.subscriptions();
         if symbols.is_empty() {
@@ -620,7 +620,7 @@ impl BacktestBatchArgs {
             })?;
             let def: StrategyConfigFile =
                 toml::from_str(&contents).context("failed to parse strategy config file")?;
-            let strategy = build_builtin_strategy(&def.name, def.params)
+            let strategy = load_strategy(&def.name, def.params)
                 .with_context(|| format!("failed to configure strategy {}", def.name))?;
             let mut candles = load_candles_from_paths(&self.data_paths)?;
             candles.sort_by_key(|c| c.timestamp);
@@ -683,7 +683,7 @@ impl LiveRunArgs {
             .with_context(|| format!("failed to read {}", self.strategy_config.display()))?;
         let def: StrategyConfigFile =
             toml::from_str(&contents).context("failed to parse strategy config file")?;
-        let strategy = build_builtin_strategy(&def.name, def.params)
+        let strategy = load_strategy(&def.name, def.params)
             .with_context(|| format!("failed to configure strategy {}", def.name))?;
         let symbols = strategy.subscriptions();
         if symbols.is_empty() {
