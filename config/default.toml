@@ -25,7 +25,7 @@ api_key = ""
 api_secret = ""
 
 [live]
-state_path = "./reports/live_state.json"
+state_path = "./reports/live_state.db"
 metrics_addr = "127.0.0.1:9100"
 log_path = "./logs/live.json"
 
