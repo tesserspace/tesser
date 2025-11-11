@@ -9,6 +9,7 @@ authors.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tesser-broker = { path = "../tesser-broker" }
+tesser-bybit = { path = "../connectors/tesser-bybit" }
 tesser-core = { path = "../tesser-core" }
 tesser-strategy = { path = "../tesser-strategy" }
 thiserror.workspace = true

@@ -193,9 +193,12 @@ Add `--exec live` (and populate your `[exchange.<name>]` `api_key`/`api_secret`)
 What happens under the hood:
 
 - **Market data**: `tesser-bybit` maintains a resilient WebSocket connection to the public `linear` stream (`kline.<interval>.<symbol>` and `publicTrade.<symbol>` topics). The connection automatically heartbeats every 20s and reconnects on transient errors.
-- **Execution**: Signals are routed through `tesser-execution` into the selected backend. `--exec paper` keeps the previous behavior (instant synthetic fills). `--exec live` submits real REST orders and records their IDs inside the SQLite state database so you can reconcile with the exchange.
+- **Execution & Reconciliation**: Signals are routed through `tesser-execution` into the selected backend.
+  - `--exec paper`: Keeps the previous behavior (instant synthetic fills).
+  - `--exec live`: Submits real REST orders. A separate private WebSocket connection listens for real-time order status updates (`Accepted`, `Filled`, `Canceled`) and execution reports (`Fill` events).
+  - When a real `Fill` is received, it's applied to the portfolio, updating your cash, positions, and realized PnL. This creates a closed-loop system where your local state reflects the exchange's reality.
 - **State persistence**: Portfolio equity, open orders and last prices are serialized to `config.live.state_path` (default `./reports/live_state.db`). Restart the process or run `tesser-cli state inspect` to review the snapshot.
-
+- **State Reconciliation**: On startup and periodically, the system fetches your open positions and balances via the REST API and compares them to its local state. Discrepancies are logged as warnings, providing a crucial safety net against state drift.
 - **Structured logging**: When running `live`, a JSON file is written to `config.live.log_path` (default `./logs/live.json`). Point Promtail/Loki/Grafana at that file to build dashboards without touching stdout logs.
 - **Metrics**: A Prometheus endpoint is exposed at `config.live.metrics_addr` (default `127.0.0.1:9100`). Scrape `/metrics` to monitor tick/candle throughput, portfolio equity, order errors, and data-gap gauges.
 - **Alerting**: The `[live.alerting]` section lets you enforce guardrails (max data gap, consecutive order failures, drawdown limit). Provide a `webhook_url` (Slack, Telegram, Alertmanager, etc.) or leave it empty for log-only alerts.
@@ -209,7 +212,7 @@ The SQLite file referenced by `config.live.state_path` is the source of truth fo
 3. **Online backup**: when a session must stay up, use SQLite's native snapshotting: `sqlite3 reports/live_state.db ".backup 'reports/live_state.db.bak'"`. The command is safe because the repository enables WAL journaling.
 4. **Restoring**: replace the file with a known-good backup and restart `tesser-cli live run`; the runtime will hydrate the portfolio from the restored snapshot.
 
-> ⚠️ **Risk warning**: `--exec live` forwards orders exactly as produced by your strategy—there is no extra confirmation prompt, and portfolio P&L stays paper-based until a future release. Always dry-run on Bybit testnet before pointing to mainnet keys.
+> ⚠️ **Risk warning**: `--exec live` forwards orders exactly as produced by your strategy—there is no extra confirmation prompt, and portfolio PnL stays paper-based until a future release. Always dry-run on Bybit testnet before pointing to mainnet keys.
 
 Key CLI flags:
 

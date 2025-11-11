@@ -1,5 +1,7 @@
 //! Exchange-agnostic traits used by the rest of the framework.
 
+use std::any::Any;
+
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
 use tesser_core::{AccountBalance, Candle, Order, OrderId, OrderRequest, Position, Signal, Tick};
@@ -98,7 +100,7 @@ pub trait ExecutionClient: Send + Sync {
     async fn place_order(&self, request: OrderRequest) -> BrokerResult<Order>;
 
     /// Cancel an existing order by identifier.
-    async fn cancel_order(&self, order_id: OrderId) -> BrokerResult<()>;
+    async fn cancel_order(&self, order_id: OrderId, symbol: &str) -> BrokerResult<()>;
 
     /// Get all open orders for a symbol.
     async fn list_open_orders(&self, symbol: &str) -> BrokerResult<Vec<Order>>;
@@ -108,6 +110,9 @@ pub trait ExecutionClient: Send + Sync {
 
     /// Retrieve the current open positions.
     async fn positions(&self) -> BrokerResult<Vec<Position>>;
+
+    /// Helper to downcast into connector-specific implementations.
+    fn as_any(&self) -> &dyn Any;
 }
 
 /// Strategy and execution share this event channel API during live trading and backtests.

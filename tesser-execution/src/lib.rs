@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use tesser_broker::{BrokerError, BrokerResult, ExecutionClient};
-use tesser_core::{Order, OrderRequest, OrderType, Quantity, Side, Signal, SignalKind};
+use tesser_bybit::{BybitClient, BybitCredentials};
+use tesser_core::{Order, OrderRequest, OrderType, Quantity, Side, Signal, SignalKind, Symbol};
 use thiserror::Error;
 use tracing::{info, warn};
 
@@ -185,7 +186,7 @@ impl ExecutionEngine {
         Ok(Some(order))
     }
 
-    fn build_request(&self, symbol: String, side: Side, qty: Quantity) -> OrderRequest {
+    fn build_request(&self, symbol: Symbol, side: Side, qty: Quantity) -> OrderRequest {
         OrderRequest {
             symbol,
             side,
@@ -204,5 +205,24 @@ impl ExecutionEngine {
         let order = self.client.place_order(request).await?;
         info!(order_id = %order.id, qty = order.request.quantity, "order sent to broker");
         Ok(order)
+    }
+
+    pub fn client(&self) -> Arc<dyn ExecutionClient> {
+        Arc::clone(&self.client)
+    }
+
+    pub fn credentials(&self) -> Option<BybitCredentials> {
+        self.client
+            .as_any()
+            .downcast_ref::<BybitClient>()
+            .and_then(|client| client.get_credentials())
+    }
+
+    pub fn ws_url(&self) -> String {
+        self.client
+            .as_any()
+            .downcast_ref::<BybitClient>()
+            .map(|client| client.get_ws_url())
+            .unwrap_or_default()
     }
 }

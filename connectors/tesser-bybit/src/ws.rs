@@ -3,8 +3,10 @@ use std::time::Duration;
 
 use chrono::{DateTime, TimeZone, Utc};
 use futures::{SinkExt, StreamExt};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::{self, json, Value};
+use sha2::Sha256;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{mpsc, Mutex};
@@ -14,8 +16,12 @@ use tokio_tungstenite::{
 };
 use tracing::{debug, error, info, warn};
 
+use crate::{millis_to_datetime as parse_millis, BybitCredentials};
+
+type HmacSha256 = Hmac<Sha256>;
+
 use tesser_broker::{BrokerError, BrokerErrorKind, BrokerInfo, BrokerResult, MarketStream};
-use tesser_core::{Candle, Interval, Side, Tick};
+use tesser_core::{Candle, Fill, Interval, Order, OrderRequest, OrderType, Side, Tick};
 
 #[derive(Clone, Copy, Debug)]
 pub enum PublicChannel {
@@ -113,6 +119,63 @@ impl BybitMarketStream {
             candle_rx: Mutex::new(candle_rx),
         })
     }
+}
+
+pub async fn connect_private(
+    base_url: &str,
+    creds: &BybitCredentials,
+) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, BrokerError> {
+    let endpoint = format!("{}/v5/private", base_url.trim_end_matches('/'));
+    let (mut socket, _) = connect_async(&endpoint)
+        .await
+        .map_err(|e| BrokerError::Transport(e.to_string()))?;
+
+    let expires = (Utc::now() + chrono::Duration::seconds(10)).timestamp_millis();
+    let payload = format!("GET/realtime{expires}");
+    let mut mac = HmacSha256::new_from_slice(creds.api_secret.as_bytes())
+        .map_err(|e| BrokerError::Other(format!("failed to init signer: {e}")))?;
+    mac.update(payload.as_bytes());
+    let signature = hex::encode(mac.finalize().into_bytes());
+
+    let auth_payload = json!({
+        "op": "auth",
+        "args": [creds.api_key.clone(), expires, signature],
+    });
+
+    socket
+        .send(Message::Text(auth_payload.to_string()))
+        .await
+        .map_err(|e| BrokerError::Transport(e.to_string()))?;
+
+    if let Some(Ok(Message::Text(text))) = socket.next().await {
+        if let Ok(value) = serde_json::from_str::<Value>(&text) {
+            if value
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                info!("Private websocket authenticated");
+            } else {
+                warn!(payload = text, "Private websocket auth failed");
+                return Err(BrokerError::Authentication(
+                    "private websocket auth failed".into(),
+                ));
+            }
+        }
+    }
+
+    let sub_payload = json!({
+        "op": "subscribe",
+        "args": ["order", "execution"],
+    });
+    socket
+        .send(Message::Text(sub_payload.to_string()))
+        .await
+        .map_err(|e| BrokerError::Transport(e.to_string()))?;
+
+    info!("Subscribed to private order/execution channels");
+
+    Ok(socket)
 }
 
 #[async_trait::async_trait]
@@ -265,6 +328,9 @@ async fn process_text_message(
                 if let Ok(payload) = serde_json::from_value::<KlineMessage>(value.clone()) {
                     forward_klines(payload, candle_tx).await;
                 }
+            // Private channel handling is performed by higher-level runtimes.
+            // else if topic == "order" { ... }
+            // else if topic == "execution" { ... }
             } else {
                 debug!(topic, "ignoring unsupported topic from Bybit");
             }
@@ -339,6 +405,24 @@ struct KlineEntry {
     volume: String,
     confirm: bool,
     timestamp: i64,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct PrivateMessage<T> {
+    pub topic: String,
+    pub data: Vec<T>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct BybitWsOrder {
+    #[serde(rename = "orderId")]
+    pub order_id: String,
+    #[serde(rename = "symbol")]
+    pub symbol: String,
+    #[serde(rename = "side")]
+    pub side: String,
+    #[serde(rename = "orderStatus")]
+    pub order_status: String,
 }
 
 async fn forward_trades(payload: TradeMessage, tick_tx: &mpsc::Sender<Tick>) {
@@ -419,5 +503,92 @@ fn millis_to_datetime(value: i64) -> Option<DateTime<Utc>> {
 impl Drop for BybitMarketStream {
     fn drop(&mut self) {
         let _ = self.command_tx.send(WsCommand::Shutdown);
+    }
+}
+
+#[derive(Deserialize, Debug)]
+pub struct BybitWsExecution {
+    #[serde(rename = "execId")]
+    pub exec_id: String,
+    #[serde(rename = "orderId")]
+    pub order_id: String,
+    #[serde(rename = "symbol")]
+    pub symbol: String,
+    #[serde(rename = "execPrice")]
+    pub exec_price: String,
+    #[serde(rename = "execQty")]
+    pub exec_qty: String,
+    #[serde(rename = "side")]
+    pub side: String,
+    #[serde(rename = "execFee")]
+    pub exec_fee: String,
+    #[serde(rename = "execTime")]
+    pub exec_time: String,
+    #[serde(rename = "cumExecQty")]
+    pub cum_exec_qty: String,
+    #[serde(rename = "avgPrice")]
+    pub avg_price: String,
+}
+
+impl BybitWsOrder {
+    pub fn to_tesser_order(&self, existing: Option<&Order>) -> Result<Order, BrokerError> {
+        Ok(Order {
+            id: self.order_id.clone(),
+            request: existing
+                .map(|o| o.request.clone())
+                .unwrap_or_else(|| OrderRequest {
+                    symbol: self.symbol.clone(),
+                    side: if self.side == "Buy" {
+                        Side::Buy
+                    } else {
+                        Side::Sell
+                    },
+                    order_type: OrderType::Market,
+                    quantity: 0.0,
+                    price: None,
+                    time_in_force: None,
+                    client_order_id: None,
+                }),
+            status: crate::BybitClient::map_order_status(&self.order_status),
+            filled_quantity: existing.map(|o| o.filled_quantity).unwrap_or(0.0),
+            avg_fill_price: existing.and_then(|o| o.avg_fill_price),
+            created_at: existing.map(|o| o.created_at).unwrap_or_else(Utc::now),
+            updated_at: Utc::now(),
+        })
+    }
+}
+
+impl BybitWsExecution {
+    pub fn to_tesser_fill(&self) -> Result<Fill, BrokerError> {
+        let fill_price = self.exec_price.parse().map_err(|e| {
+            BrokerError::Serialization(format!(
+                "failed to parse exec price {}: {e}",
+                self.exec_price
+            ))
+        })?;
+        let fill_quantity = self.exec_qty.parse().map_err(|e| {
+            BrokerError::Serialization(format!("failed to parse exec qty {}: {e}", self.exec_qty))
+        })?;
+        let fee = self.exec_fee.parse().ok();
+        let timestamp = parse_millis(&self.exec_time);
+        let side = match self.side.as_str() {
+            "Buy" => Side::Buy,
+            "Sell" => Side::Sell,
+            other => {
+                return Err(BrokerError::Serialization(format!(
+                    "unhandled execution side: {other}"
+                )))
+            }
+        };
+
+        Ok(Fill {
+            order_id: self.order_id.clone(),
+            symbol: self.symbol.clone(),
+            side,
+            fill_price,
+            fill_quantity,
+            fee,
+            timestamp,
+        })
     }
 }

@@ -1846,6 +1846,7 @@ dependencies = [
  "chrono",
  "clap",
  "csv",
+ "futures",
  "hyper 0.14.32",
  "prometheus",
  "reqwest",
@@ -1862,6 +1863,7 @@ dependencies = [
  "tesser-portfolio",
  "tesser-strategy",
  "tokio",
+ "tokio-tungstenite",
  "toml",
  "tracing",
  "tracing-appender",
@@ -1910,6 +1912,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "tesser-broker",
+ "tesser-bybit",
  "tesser-core",
  "tesser-strategy",
  "thiserror 1.0.69",

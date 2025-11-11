@@ -92,6 +92,10 @@ impl AlertManager {
         state.consecutive_failures = 0;
     }
 
+    pub async fn notify(&self, title: &str, message: &str) {
+        self.dispatcher.notify(title, message).await;
+    }
+
     pub async fn update_equity(&self, equity: f64) {
         if equity <= 0.0 {
             return;

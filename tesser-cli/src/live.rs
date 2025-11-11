@@ -10,16 +10,19 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use clap::ValueEnum;
-use tokio::sync::Notify;
+use futures::StreamExt;
+use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
-use tracing::{debug, info, warn};
+use tokio_tungstenite::tungstenite::Message;
+use tracing::{debug, error, info, warn};
 
 use tesser_broker::{ExecutionClient, MarketStream};
+use tesser_bybit::ws::{BybitWsExecution, BybitWsOrder, PrivateMessage};
 use tesser_bybit::{
     BybitClient, BybitConfig, BybitCredentials, BybitMarketStream, BybitSubscription, PublicChannel,
 };
 use tesser_config::{AlertingConfig, ExchangeConfig, RiskManagementConfig};
-use tesser_core::{Candle, Fill, Interval, Order, Price, Side, Signal};
+use tesser_core::{Candle, Fill, Interval, Order, OrderStatus, Price, Side, Signal};
 use tesser_execution::{
     BasicRiskChecker, ExecutionEngine, FixedOrderSizer, PreTradeRiskChecker, RiskContext,
     RiskLimits,
@@ -32,6 +35,13 @@ use tesser_strategy::{Strategy, StrategyContext};
 
 use crate::alerts::{AlertDispatcher, AlertManager};
 use crate::telemetry::{spawn_metrics_server, LiveMetrics};
+
+/// Unified event type for asynchronous updates from the broker.
+#[derive(Debug)]
+pub enum BrokerEvent {
+    OrderUpdate(Order),
+    Fill(Fill),
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 #[value(rename_all = "kebab-case")]
@@ -169,6 +179,7 @@ struct LiveRuntime {
     shutdown: ShutdownSignal,
     metrics_task: JoinHandle<()>,
     alert_task: Option<JoinHandle<()>>,
+    private_event_rx: mpsc::Receiver<BrokerEvent>,
     exec_backend: ExecutionBackend,
 }
 
@@ -225,6 +236,80 @@ impl LiveRuntime {
         let alerts = AlertManager::new(settings.alerting, dispatcher);
         let alert_task = alerts.spawn_watchdog();
         let shutdown = ShutdownSignal::new();
+        let (private_event_tx, private_event_rx) = mpsc::channel(1024);
+
+        if !settings.exec_backend.is_paper() {
+            let bybit_creds = match execution.credentials() {
+                Some(creds) => creds,
+                None => bail!("live execution requires Bybit credentials"),
+            };
+            let ws_url = execution.ws_url();
+            let private_tx = private_event_tx.clone();
+            tokio::spawn(async move {
+                let creds = bybit_creds;
+                let endpoint = ws_url;
+                loop {
+                    match tesser_bybit::ws::connect_private(&endpoint, &creds).await {
+                        Ok(mut socket) => {
+                            info!("Connected to Bybit private WebSocket stream");
+                            while let Some(msg) = socket.next().await {
+                                if let Ok(Message::Text(text)) = msg {
+                                    if let Ok(value) =
+                                        serde_json::from_str::<serde_json::Value>(&text)
+                                    {
+                                        if let Some(topic) =
+                                            value.get("topic").and_then(|v| v.as_str())
+                                        {
+                                            match topic {
+                                                "order" => {
+                                                    if let Ok(msg) = serde_json::from_value::<
+                                                        PrivateMessage<BybitWsOrder>,
+                                                    >(
+                                                        value.clone()
+                                                    ) {
+                                                        for update in msg.data {
+                                                            match update.to_tesser_order(None) {
+                                                                Ok(order) => {
+                                                                    if let Err(err) = private_tx.send(BrokerEvent::OrderUpdate(order)).await {
+                                                                        error!("failed to send private order update: {err}");
+                                                                    }
+                                                                }
+                                                                Err(err) => error!("failed to convert order update: {err}"),
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                "execution" => {
+                                                    if let Ok(msg) = serde_json::from_value::<
+                                                        PrivateMessage<BybitWsExecution>,
+                                                    >(
+                                                        value.clone()
+                                                    ) {
+                                                        for exec in msg.data {
+                                                            match exec.to_tesser_fill() {
+                                                                Ok(fill) => {
+                                                                    if let Err(err) = private_tx.send(BrokerEvent::Fill(fill)).await {
+                                                                        error!("failed to send private fill event: {err}");
+                                                                    }
+                                                                }
+                                                                Err(err) => error!("failed to parse execution: {err}"),
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => error!("Private WebSocket connection failed: {e}. Retrying..."),
+                    }
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            });
+        }
 
         info!(
             symbols = ?symbols,
@@ -251,13 +336,18 @@ impl LiveRuntime {
             shutdown,
             metrics_task,
             alert_task,
+            private_event_rx,
             exec_backend: settings.exec_backend,
         })
     }
 
     async fn run(mut self) -> Result<()> {
         info!("live session started");
+        self.reconcile_state()
+            .await
+            .context("initial state reconciliation failed")?;
         let backoff = Duration::from_millis(200);
+        let mut reconciliation_timer = tokio::time::interval(Duration::from_secs(60));
         while !self.shutdown.triggered() {
             let mut progressed = false;
 
@@ -269,6 +359,27 @@ impl LiveRuntime {
             if let Some(candle) = self.stream.next_candle().await? {
                 progressed = true;
                 self.handle_candle(candle).await?;
+            }
+
+            tokio::select! {
+                biased;
+                Some(event) = self.private_event_rx.recv() => {
+                    progressed = true;
+                    match event {
+                        BrokerEvent::OrderUpdate(order) => {
+                            self.handle_order_update(order).await?;
+                        }
+                        BrokerEvent::Fill(fill) => {
+                            self.handle_real_fill(fill).await?;
+                        }
+                    }
+                }
+                _ = reconciliation_timer.tick(), if !self.exec_backend.is_paper() => {
+                    if let Err(e) = self.reconcile_state().await {
+                        error!("Periodic state reconciliation failed: {}", e);
+                    }
+                }
+                else => {}
             }
 
             if !progressed && !self.shutdown.sleep(backoff).await {
@@ -386,6 +497,109 @@ impl LiveRuntime {
             .retain(|existing| existing.id != order.id);
         self.persisted.open_orders.push(order);
         self.save_state().await
+    }
+
+    async fn handle_order_update(&mut self, order: Order) -> Result<()> {
+        info!(
+            order_id = %order.id,
+            status = ?order.status,
+            "Received real-time order update"
+        );
+        let mut found = false;
+        for existing in &mut self.persisted.open_orders {
+            if existing.id == order.id {
+                existing.status = order.status;
+                existing.updated_at = order.updated_at;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            self.persisted.open_orders.push(order.clone());
+        }
+
+        if matches!(
+            order.status,
+            OrderStatus::Filled | OrderStatus::Canceled | OrderStatus::Rejected
+        ) {
+            self.persisted.open_orders.retain(|o| o.id != order.id);
+        }
+
+        self.save_state().await?;
+        Ok(())
+    }
+
+    async fn handle_real_fill(&mut self, fill: Fill) -> Result<()> {
+        info!(
+            order_id = %fill.order_id,
+            symbol = %fill.symbol,
+            price = fill.fill_price,
+            qty = fill.fill_quantity,
+            "Processing real fill"
+        );
+        self.portfolio
+            .apply_fill(&fill)
+            .context("Failed to apply real fill to portfolio")?;
+        self.strategy_ctx
+            .update_positions(self.portfolio.positions());
+        self.strategy
+            .on_fill(&self.strategy_ctx, &fill)
+            .context("Strategy failed on real fill event")?;
+        self.metrics.update_equity(self.portfolio.equity());
+        self.alerts.update_equity(self.portfolio.equity()).await;
+        self.persisted.portfolio = Some(self.portfolio.snapshot());
+        self.save_state().await
+    }
+
+    async fn reconcile_state(&mut self) -> Result<()> {
+        if self.exec_backend.is_paper() {
+            return Ok(());
+        }
+
+        info!("Running state reconciliation...");
+        let client = self.execution.client();
+        match client.positions().await {
+            Ok(remote_positions) => {
+                let local_positions = self.portfolio.positions();
+                if remote_positions.len() != local_positions.len() {
+                    warn!(
+                        remote = remote_positions.len(),
+                        local = local_positions.len(),
+                        "Position count mismatch"
+                    );
+                    self.alerts
+                        .notify("Reconciliation Error", "Position count mismatch detected")
+                        .await;
+                }
+            }
+            Err(e) => error!("Failed to fetch remote positions: {e}"),
+        }
+
+        match client.account_balances().await {
+            Ok(remote_balances) => {
+                if let Some(usdt) = remote_balances.iter().find(|b| b.currency == "USDT") {
+                    let local_cash = self.portfolio.cash();
+                    let diff = (usdt.available - local_cash).abs();
+                    if diff > 1.0 {
+                        warn!(
+                            remote = usdt.available,
+                            local = local_cash,
+                            "Cash balance mismatch"
+                        );
+                        self.alerts
+                            .notify(
+                                "Reconciliation Error",
+                                &format!("Cash balance deviates by {:.2}", diff),
+                            )
+                            .await;
+                    }
+                }
+            }
+            Err(e) => error!("Failed to fetch remote balances: {e}"),
+        }
+
+        info!("State reconciliation complete.");
+        Ok(())
     }
 
     async fn settle_order(&mut self, order: Order, signal: Signal) -> Result<()> {

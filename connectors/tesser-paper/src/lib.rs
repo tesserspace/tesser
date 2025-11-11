@@ -1,6 +1,6 @@
 //! Simple paper-trading connector used by the backtester.
 
-use std::collections::VecDeque;
+use std::{any::Any, collections::VecDeque};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -78,7 +78,7 @@ impl ExecutionClient for PaperExecutionClient {
         Ok(order)
     }
 
-    async fn cancel_order(&self, _order_id: OrderId) -> BrokerResult<()> {
+    async fn cancel_order(&self, _order_id: OrderId, _symbol: &str) -> BrokerResult<()> {
         Ok(())
     }
 
@@ -92,6 +92,10 @@ impl ExecutionClient for PaperExecutionClient {
 
     async fn positions(&self) -> BrokerResult<Vec<Position>> {
         Ok(self.positions.lock().await.clone())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
