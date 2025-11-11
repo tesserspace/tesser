@@ -16,7 +16,7 @@ use tokio_tungstenite::{
 };
 use tracing::{debug, error, info, warn};
 
-use crate::{BybitCredentials, millis_to_datetime as parse_millis};
+use crate::{millis_to_datetime as parse_millis, BybitCredentials};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -546,10 +546,7 @@ pub struct BybitWsExecution {
 }
 
 impl BybitWsOrder {
-    pub fn to_tesser_order(
-        &self,
-        existing: Option<&Order>,
-    ) -> Result<Order, BrokerError> {
+    pub fn to_tesser_order(&self, existing: Option<&Order>) -> Result<Order, BrokerError> {
         Ok(Order {
             id: self.order_id.clone(),
             request: existing
@@ -585,10 +582,7 @@ impl BybitWsExecution {
             ))
         })?;
         let fill_quantity = self.exec_qty.parse().map_err(|e| {
-            BrokerError::Serialization(format!(
-                "failed to parse exec qty {}: {e}",
-                self.exec_qty
-            ))
+            BrokerError::Serialization(format!("failed to parse exec qty {}: {e}", self.exec_qty))
         })?;
         let fee = self.exec_fee.parse().ok();
         let timestamp = parse_millis(&self.exec_time);

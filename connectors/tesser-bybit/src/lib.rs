@@ -357,9 +357,10 @@ impl ExecutionClient for BybitClient {
             .await?;
         let mut positions = Vec::new();
         for item in resp.result.list {
-            let quantity = item.size.parse::<f64>().map_err(|err| {
-                BrokerError::from_display(err, BrokerErrorKind::Serialization)
-            })?;
+            let quantity = item
+                .size
+                .parse::<f64>()
+                .map_err(|err| BrokerError::from_display(err, BrokerErrorKind::Serialization))?;
             if quantity.abs() < f64::EPSILON {
                 continue;
             }
@@ -373,10 +374,7 @@ impl ExecutionClient for BybitClient {
                 },
                 quantity,
                 entry_price,
-                unrealized_pnl: item
-                    .unrealised_pnl
-                    .parse::<f64>()
-                    .unwrap_or(0.0),
+                unrealized_pnl: item.unrealised_pnl.parse::<f64>().unwrap_or(0.0),
                 updated_at: millis_to_datetime(&item.updated_time),
             });
         }

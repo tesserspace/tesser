@@ -17,10 +17,10 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 
 use tesser_broker::{ExecutionClient, MarketStream};
+use tesser_bybit::ws::{BybitWsExecution, BybitWsOrder, PrivateMessage};
 use tesser_bybit::{
     BybitClient, BybitConfig, BybitCredentials, BybitMarketStream, BybitSubscription, PublicChannel,
 };
-use tesser_bybit::ws::{BybitWsExecution, BybitWsOrder, PrivateMessage};
 use tesser_config::{AlertingConfig, ExchangeConfig, RiskManagementConfig};
 use tesser_core::{Candle, Fill, Interval, Order, OrderStatus, Price, Side, Signal};
 use tesser_execution::{
@@ -254,11 +254,19 @@ impl LiveRuntime {
                             info!("Connected to Bybit private WebSocket stream");
                             while let Some(msg) = socket.next().await {
                                 if let Ok(Message::Text(text)) = msg {
-                                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
-                                        if let Some(topic) = value.get("topic").and_then(|v| v.as_str()) {
+                                    if let Ok(value) =
+                                        serde_json::from_str::<serde_json::Value>(&text)
+                                    {
+                                        if let Some(topic) =
+                                            value.get("topic").and_then(|v| v.as_str())
+                                        {
                                             match topic {
                                                 "order" => {
-                                                    if let Ok(msg) = serde_json::from_value::<PrivateMessage<BybitWsOrder>>(value.clone()) {
+                                                    if let Ok(msg) = serde_json::from_value::<
+                                                        PrivateMessage<BybitWsOrder>,
+                                                    >(
+                                                        value.clone()
+                                                    ) {
                                                         for update in msg.data {
                                                             match update.to_tesser_order(None) {
                                                                 Ok(order) => {
@@ -272,7 +280,11 @@ impl LiveRuntime {
                                                     }
                                                 }
                                                 "execution" => {
-                                                    if let Ok(msg) = serde_json::from_value::<PrivateMessage<BybitWsExecution>>(value.clone()) {
+                                                    if let Ok(msg) = serde_json::from_value::<
+                                                        PrivateMessage<BybitWsExecution>,
+                                                    >(
+                                                        value.clone()
+                                                    ) {
                                                         for exec in msg.data {
                                                             match exec.to_tesser_fill() {
                                                                 Ok(fill) => {
