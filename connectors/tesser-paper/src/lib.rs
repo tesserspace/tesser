@@ -78,7 +78,7 @@ impl ExecutionClient for PaperExecutionClient {
         Ok(order)
     }
 
-    async fn cancel_order(&self, _order_id: OrderId) -> BrokerResult<()> {
+    async fn cancel_order(&self, _order_id: OrderId, _symbol: &str) -> BrokerResult<()> {
         Ok(())
     }
 

@@ -212,8 +212,8 @@ The SQLite file referenced by `config.live.state_path` is the source of truth fo
 3. **Online backup**: when a session must stay up, use SQLite's native snapshotting: `sqlite3 reports/live_state.db ".backup 'reports/live_state.db.bak'"`. The command is safe because the repository enables WAL journaling.
 4. **Restoring**: replace the file with a known-good backup and restart `tesser-cli live run`; the runtime will hydrate the portfolio from the restored snapshot.
 
-> ⚠️ **Risk warning**: `--exec live` forwards orders exactly as produced by your strategy—there is no extra confirmation prompt, and portfolio P&L stays paper-based until a future release. Always dry-run on Bybit testnet before pointing to mainnet keys.
-> ⚠️ **Risk warning**: `--exec live` is a real trading mode. With the new reconciliation features, the portfolio P&L is now based on real fills, but risks inherent to automated trading remain. Always dry-run on Bybit testnet before pointing to mainnet keys.
+> ⚠️ **Risk warning**: `--exec live` forwards orders exactly as produced by your strategy—there is no extra confirmation prompt, and portfolio PnL stays paper-based until a future release. Always dry-run on Bybit testnet before pointing to mainnet keys.
+> ⚠️ **Risk warning**: `--exec live` is a real trading mode. With the new reconciliation features, the portfolio PnL is now based on real fills, but risks inherent to automated trading remain. Always dry-run on Bybit testnet before pointing to mainnet keys.
 
 Key CLI flags:
 

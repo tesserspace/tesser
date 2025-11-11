@@ -375,7 +375,7 @@ impl LiveRuntime {
                         }
                     }
                 }
-                _ = reconciliation_timer.tick() => {
+                _ = reconciliation_timer.tick(), if !self.exec_backend.is_paper() => {
                     if let Err(e) = self.reconcile_state().await {
                         error!("Periodic state reconciliation failed: {}", e);
                     }
@@ -560,7 +560,8 @@ impl LiveRuntime {
         let mut found = false;
         for existing in &mut self.persisted.open_orders {
             if existing.id == order.id {
-                *existing = order.clone();
+                existing.status = order.status;
+                existing.updated_at = order.updated_at;
                 found = true;
                 break;
             }

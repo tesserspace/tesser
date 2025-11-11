@@ -100,7 +100,7 @@ pub trait ExecutionClient: Send + Sync {
     async fn place_order(&self, request: OrderRequest) -> BrokerResult<Order>;
 
     /// Cancel an existing order by identifier.
-    async fn cancel_order(&self, order_id: OrderId) -> BrokerResult<()>;
+    async fn cancel_order(&self, order_id: OrderId, symbol: &str) -> BrokerResult<()>;
 
     /// Get all open orders for a symbol.
     async fn list_open_orders(&self, symbol: &str) -> BrokerResult<Vec<Order>>;

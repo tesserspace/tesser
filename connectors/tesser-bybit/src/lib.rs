@@ -267,9 +267,10 @@ impl ExecutionClient for BybitClient {
         })
     }
 
-    async fn cancel_order(&self, order_id: tesser_core::OrderId) -> BrokerResult<()> {
+    async fn cancel_order(&self, order_id: tesser_core::OrderId, symbol: &str) -> BrokerResult<()> {
         let payload = serde_json::json!({
             "category": self.config.category,
+            "symbol": symbol,
             "orderId": order_id,
         });
         self.signed_request::<serde_json::Value>(Method::POST, "/v5/order/cancel", payload, None)
