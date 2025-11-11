@@ -348,6 +348,7 @@ impl LiveRuntime {
             .context("initial state reconciliation failed")?;
         let backoff = Duration::from_millis(200);
         let mut reconciliation_timer = tokio::time::interval(Duration::from_secs(60));
+
         while !self.shutdown.triggered() {
             let mut progressed = false;
 
@@ -394,6 +395,57 @@ impl LiveRuntime {
         if let Err(err) = self.save_state().await {
             warn!(error = %err, "failed to persist shutdown state");
         }
+        Ok(())
+    }
+
+    async fn reconcile_state(&mut self) -> Result<()> {
+        if self.exec_backend.is_paper() {
+            return Ok(());
+        }
+
+        info!("Running state reconciliation...");
+        let client = self.execution.client();
+        match client.positions().await {
+            Ok(remote_positions) => {
+                let local_positions = self.portfolio.positions();
+                if remote_positions.len() != local_positions.len() {
+                    warn!(
+                        remote = remote_positions.len(),
+                        local = local_positions.len(),
+                        "Position count mismatch"
+                    );
+                    self.alerts
+                        .notify("Reconciliation Error", "Position count mismatch detected")
+                        .await;
+                }
+            }
+            Err(e) => error!("Failed to fetch remote positions: {e}"),
+        }
+
+        match client.account_balances().await {
+            Ok(remote_balances) => {
+                if let Some(usdt) = remote_balances.iter().find(|b| b.currency == "USDT") {
+                    let local_cash = self.portfolio.cash();
+                    let diff = (usdt.available - local_cash).abs();
+                    if diff > 1.0 {
+                        warn!(
+                            remote = usdt.available,
+                            local = local_cash,
+                            "Cash balance mismatch"
+                        );
+                        self.alerts
+                            .notify(
+                                "Reconciliation Error",
+                                &format!("Cash balance deviates by {:.2}", diff),
+                            )
+                            .await;
+                    }
+                }
+            }
+            Err(e) => error!("Failed to fetch remote balances: {e}"),
+        }
+
+        info!("State reconciliation complete.");
         Ok(())
     }
 

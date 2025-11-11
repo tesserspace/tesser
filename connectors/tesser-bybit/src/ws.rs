@@ -328,9 +328,24 @@ async fn process_text_message(
                 if let Ok(payload) = serde_json::from_value::<KlineMessage>(value.clone()) {
                     forward_klines(payload, candle_tx).await;
                 }
-            // Private channel handling is performed by higher-level runtimes.
-            // else if topic == "order" { ... }
-            // else if topic == "execution" { ... }
+            } else if topic == "order" {
+                if let Ok(payload) = serde_json::from_value::<PrivateMessage<BybitWsOrder>>(value) {
+                    for order in payload.data {
+                        debug!(
+                            order_id = %order.order_id,
+                            status = %order.order_status,
+                            "received ws order update"
+                        );
+                    }
+                }
+            } else if topic == "execution" {
+                if let Ok(payload) =
+                    serde_json::from_value::<PrivateMessage<BybitWsExecution>>(value)
+                {
+                    for exec in payload.data {
+                        debug!(exec_id = %exec.exec_id, "received ws execution");
+                    }
+                }
             } else {
                 debug!(topic, "ignoring unsupported topic from Bybit");
             }
