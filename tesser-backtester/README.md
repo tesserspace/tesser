@@ -11,7 +11,7 @@ Event-driven simulation engine that replays historical data through strategies a
 Most users drive the backtester through `tesser-cli backtest run`, but you can embed it yourself:
 ```rust
 let cfg = BacktestConfig::new(symbol.clone(), candles);
-let report = Backtester::new(cfg, strategy, execution).run().await?;
+let report = Backtester::new(cfg, strategy, execution, None).run().await?;
 ```
 
 ## Tests

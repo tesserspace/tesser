@@ -2,13 +2,16 @@
 
 pub mod reporting;
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
+use chrono::{DateTime, Utc};
 use reporting::{PerformanceReport, Reporter};
-use tesser_core::{Candle, Fill, Order, Quantity, Side, Symbol};
+use tesser_core::{
+    Candle, DepthUpdate, Fill, Order, OrderBook, Price, Quantity, Side, Symbol, Tick,
+};
 use tesser_execution::{ExecutionEngine, RiskContext};
-use tesser_paper::PaperExecutionClient;
+use tesser_paper::{MatchingEngine, PaperExecutionClient};
 use tesser_portfolio::{Portfolio, PortfolioConfig};
 use tesser_strategy::{Strategy, StrategyContext};
 use tracing::{info, warn};
@@ -17,10 +20,12 @@ use tracing::{info, warn};
 pub struct BacktestConfig {
     pub symbol: Symbol,
     pub candles: Vec<Candle>,
+    pub lob_events: Vec<MarketEvent>,
     pub order_quantity: Quantity,
     pub history: usize,
     pub initial_equity: f64,
     pub execution: ExecutionModel,
+    pub mode: BacktestMode,
 }
 
 impl BacktestConfig {
@@ -29,10 +34,12 @@ impl BacktestConfig {
         Self {
             symbol,
             candles,
+            lob_events: Vec::new(),
             order_quantity: 1.0,
             history: 512,
             initial_equity: 10_000.0,
             execution: ExecutionModel::default(),
+            mode: BacktestMode::Candle,
         }
     }
 }
@@ -62,6 +69,29 @@ impl Default for ExecutionModel {
     }
 }
 
+/// Determines how the backtester consumes historical data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub enum BacktestMode {
+    #[default]
+    Candle,
+    Tick,
+}
+
+/// Event emitted by the high-fidelity data source.
+#[derive(Clone, Debug)]
+pub struct MarketEvent {
+    pub timestamp: DateTime<Utc>,
+    pub kind: MarketEventKind,
+}
+
+/// Individual event types used by the matching-engine replay.
+#[derive(Clone, Debug)]
+pub enum MarketEventKind {
+    OrderBook(OrderBook),
+    Depth(DepthUpdate),
+    Trade(Tick),
+}
+
 /// Summary metrics returned after a backtest completes.
 pub struct BacktestReport {
     pub signals_emitted: usize,
@@ -78,6 +108,7 @@ pub struct Backtester {
     execution: ExecutionEngine,
     portfolio: Portfolio,
     pending: VecDeque<PendingFill>,
+    matching_engine: Option<Arc<MatchingEngine>>,
 }
 
 struct PendingFill {
@@ -91,6 +122,7 @@ impl Backtester {
         config: BacktestConfig,
         strategy: Box<dyn Strategy>,
         execution: ExecutionEngine,
+        matching_engine: Option<Arc<MatchingEngine>>,
     ) -> Self {
         let portfolio_config = PortfolioConfig {
             initial_equity: config.initial_equity,
@@ -103,11 +135,19 @@ impl Backtester {
             strategy,
             execution,
             pending: VecDeque::new(),
+            matching_engine,
         }
     }
 
     /// Execute the backtest using the provided candles.
     pub async fn run(mut self) -> anyhow::Result<PerformanceReport> {
+        match self.config.mode {
+            BacktestMode::Candle => self.run_candle().await,
+            BacktestMode::Tick => self.run_tick().await,
+        }
+    }
+
+    async fn run_candle(&mut self) -> anyhow::Result<PerformanceReport> {
         let mut equity_curve = Vec::new();
         let mut all_fills = Vec::new();
 
@@ -130,15 +170,7 @@ impl Backtester {
                         price = fill.fill_price,
                         "triggered paper conditional order"
                     );
-                    self.portfolio
-                        .apply_fill(&fill)
-                        .context("failed to update portfolio with triggered fill")?;
-                    all_fills.push(fill.clone());
-                    self.strategy_ctx
-                        .update_positions(self.portfolio.positions());
-                    self.strategy
-                        .on_fill(&self.strategy_ctx, &fill)
-                        .context("strategy failed on triggered fill event")?;
+                    self.record_fill(&fill, &mut all_fills)?;
                 }
             }
 
@@ -189,15 +221,7 @@ impl Backtester {
         while let Some(pending) = self.pending.pop_front() {
             if pending.due_index == candle_index {
                 let fill = self.build_fill(&pending.order, candle);
-                self.portfolio
-                    .apply_fill(&fill)
-                    .context("failed to update portfolio with fill")?;
-                all_fills.push(fill.clone());
-                self.strategy_ctx
-                    .update_positions(self.portfolio.positions());
-                self.strategy
-                    .on_fill(&self.strategy_ctx, &fill)
-                    .context("strategy failed on fill event")?;
+                self.record_fill(&fill, all_fills)?;
             } else {
                 remaining.push_back(pending);
             }
@@ -242,5 +266,101 @@ impl Backtester {
             fee,
             timestamp: candle.timestamp,
         }
+    }
+
+    async fn run_tick(&mut self) -> anyhow::Result<PerformanceReport> {
+        let matching = self
+            .matching_engine
+            .clone()
+            .ok_or_else(|| anyhow!("tick mode requires a matching engine"))?;
+        let mut equity_curve = Vec::new();
+        let mut all_fills = Vec::new();
+        let mut last_trade_price: Option<Price> = None;
+
+        let events = self.config.lob_events.clone();
+        for event in events {
+            match &event.kind {
+                MarketEventKind::OrderBook(book) => {
+                    matching.load_market_snapshot(book);
+                    self.strategy_ctx.push_order_book(book.clone());
+                    self.strategy
+                        .on_order_book(&self.strategy_ctx, book)
+                        .context("strategy failed on order book event")?;
+                }
+                MarketEventKind::Depth(update) => {
+                    matching.apply_depth_update(update);
+                }
+                MarketEventKind::Trade(tick) => {
+                    matching
+                        .process_trade(tick.side, tick.price, tick.size)
+                        .await;
+                    last_trade_price = Some(tick.price);
+                    self.portfolio.mark_price(&tick.symbol, tick.price);
+                    self.strategy_ctx.push_tick(tick.clone());
+                    self.strategy
+                        .on_tick(&self.strategy_ctx, tick)
+                        .context("strategy failed on tick event")?;
+                }
+            }
+
+            self.consume_matching_fills(&mut all_fills).await?;
+            self.process_signals_tick(last_trade_price.or_else(|| matching.mid_price()))
+                .await?;
+            self.consume_matching_fills(&mut all_fills).await?;
+            equity_curve.push((event.timestamp, self.portfolio.equity()));
+        }
+
+        let reporter = Reporter::new(self.config.initial_equity, equity_curve, all_fills);
+        reporter.calculate()
+    }
+
+    async fn process_signals_tick(&mut self, fallback_price: Option<Price>) -> anyhow::Result<()> {
+        let signals = self.strategy.drain_signals();
+        for signal in signals {
+            let reference_price = self
+                .last_tick_price(&signal.symbol)
+                .or(fallback_price)
+                .unwrap_or(0.0);
+            let ctx = RiskContext {
+                signed_position_qty: self.portfolio.signed_position_qty(&signal.symbol),
+                portfolio_equity: self.portfolio.equity(),
+                last_price: reference_price,
+                liquidate_only: false,
+            };
+            let _ = self.execution.handle_signal(signal, ctx).await?;
+        }
+        Ok(())
+    }
+
+    fn last_tick_price(&self, symbol: &str) -> Option<Price> {
+        self.strategy_ctx
+            .ticks()
+            .iter()
+            .rev()
+            .find(|tick| tick.symbol == symbol)
+            .map(|tick| tick.price)
+    }
+
+    async fn consume_matching_fills(&mut self, all_fills: &mut Vec<Fill>) -> anyhow::Result<()> {
+        if let Some(engine) = &self.matching_engine {
+            let fills = engine.drain_fills().await;
+            for fill in fills {
+                self.record_fill(&fill, all_fills)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn record_fill(&mut self, fill: &Fill, all_fills: &mut Vec<Fill>) -> anyhow::Result<()> {
+        self.portfolio
+            .apply_fill(fill)
+            .context("failed to update portfolio with fill")?;
+        all_fills.push(fill.clone());
+        self.strategy_ctx
+            .update_positions(self.portfolio.positions());
+        self.strategy
+            .on_fill(&self.strategy_ctx, fill)
+            .context("strategy failed on fill event")?;
+        Ok(())
     }
 }

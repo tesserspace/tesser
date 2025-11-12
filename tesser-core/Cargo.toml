@@ -9,3 +9,4 @@ authors.workspace = true
 chrono.workspace = true
 serde.workspace = true
 uuid.workspace = true
+ordered-float = { version = "4", features = ["serde"] }

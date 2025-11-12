@@ -1,5 +1,8 @@
 //! Fundamental data types shared across the entire workspace.
 
+use ordered_float::OrderedFloat;
+use std::cmp::Reverse;
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use chrono::{DateTime, Duration, Utc};
@@ -211,6 +214,157 @@ pub struct DepthUpdate {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Local view of an order book backed by sorted price levels.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct LocalOrderBook {
+    bids: BTreeMap<Reverse<OrderedFloat<Price>>, Quantity>,
+    asks: BTreeMap<OrderedFloat<Price>, Quantity>,
+}
+
+impl LocalOrderBook {
+    /// Create an empty order book.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Reset the book with explicit bid/ask snapshots.
+    pub fn load_snapshot(&mut self, bids: &[(Price, Quantity)], asks: &[(Price, Quantity)]) {
+        self.bids.clear();
+        self.asks.clear();
+        for &(price, qty) in bids {
+            self.add_order(Side::Buy, price, qty);
+        }
+        for &(price, qty) in asks {
+            self.add_order(Side::Sell, price, qty);
+        }
+    }
+
+    /// Insert or update a price level.
+    pub fn add_order(&mut self, side: Side, price: Price, quantity: Quantity) {
+        if quantity <= 0.0 {
+            return;
+        }
+        match side {
+            Side::Buy => {
+                let key = Reverse(OrderedFloat(price));
+                let entry = self.bids.entry(key).or_insert(0.0);
+                *entry += quantity;
+            }
+            Side::Sell => {
+                let entry = self.asks.entry(OrderedFloat(price)).or_insert(0.0);
+                *entry += quantity;
+            }
+        }
+    }
+
+    /// Remove quantity from a price level, deleting the level when depleted.
+    pub fn remove_order(&mut self, side: Side, price: Price, quantity: Quantity) {
+        if quantity <= 0.0 {
+            return;
+        }
+        let eps = f64::EPSILON;
+        match side {
+            Side::Buy => {
+                let key = Reverse(OrderedFloat(price));
+                if let Some(level) = self.bids.get_mut(&key) {
+                    *level -= quantity;
+                    if level.abs() <= eps || *level <= 0.0 {
+                        self.bids.remove(&key);
+                    }
+                }
+            }
+            Side::Sell => {
+                let key = OrderedFloat(price);
+                if let Some(level) = self.asks.get_mut(&key) {
+                    *level -= quantity;
+                    if level.abs() <= eps || *level <= 0.0 {
+                        self.asks.remove(&key);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Remove an entire price level regardless of resting quantity.
+    pub fn clear_level(&mut self, side: Side, price: Price) {
+        match side {
+            Side::Buy => {
+                self.bids.remove(&Reverse(OrderedFloat(price)));
+            }
+            Side::Sell => {
+                self.asks.remove(&OrderedFloat(price));
+            }
+        }
+    }
+
+    /// Best bid price/quantity currently stored.
+    #[must_use]
+    pub fn best_bid(&self) -> Option<(Price, Quantity)> {
+        self.bids
+            .iter()
+            .next()
+            .map(|(price, qty)| (price.0.into_inner(), *qty))
+    }
+
+    /// Best ask price/quantity currently stored.
+    #[must_use]
+    pub fn best_ask(&self) -> Option<(Price, Quantity)> {
+        self.asks
+            .iter()
+            .next()
+            .map(|(price, qty)| (price.into_inner(), *qty))
+    }
+
+    /// Iterate bids in descending price order.
+    pub fn bids(&self) -> impl Iterator<Item = (Price, Quantity)> + '_ {
+        self.bids
+            .iter()
+            .map(|(price, qty)| (price.0.into_inner(), *qty))
+    }
+
+    /// Iterate asks in ascending price order.
+    pub fn asks(&self) -> impl Iterator<Item = (Price, Quantity)> + '_ {
+        self.asks
+            .iter()
+            .map(|(price, qty)| (price.into_inner(), *qty))
+    }
+
+    /// Consume liquidity from the opposite side of an aggressive order.
+    pub fn take_liquidity(
+        &mut self,
+        aggressive_side: Side,
+        mut quantity: Quantity,
+    ) -> Vec<(Price, Quantity)> {
+        let mut fills = Vec::new();
+        let eps = f64::EPSILON;
+        while quantity > eps {
+            let (price, available) = match aggressive_side {
+                Side::Buy => match self.best_ask() {
+                    Some(level) => level,
+                    None => break,
+                },
+                Side::Sell => match self.best_bid() {
+                    Some(level) => level,
+                    None => break,
+                },
+            };
+            let traded = quantity.min(available);
+            let contra_side = aggressive_side.inverse();
+            self.remove_order(contra_side, price, traded);
+            fills.push((price, traded));
+            quantity -= traded;
+        }
+        fills
+    }
+
+    /// Returns true when either side of the book currently holds levels.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bids.is_empty() && self.asks.is_empty()
+    }
+}
+
 /// Desired order placement parameters.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct OrderRequest {
@@ -392,5 +546,21 @@ mod tests {
         };
         position.mark_price(60_500.0);
         assert!((position.unrealized_pnl - 250.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn local_order_book_tracks_best_levels() {
+        let mut lob = LocalOrderBook::new();
+        lob.add_order(Side::Buy, 10.0, 2.0);
+        lob.add_order(Side::Buy, 11.0, 1.0);
+        lob.add_order(Side::Sell, 12.0, 1.5);
+        lob.add_order(Side::Sell, 13.0, 3.0);
+
+        assert_eq!(lob.best_bid(), Some((11.0, 1.0)));
+        assert_eq!(lob.best_ask(), Some((12.0, 1.5)));
+
+        let fills = lob.take_liquidity(Side::Buy, 2.0);
+        assert_eq!(fills, vec![(12.0, 1.5), (13.0, 0.5)]);
+        assert_eq!(lob.best_ask(), Some((13.0, 2.5)));
     }
 }

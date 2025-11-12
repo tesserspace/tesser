@@ -8,7 +8,8 @@ use crate::alerts::sanitize_webhook;
 use crate::data_validation::{validate_dataset, ValidationConfig, ValidationOutcome};
 use crate::live::{run_live, ExecutionBackend, LiveSessionSettings};
 use crate::telemetry::init_tracing;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -16,21 +17,21 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use csv::Writer;
 use serde::{Deserialize, Serialize};
 use tesser_backtester::reporting::PerformanceReport;
-use tesser_backtester::{BacktestConfig, Backtester};
+use tesser_backtester::{BacktestConfig, BacktestMode, Backtester, MarketEvent, MarketEventKind};
 use tesser_broker::ExecutionClient;
 use tesser_bybit::PublicChannel;
 use tesser_config::{load_config, AppConfig, RiskManagementConfig};
-use tesser_core::{Candle, Interval, Symbol};
+use tesser_core::{Candle, DepthUpdate, Interval, OrderBook, OrderBookLevel, Side, Symbol, Tick};
 use tesser_data::download::{BybitDownloader, KlineRequest};
 use tesser_execution::{
     ExecutionEngine, FixedOrderSizer, NoopRiskChecker, OrderSizer, PortfolioPercentSizer,
     RiskAdjustedSizer,
 };
-use tesser_paper::PaperExecutionClient;
+use tesser_paper::{MatchingEngine, PaperExecutionClient};
 use tesser_strategy::{builtin_strategy_names, load_strategy};
 use tracing::{info, warn};
 
@@ -314,6 +315,12 @@ struct DataResampleArgs {
     interval: String,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum BacktestModeArg {
+    Candle,
+    Tick,
+}
+
 #[derive(Args)]
 struct BacktestRunArgs {
     #[arg(long)]
@@ -337,6 +344,12 @@ struct BacktestRunArgs {
     /// Order sizer (e.g. "fixed:0.01", "percent:0.02")
     #[arg(long, default_value = "fixed:0.01")]
     sizer: String,
+    /// Selects the data source driving fills (`candle` or `tick`)
+    #[arg(long, value_enum, default_value = "candle")]
+    mode: BacktestModeArg,
+    /// One or more JSONL files containing tick/order book events (required for `--mode tick`)
+    #[arg(long = "lob-data", value_name = "PATH", num_args = 0.., action = clap::ArgAction::Append)]
+    lob_paths: Vec<PathBuf>,
 }
 
 #[derive(Args)]
@@ -578,37 +591,81 @@ impl BacktestRunArgs {
             return Err(anyhow::anyhow!("strategy did not declare subscriptions"));
         }
 
-        let mut candles = if self.data_paths.is_empty() {
-            let mut generated = Vec::new();
-            for (idx, symbol) in symbols.iter().enumerate() {
-                let offset = idx as i64 * 10;
-                generated.extend(synth_candles(symbol, self.candles, offset));
-            }
-            generated
-        } else {
-            load_candles_from_paths(&self.data_paths)?
+        let mode = match self.mode {
+            BacktestModeArg::Candle => BacktestMode::Candle,
+            BacktestModeArg::Tick => BacktestMode::Tick,
         };
 
-        if candles.is_empty() {
-            return Err(anyhow!(
-                "no candles loaded; provide --data or allow synthetic generation"
-            ));
-        }
+        type CandleModeBundle = (
+            Vec<Candle>,
+            Vec<MarketEvent>,
+            Arc<dyn ExecutionClient>,
+            Option<Arc<MatchingEngine>>,
+        );
 
-        candles.sort_by_key(|c| c.timestamp);
+        let (candles, lob_events, execution_client, matching_engine): CandleModeBundle = match mode
+        {
+            BacktestMode::Candle => {
+                let mut candles = if self.data_paths.is_empty() {
+                    let mut generated = Vec::new();
+                    for (idx, symbol) in symbols.iter().enumerate() {
+                        let offset = idx as i64 * 10;
+                        generated.extend(synth_candles(symbol, self.candles, offset));
+                    }
+                    generated
+                } else {
+                    load_candles_from_paths(&self.data_paths)?
+                };
 
-        let execution_client: Arc<dyn ExecutionClient> = Arc::new(PaperExecutionClient::default());
+                if candles.is_empty() {
+                    return Err(anyhow!(
+                        "no candles loaded; provide --data or allow synthetic generation"
+                    ));
+                }
+
+                candles.sort_by_key(|c| c.timestamp);
+                (
+                    candles,
+                    Vec::new(),
+                    Arc::new(PaperExecutionClient::default()) as Arc<dyn ExecutionClient>,
+                    None,
+                )
+            }
+            BacktestMode::Tick => {
+                if self.lob_paths.is_empty() {
+                    bail!("--lob-data is required when --mode tick");
+                }
+                let events = load_lob_events_from_paths(&self.lob_paths)?;
+                if events.is_empty() {
+                    bail!("no order book events loaded from --lob-data");
+                }
+                let engine = Arc::new(MatchingEngine::new(
+                    "matching-engine",
+                    symbols.clone(),
+                    config.backtest.initial_equity,
+                ));
+                (
+                    Vec::new(),
+                    events,
+                    engine.clone() as Arc<dyn ExecutionClient>,
+                    Some(engine),
+                )
+            }
+        };
+
         let sizer = parse_sizer(&self.sizer, Some(self.quantity))?;
         let execution = ExecutionEngine::new(execution_client, sizer, Arc::new(NoopRiskChecker));
 
         let mut cfg = BacktestConfig::new(symbols[0].clone(), candles);
+        cfg.lob_events = lob_events;
         cfg.order_quantity = self.quantity;
         cfg.initial_equity = config.backtest.initial_equity;
         cfg.execution.slippage_bps = self.slippage_bps.max(0.0);
         cfg.execution.fee_bps = self.fee_bps.max(0.0);
         cfg.execution.latency_candles = self.latency_candles.max(1);
+        cfg.mode = mode;
 
-        let report = Backtester::new(cfg, strategy, execution)
+        let report = Backtester::new(cfg, strategy, execution, matching_engine)
             .run()
             .await
             .context("backtest failed")?;
@@ -648,7 +705,7 @@ impl BacktestBatchArgs {
             cfg.execution.fee_bps = self.fee_bps.max(0.0);
             cfg.execution.latency_candles = self.latency_candles.max(1);
 
-            let report = Backtester::new(cfg, strategy, execution)
+            let report = Backtester::new(cfg, strategy, execution, None)
                 .run()
                 .await
                 .with_context(|| format!("backtest failed for {}", config_path.display()))?;
@@ -901,6 +958,133 @@ fn load_candles_from_paths(paths: &[PathBuf]) -> Result<Vec<Candle>> {
         }
     }
     Ok(candles)
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "event", rename_all = "lowercase")]
+enum LobEventRow {
+    Snapshot {
+        timestamp: String,
+        symbol: Option<String>,
+        bids: Vec<[f64; 2]>,
+        asks: Vec<[f64; 2]>,
+    },
+    Depth {
+        timestamp: String,
+        symbol: Option<String>,
+        bids: Vec<[f64; 2]>,
+        asks: Vec<[f64; 2]>,
+    },
+    Trade {
+        timestamp: String,
+        symbol: Option<String>,
+        side: String,
+        price: f64,
+        size: f64,
+    },
+}
+
+fn load_lob_events_from_paths(paths: &[PathBuf]) -> Result<Vec<MarketEvent>> {
+    let mut events = Vec::new();
+    for path in paths {
+        let file = File::open(path)
+            .with_context(|| format!("failed to open order book file {}", path.display()))?;
+        let symbol_hint = infer_symbol_from_path(path);
+        for line in BufReader::new(file).lines() {
+            let line =
+                line.with_context(|| format!("failed to read line from {}", path.display()))?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let row: LobEventRow = serde_json::from_str(&line)
+                .with_context(|| format!("invalid order book event in {}", path.display()))?;
+            match row {
+                LobEventRow::Snapshot {
+                    timestamp,
+                    symbol,
+                    bids,
+                    asks,
+                } => {
+                    let ts = parse_datetime(&timestamp)?;
+                    let symbol = symbol
+                        .or_else(|| symbol_hint.clone())
+                        .ok_or_else(|| anyhow!("missing symbol in snapshot {}", path.display()))?;
+                    let book = OrderBook {
+                        symbol: symbol.clone(),
+                        bids: convert_levels(&bids),
+                        asks: convert_levels(&asks),
+                        timestamp: ts,
+                    };
+                    events.push(MarketEvent {
+                        timestamp: ts,
+                        kind: MarketEventKind::OrderBook(book),
+                    });
+                }
+                LobEventRow::Depth {
+                    timestamp,
+                    symbol,
+                    bids,
+                    asks,
+                } => {
+                    let ts = parse_datetime(&timestamp)?;
+                    let symbol = symbol.or_else(|| symbol_hint.clone()).ok_or_else(|| {
+                        anyhow!("missing symbol in depth update {}", path.display())
+                    })?;
+                    let update = DepthUpdate {
+                        symbol: symbol.clone(),
+                        bids: convert_levels(&bids),
+                        asks: convert_levels(&asks),
+                        timestamp: ts,
+                    };
+                    events.push(MarketEvent {
+                        timestamp: ts,
+                        kind: MarketEventKind::Depth(update),
+                    });
+                }
+                LobEventRow::Trade {
+                    timestamp,
+                    symbol,
+                    side,
+                    price,
+                    size,
+                } => {
+                    let ts = parse_datetime(&timestamp)?;
+                    let symbol = symbol
+                        .or_else(|| symbol_hint.clone())
+                        .ok_or_else(|| anyhow!("missing symbol in trade {}", path.display()))?;
+                    let side = match side.to_lowercase().as_str() {
+                        "buy" | "bid" | "b" => Side::Buy,
+                        "sell" | "ask" | "s" => Side::Sell,
+                        other => bail!("unsupported trade side '{other}' in {}", path.display()),
+                    };
+                    let tick = Tick {
+                        symbol: symbol.clone(),
+                        price,
+                        size,
+                        side,
+                        exchange_timestamp: ts,
+                        received_at: ts,
+                    };
+                    events.push(MarketEvent {
+                        timestamp: ts,
+                        kind: MarketEventKind::Trade(tick),
+                    });
+                }
+            }
+        }
+    }
+    events.sort_by_key(|event| event.timestamp);
+    Ok(events)
+}
+
+fn convert_levels(levels: &[[f64; 2]]) -> Vec<OrderBookLevel> {
+    levels
+        .iter()
+        .map(|pair| OrderBookLevel {
+            price: pair[0],
+            size: pair[1],
+        })
+        .collect()
 }
 
 fn infer_symbol_from_path(path: &Path) -> Option<String> {
