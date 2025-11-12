@@ -190,6 +190,7 @@ struct LiveRuntime {
     alert_task: Option<JoinHandle<()>>,
     private_event_rx: mpsc::Receiver<BrokerEvent>,
     exec_backend: ExecutionBackend,
+    last_private_sync: Arc<tokio::sync::Mutex<Option<DateTime<Utc>>>>,
 }
 
 impl LiveRuntime {
@@ -273,6 +274,7 @@ impl LiveRuntime {
         let alert_task = alerts.spawn_watchdog();
         let shutdown = ShutdownSignal::new();
         let (private_event_tx, private_event_rx) = mpsc::channel(1024);
+        let last_private_sync = Arc::new(tokio::sync::Mutex::new(persisted.last_candle_ts));
 
         if !settings.exec_backend.is_paper() {
             let execution_engine = orchestrator.execution_engine();
@@ -282,13 +284,66 @@ impl LiveRuntime {
             };
             let ws_url = execution_engine.ws_url();
             let private_tx = private_event_tx.clone();
+            let exec_client = execution_engine.client();
+            let symbols_for_private = symbols.clone();
+            let last_sync_handle = last_private_sync.clone();
             tokio::spawn(async move {
                 let creds = bybit_creds;
                 let endpoint = ws_url;
+                let client = exec_client;
+                let symbols = symbols_for_private;
+                let last_sync = last_sync_handle;
                 loop {
                     match tesser_bybit::ws::connect_private(&endpoint, &creds).await {
                         Ok(mut socket) => {
                             info!("Connected to Bybit private WebSocket stream");
+                            // Incremental reconciliation right after a successful reconnect
+                            // 1) Sync open orders
+                            for symbol in &symbols {
+                                match client.list_open_orders(symbol).await {
+                                    Ok(orders) => {
+                                        for order in orders {
+                                            if let Err(err) = private_tx
+                                                .send(BrokerEvent::OrderUpdate(order))
+                                                .await
+                                            {
+                                                error!("failed to send reconciled order update: {err}");
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("failed to reconcile open orders for {symbol}: {e}");
+                                    }
+                                }
+                            }
+
+                            // 2) Fetch any executions since the last sync timestamp
+                            if let Some(bybit) = client
+                                .as_any()
+                                .downcast_ref::<tesser_bybit::BybitClient>()
+                            {
+                                let since = {
+                                    let guard = last_sync.lock().await;
+                                    // Default to 30 minutes ago if missing
+                                    guard.unwrap_or_else(|| Utc::now() - chrono::Duration::minutes(30))
+                                };
+                                match bybit.list_executions_since(since).await {
+                                    Ok(fills) => {
+                                        for fill in fills {
+                                            if let Err(err) = private_tx.send(BrokerEvent::Fill(fill)).await {
+                                                error!("failed to send reconciled fill: {err}");
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("failed to reconcile executions since {:?}: {}", since, e);
+                                    }
+                                }
+                                // Update last sync time to now regardless to avoid tight loops
+                                let mut guard = last_sync.lock().await;
+                                *guard = Some(Utc::now());
+                            }
+
                             while let Some(msg) = socket.next().await {
                                 if let Ok(Message::Text(text)) = msg {
                                     if let Ok(value) =
@@ -373,6 +428,7 @@ impl LiveRuntime {
             alert_task,
             private_event_rx,
             exec_backend: settings.exec_backend,
+            last_private_sync,
         })
     }
 

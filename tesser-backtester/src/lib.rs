@@ -46,6 +46,9 @@ pub struct ExecutionModel {
     pub slippage_bps: f64,
     /// Trading fee in basis points applied to notional.
     pub fee_bps: f64,
+    /// Pessimism factor within the OHLC range when simulating fills (0.0-1.0).
+    /// For buys, simulate closer to the high; for sells, closer to the low.
+    pub pessimism_factor: f64,
 }
 
 impl Default for ExecutionModel {
@@ -54,6 +57,7 @@ impl Default for ExecutionModel {
             latency_candles: 1,
             slippage_bps: 0.0,
             fee_bps: 0.0,
+            pessimism_factor: 0.25,
         }
     }
 }
@@ -203,7 +207,18 @@ impl Backtester {
     }
 
     fn build_fill(&self, order: &Order, candle: &Candle) -> Fill {
-        let mut price = candle.open;
+        // Price within the candle's OHLC band, biased pessimistically
+        let factor = self.config.execution.pessimism_factor.clamp(0.0, 1.0);
+        let mut price = match order.request.side {
+            Side::Buy => {
+                let band = (candle.high - candle.open).max(0.0);
+                candle.open + band * factor
+            }
+            Side::Sell => {
+                let band = (candle.open - candle.low).max(0.0);
+                candle.open - band * factor
+            }
+        };
         let slippage_rate = self.config.execution.slippage_bps / 10_000.0;
         if slippage_rate > 0.0 {
             price *= match order.request.side {

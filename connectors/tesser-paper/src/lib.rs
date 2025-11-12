@@ -150,9 +150,29 @@ impl PaperExecutionClient {
 
     /// Inspect conditional orders and emit fills for any whose trigger price was reached.
     pub async fn check_triggers(&self, candle: &Candle) -> BrokerResult<Vec<Fill>> {
+        use std::collections::{HashMap, HashSet};
         let mut triggered_fills = Vec::new();
         let mut pending = self.pending_orders.lock().await;
-        let mut still_pending = Vec::new();
+        let mut not_triggered: Vec<Order> = Vec::new();
+
+        // Track pairs of (-sl, -tp) by shared base id
+        #[derive(Default)]
+        struct Pair {
+            sl: Option<Order>,
+            tp: Option<Order>,
+        }
+        let mut pairs: HashMap<String, Pair> = HashMap::new();
+        let mut standalone_triggered: Vec<Order> = Vec::new();
+
+        let suffix_base = |cid: &str| -> Option<(String, &'static str)> {
+            if let Some(stripped) = cid.strip_suffix("-sl") {
+                return Some((stripped.to_string(), "sl"));
+            }
+            if let Some(stripped) = cid.strip_suffix("-tp") {
+                return Some((stripped.to_string(), "tp"));
+            }
+            None
+        };
 
         for order in pending.drain(..) {
             let triggered = match order.request.side {
@@ -167,10 +187,66 @@ impl PaperExecutionClient {
             };
 
             if triggered {
-                let fill_price = order.request.trigger_price.unwrap_or(candle.open);
-                let fill = self.create_fill_from_order(&order, fill_price, candle.timestamp);
-                triggered_fills.push(fill);
+                if let Some(cid) = order.request.client_order_id.as_ref() {
+                    if let Some((base, kind)) = suffix_base(cid) {
+                        let entry = pairs.entry(base).or_default();
+                        match kind {
+                            "sl" => entry.sl = Some(order),
+                            "tp" => entry.tp = Some(order),
+                            _ => {}
+                        }
+                        continue;
+                    }
+                }
+                // No recognizable suffix; treat as a standalone triggered conditional
+                standalone_triggered.push(order);
             } else {
+                not_triggered.push(order);
+            }
+        }
+
+        // Resolve conflicts: if both sl and tp trigger within same candle, choose the more conservative SL
+        let mut remove_bases: HashSet<String> = HashSet::new();
+        for (base, pair) in pairs.into_iter() {
+            match (pair.sl, pair.tp) {
+                (Some(sl), Some(_tp)) => {
+                    let fill_price = sl.request.trigger_price.unwrap_or(candle.open);
+                    let fill = self.create_fill_from_order(&sl, fill_price, candle.timestamp);
+                    triggered_fills.push(fill);
+                    remove_bases.insert(base);
+                }
+                (Some(sl), None) => {
+                    let fill_price = sl.request.trigger_price.unwrap_or(candle.open);
+                    let fill = self.create_fill_from_order(&sl, fill_price, candle.timestamp);
+                    triggered_fills.push(fill);
+                }
+                (None, Some(tp)) => {
+                    let fill_price = tp.request.trigger_price.unwrap_or(candle.open);
+                    let fill = self.create_fill_from_order(&tp, fill_price, candle.timestamp);
+                    triggered_fills.push(fill);
+                }
+                (None, None) => {}
+            }
+        }
+
+        // Standalone triggered orders
+        for order in standalone_triggered.into_iter() {
+            let fill_price = order.request.trigger_price.unwrap_or(candle.open);
+            let fill = self.create_fill_from_order(&order, fill_price, candle.timestamp);
+            triggered_fills.push(fill);
+        }
+
+        // Rebuild pending set, dropping any orders that share the base id of a conflict pair
+        let mut still_pending = Vec::new();
+        for order in not_triggered.into_iter() {
+            let drop_for_conflict = order
+                .request
+                .client_order_id
+                .as_ref()
+                .and_then(|cid| suffix_base(cid))
+                .map(|(base, _)| remove_bases.contains(&base))
+                .unwrap_or(false);
+            if !drop_for_conflict {
                 still_pending.push(order);
             }
         }

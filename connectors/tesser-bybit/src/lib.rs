@@ -13,7 +13,7 @@ use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
 use sha2::Sha256;
 use tesser_broker::{BrokerError, BrokerErrorKind, BrokerInfo, BrokerResult, ExecutionClient};
-use tesser_core::{AccountBalance, Order, OrderRequest, OrderStatus, Position, Side, TimeInForce};
+use tesser_core::{AccountBalance, Fill, Order, OrderRequest, OrderStatus, Position, Side, TimeInForce};
 use tracing::warn;
 
 pub mod ws;
@@ -234,6 +234,75 @@ impl BybitClient {
                 OrderStatus::PendingNew
             }
         }
+    }
+
+    /// Fetch executions (fills) since the provided timestamp (inclusive), paginated.
+    /// Maps the response into framework-native `Fill` records.
+    pub async fn list_executions_since(
+        &self,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> BrokerResult<Vec<Fill>> {
+        let mut cursor: Option<String> = None;
+        let mut out: Vec<Fill> = Vec::new();
+        let start_ms = since.timestamp_millis();
+        let end_ms = chrono::Utc::now().timestamp_millis();
+
+        loop {
+            let mut query = vec![
+                ("category".to_string(), self.config.category.clone()),
+                ("limit".to_string(), "100".to_string()),
+                ("startTime".to_string(), start_ms.to_string()),
+                ("endTime".to_string(), end_ms.to_string()),
+            ];
+            if let Some(ref cur) = cursor {
+                query.push(("cursor".to_string(), cur.clone()));
+            }
+            let resp: ApiResponse<ExecutionListResult> = self
+                .signed_request(Method::GET, "/v5/execution/list", Value::Null, Some(query))
+                .await?;
+
+            for item in resp.result.list.into_iter() {
+                // Filter only entries with non-zero quantity
+                if item.exec_qty.is_empty() {
+                    continue;
+                }
+                let exec_qty: f64 = item.exec_qty.parse().unwrap_or(0.0);
+                if exec_qty == 0.0 {
+                    continue;
+                }
+                let price: f64 = item.exec_price.parse().unwrap_or(0.0);
+                let fee: Option<f64> = if item.exec_fee.is_empty() {
+                    None
+                } else {
+                    item.exec_fee.parse().ok()
+                };
+                let ts = millis_to_datetime(&item.exec_time);
+                let side = match item.side.as_str() {
+                    "Buy" => Side::Buy,
+                    _ => Side::Sell,
+                };
+                out.push(Fill {
+                    order_id: item.order_id,
+                    symbol: item.symbol,
+                    side,
+                    fill_price: price,
+                    fill_quantity: exec_qty,
+                    fee,
+                    timestamp: ts,
+                });
+            }
+
+            if let Some(c) = resp.result.next_page_cursor {
+                if c.is_empty() {
+                    break;
+                }
+                cursor = Some(c);
+            } else {
+                break;
+            }
+        }
+
+        Ok(out)
     }
 }
 
@@ -504,6 +573,31 @@ struct PositionItem {
     unrealised_pnl: String,
     #[serde(rename = "updatedTime")]
     updated_time: String,
+}
+
+#[derive(Deserialize)]
+struct ExecutionListResult {
+    #[serde(rename = "nextPageCursor")]
+    next_page_cursor: Option<String>,
+    #[allow(dead_code)]
+    category: String,
+    list: Vec<ExecutionListItem>,
+}
+
+#[derive(Deserialize)]
+struct ExecutionListItem {
+    symbol: String,
+    #[serde(rename = "orderId")]
+    order_id: String,
+    side: String,
+    #[serde(rename = "execPrice")]
+    exec_price: String,
+    #[serde(rename = "execQty")]
+    exec_qty: String,
+    #[serde(rename = "execFee")]
+    exec_fee: String,
+    #[serde(rename = "execTime")]
+    exec_time: String,
 }
 
 #[cfg(test)]
