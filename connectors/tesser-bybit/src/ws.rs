@@ -561,6 +561,7 @@ impl BybitWsOrder {
                     order_type: OrderType::Market,
                     quantity: 0.0,
                     price: None,
+                    trigger_price: None,
                     time_in_force: None,
                     client_order_id: None,
                 }),

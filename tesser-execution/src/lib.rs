@@ -183,6 +183,45 @@ impl ExecutionEngine {
         };
 
         let order = self.send_order(request, &ctx).await?;
+
+        let stop_side = match signal.kind {
+            SignalKind::EnterLong | SignalKind::ExitShort => Side::Sell,
+            SignalKind::EnterShort | SignalKind::ExitLong => Side::Buy,
+            SignalKind::Flatten => return Ok(Some(order)),
+        };
+
+        if let Some(sl_price) = signal.stop_loss {
+            let sl_request = OrderRequest {
+                symbol: signal.symbol.clone(),
+                side: stop_side,
+                order_type: OrderType::StopMarket,
+                quantity: qty,
+                price: None,
+                trigger_price: Some(sl_price),
+                time_in_force: None,
+                client_order_id: None,
+            };
+            if let Err(e) = self.send_order(sl_request, &ctx).await {
+                warn!(error = %e, "failed to place stop-loss order");
+            }
+        }
+
+        if let Some(tp_price) = signal.take_profit {
+            let tp_request = OrderRequest {
+                symbol: signal.symbol.clone(),
+                side: stop_side,
+                order_type: OrderType::StopMarket,
+                quantity: qty,
+                price: None,
+                trigger_price: Some(tp_price),
+                time_in_force: None,
+                client_order_id: None,
+            };
+            if let Err(e) = self.send_order(tp_request, &ctx).await {
+                warn!(error = %e, "failed to place take-profit order");
+            }
+        }
+
         Ok(Some(order))
     }
 
@@ -193,6 +232,7 @@ impl ExecutionEngine {
             order_type: OrderType::Market,
             quantity: qty,
             price: None,
+            trigger_price: None,
             time_in_force: None,
             client_order_id: None,
         }

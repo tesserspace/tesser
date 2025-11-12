@@ -454,11 +454,11 @@ impl SmaCross {
             let fast_last = *fast.last().unwrap_or(fast_prev);
             let slow_last = *slow.last().unwrap_or(slow_prev);
             if fast_prev <= slow_prev && fast_last > slow_last {
-                self.signals.push(Signal::new(
-                    self.cfg.symbol.clone(),
-                    SignalKind::EnterLong,
-                    0.75,
-                ));
+                let mut signal = Signal::new(self.cfg.symbol.clone(), SignalKind::EnterLong, 0.75);
+                if let Some(last_candle) = ctx.candles().back() {
+                    signal.stop_loss = Some(last_candle.low * 0.98);
+                }
+                self.signals.push(signal);
             } else if fast_prev >= slow_prev && fast_last < slow_last {
                 self.signals.push(Signal::new(
                     self.cfg.symbol.clone(),

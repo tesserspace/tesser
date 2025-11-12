@@ -5,9 +5,10 @@ use std::collections::VecDeque;
 use anyhow::Context;
 use tesser_core::{Candle, Fill, Order, Quantity, Side, Symbol};
 use tesser_execution::{ExecutionEngine, RiskContext};
+use tesser_paper::PaperExecutionClient;
 use tesser_portfolio::{Portfolio, PortfolioConfig};
 use tesser_strategy::{Strategy, StrategyContext};
-use tracing::warn;
+use tracing::{info, warn};
 
 /// Configuration used by the backtest harness.
 pub struct BacktestConfig {
@@ -100,6 +101,34 @@ impl Backtester {
 
         for idx in 0..self.config.candles.len() {
             let candle = self.config.candles[idx].clone();
+
+            if let Some(paper_client) = self
+                .execution
+                .client()
+                .as_any()
+                .downcast_ref::<PaperExecutionClient>()
+            {
+                let triggered_fills = paper_client
+                    .check_triggers(&candle)
+                    .await
+                    .context("failed to check paper triggers")?;
+                for fill in triggered_fills {
+                    info!(
+                        order_id = %fill.order_id,
+                        price = fill.fill_price,
+                        "triggered paper conditional order"
+                    );
+                    self.portfolio
+                        .apply_fill(&fill)
+                        .context("failed to update portfolio with triggered fill")?;
+                    self.strategy_ctx
+                        .update_positions(self.portfolio.positions());
+                    self.strategy
+                        .on_fill(&self.strategy_ctx, &fill)
+                        .context("strategy failed on triggered fill event")?;
+                }
+            }
+
             self.process_pending_fills(idx, &candle)
                 .context("failed to settle pending fills")?;
 

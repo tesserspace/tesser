@@ -52,6 +52,8 @@ pub enum OrderType {
     Market,
     /// Execute at the provided limit price.
     Limit,
+    /// A conditional market order triggered by a price movement.
+    StopMarket,
 }
 
 /// Optional time-in-force constraints.
@@ -206,6 +208,7 @@ pub struct OrderRequest {
     pub order_type: OrderType,
     pub quantity: Quantity,
     pub price: Option<Price>,
+    pub trigger_price: Option<Price>,
     pub time_in_force: Option<TimeInForce>,
     pub client_order_id: Option<String>,
 }
@@ -296,6 +299,8 @@ pub struct Signal {
     pub confidence: f64,
     pub generated_at: DateTime<Utc>,
     pub note: Option<String>,
+    pub stop_loss: Option<Price>,
+    pub take_profit: Option<Price>,
 }
 
 /// The type of action a signal instructs the execution layer to take.
@@ -319,6 +324,8 @@ impl Signal {
             confidence,
             generated_at: Utc::now(),
             note: None,
+            stop_loss: None,
+            take_profit: None,
         }
     }
 }

@@ -213,6 +213,7 @@ impl BybitClient {
         match order_type {
             tesser_core::OrderType::Market => "Market",
             tesser_core::OrderType::Limit => "Limit",
+            tesser_core::OrderType::StopMarket => "Market",
         }
     }
 
@@ -243,16 +244,28 @@ impl ExecutionClient for BybitClient {
     }
 
     async fn place_order(&self, request: OrderRequest) -> BrokerResult<Order> {
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "category": self.config.category,
             "symbol": request.symbol,
             "side": Self::map_side(request.side),
-            "orderType": Self::map_order_type(request.order_type),
             "qty": Self::qty_string(request.quantity),
             "timeInForce": Self::map_time_in_force(request.time_in_force),
             "price": request.price,
             "orderLinkId": request.client_order_id,
         });
+
+        match request.order_type {
+            tesser_core::OrderType::Market | tesser_core::OrderType::Limit => {
+                payload["orderType"] = serde_json::json!(Self::map_order_type(request.order_type));
+            }
+            tesser_core::OrderType::StopMarket => {
+                let trigger_price = request.trigger_price.ok_or_else(|| {
+                    BrokerError::InvalidRequest("StopMarket order requires a trigger_price".into())
+                })?;
+                payload["orderType"] = serde_json::json!("Market");
+                payload["triggerPrice"] = serde_json::json!(format!("{}", trigger_price));
+            }
+        }
         let resp: ApiResponse<CreateOrderResult> = self
             .signed_request(Method::POST, "/v5/order/create", payload, None)
             .await?;
@@ -300,13 +313,19 @@ impl ExecutionClient for BybitClient {
                     } else {
                         Side::Sell
                     },
-                    order_type: if item.order_type == "Market" {
+                    order_type: if item.trigger_price.is_some() {
+                        tesser_core::OrderType::StopMarket
+                    } else if item.order_type == "Market" {
                         tesser_core::OrderType::Market
                     } else {
                         tesser_core::OrderType::Limit
                     },
                     quantity: item.qty.parse().unwrap_or(0.0),
                     price: item.price.parse().ok(),
+                    trigger_price: item
+                        .trigger_price
+                        .as_deref()
+                        .and_then(|value| value.parse().ok()),
                     time_in_force: None,
                     client_order_id: Some(item.order_link_id),
                 },
@@ -435,6 +454,8 @@ struct OrderItem {
     order_status: String,
     #[serde(rename = "orderType")]
     order_type: String,
+    #[serde(rename = "triggerPrice")]
+    trigger_price: Option<String>,
     #[serde(rename = "cumExecQty")]
     cum_exec_qty: String,
     #[serde(rename = "avgPrice")]
