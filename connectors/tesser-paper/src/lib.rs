@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 use tesser_broker::{BrokerError, BrokerInfo, BrokerResult, ExecutionClient, MarketStream};
 use tesser_core::{
-    AccountBalance, Candle, Fill, Order, OrderId, OrderRequest, OrderStatus, Position, Side,
-    Symbol, Tick,
+    AccountBalance, Candle, Fill, Order, OrderBook, OrderId, OrderRequest, OrderStatus, Position,
+    Side, Symbol, Tick,
 };
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::info;
@@ -205,5 +205,9 @@ impl MarketStream for PaperMarketStream {
 
     async fn next_candle(&mut self) -> BrokerResult<Option<Candle>> {
         Ok(self.candles.pop_front())
+    }
+
+    async fn next_order_book(&mut self) -> BrokerResult<Option<OrderBook>> {
+        Ok(None)
     }
 }

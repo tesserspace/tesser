@@ -499,8 +499,12 @@ impl LiveRuntime {
         }
         self.metrics.inc_signals(signals.len());
         for signal in signals {
+            let last_price = self.market.get(&signal.symbol).and_then(|s| s.price()).unwrap_or(0.0);
+
             let ctx = RiskContext {
                 signed_position_qty: self.portfolio.signed_position_qty(&signal.symbol),
+                portfolio_equity: self.portfolio.equity(),
+                last_price,
                 liquidate_only: self.portfolio.liquidate_only(),
             };
             match self.execution.handle_signal(signal.clone(), ctx).await {

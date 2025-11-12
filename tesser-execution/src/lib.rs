@@ -5,14 +5,21 @@ use std::sync::Arc;
 use anyhow::Context;
 use tesser_broker::{BrokerError, BrokerResult, ExecutionClient};
 use tesser_bybit::{BybitClient, BybitCredentials};
-use tesser_core::{Order, OrderRequest, OrderType, Quantity, Side, Signal, SignalKind, Symbol};
+use tesser_core::{
+    Order, OrderRequest, OrderType, Price, Quantity, Side, Signal, SignalKind, Symbol,
+};
 use thiserror::Error;
 use tracing::{info, warn};
 
 /// Determine how large an order should be for a given signal.
 pub trait OrderSizer: Send + Sync {
     /// Calculate the desired base asset quantity.
-    fn size(&self, signal: &Signal) -> anyhow::Result<Quantity>;
+    fn size(
+        &self,
+        signal: &Signal,
+        portfolio_equity: f64,
+        last_price: f64,
+    ) -> anyhow::Result<Quantity>;
 }
 
 /// Simplest possible sizer that always returns a fixed size.
@@ -21,8 +28,57 @@ pub struct FixedOrderSizer {
 }
 
 impl OrderSizer for FixedOrderSizer {
-    fn size(&self, _signal: &Signal) -> anyhow::Result<Quantity> {
+    fn size(
+        &self,
+        _signal: &Signal,
+        _portfolio_equity: f64,
+        _last_price: f64,
+    ) -> anyhow::Result<Quantity> {
         Ok(self.quantity)
+    }
+}
+
+/// Sizes orders based on a fixed percentage of portfolio equity.
+pub struct PortfolioPercentSizer {
+    /// The fraction of equity to allocate per trade (e.g., 0.02 for 2%).
+    pub percent: f64,
+}
+
+impl OrderSizer for PortfolioPercentSizer {
+    fn size(
+        &self,
+        _signal: &Signal,
+        portfolio_equity: f64,
+        last_price: f64,
+    ) -> anyhow::Result<Quantity> {
+        if last_price <= 0.0 {
+            anyhow::bail!("cannot size order with zero or negative price");
+        }
+        let notional = portfolio_equity * self.percent;
+        Ok(notional / last_price)
+    }
+}
+
+/// Sizes orders based on position volatility. (Placeholder)
+#[derive(Default)]
+pub struct RiskAdjustedSizer {
+    /// Target risk contribution per trade, as a fraction of equity (e.g., 0.002 for 0.2%).
+    pub risk_fraction: f64,
+}
+
+impl OrderSizer for RiskAdjustedSizer {
+    fn size(
+        &self,
+        _signal: &Signal,
+        portfolio_equity: f64,
+        last_price: f64,
+    ) -> anyhow::Result<Quantity> {
+        // In a real implementation, you would calculate the instrument's volatility here.
+        // For now, we'll use a fixed placeholder volatility of 2%.
+        let volatility = 0.02; // Placeholder
+        let dollars_at_risk = portfolio_equity * self.risk_fraction;
+        let quantity = dollars_at_risk / (last_price * volatility);
+        Ok(quantity)
     }
 }
 
@@ -31,6 +87,10 @@ impl OrderSizer for FixedOrderSizer {
 pub struct RiskContext {
     /// Signed quantity of the current open position (long positive, short negative).
     pub signed_position_qty: f64,
+    /// Total current portfolio equity.
+    pub portfolio_equity: Price,
+    /// Last known price for the signal's symbol.
+    pub last_price: Price,
     /// When true, only exposure-reducing orders are allowed.
     pub liquidate_only: bool,
 }
@@ -164,7 +224,7 @@ impl ExecutionEngine {
     ) -> BrokerResult<Option<Order>> {
         let qty = self
             .sizer
-            .size(&signal)
+            .size(&signal, ctx.portfolio_equity, ctx.last_price)
             .context("failed to determine order size")
             .map_err(|err| BrokerError::Other(err.to_string()))?;
 

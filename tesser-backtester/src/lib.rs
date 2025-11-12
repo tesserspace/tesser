@@ -1,8 +1,11 @@
 //! Basic backtesting harness that ties strategies to the paper connector.
 
+pub mod reporting;
+
 use std::collections::VecDeque;
 
 use anyhow::Context;
+use reporting::{PerformanceReport, Reporter};
 use tesser_core::{Candle, Fill, Order, Quantity, Side, Symbol};
 use tesser_execution::{ExecutionEngine, RiskContext};
 use tesser_paper::PaperExecutionClient;
@@ -16,6 +19,7 @@ pub struct BacktestConfig {
     pub candles: Vec<Candle>,
     pub order_quantity: Quantity,
     pub history: usize,
+    pub initial_equity: f64,
     pub execution: ExecutionModel,
 }
 
@@ -27,6 +31,7 @@ impl BacktestConfig {
             candles,
             order_quantity: 1.0,
             history: 512,
+            initial_equity: 10_000.0,
             execution: ExecutionModel::default(),
         }
     }
@@ -83,9 +88,13 @@ impl Backtester {
         strategy: Box<dyn Strategy>,
         execution: ExecutionEngine,
     ) -> Self {
+        let portfolio_config = PortfolioConfig {
+            initial_equity: config.initial_equity,
+            max_drawdown: None, // Disable liquidate-only for backtests for now
+        };
         Self {
             strategy_ctx: StrategyContext::new(config.history),
-            portfolio: Portfolio::new(PortfolioConfig::default()),
+            portfolio: Portfolio::new(portfolio_config),
             config,
             strategy,
             execution,
@@ -94,10 +103,9 @@ impl Backtester {
     }
 
     /// Execute the backtest using the provided candles.
-    pub async fn run(mut self) -> anyhow::Result<BacktestReport> {
-        let mut signals_emitted = 0;
-        let mut orders_sent = 0;
-        let mut dropped_orders = 0;
+    pub async fn run(mut self) -> anyhow::Result<PerformanceReport> {
+        let mut equity_curve = Vec::new();
+        let mut all_fills = Vec::new();
 
         for idx in 0..self.config.candles.len() {
             let candle = self.config.candles[idx].clone();
@@ -118,9 +126,11 @@ impl Backtester {
                         price = fill.fill_price,
                         "triggered paper conditional order"
                     );
-                    self.portfolio
+                    self
+                        .portfolio
                         .apply_fill(&fill)
                         .context("failed to update portfolio with triggered fill")?;
+                    all_fills.push(fill.clone());
                     self.strategy_ctx
                         .update_positions(self.portfolio.positions());
                     self.strategy
@@ -129,7 +139,7 @@ impl Backtester {
                 }
             }
 
-            self.process_pending_fills(idx, &candle)
+            self.process_pending_fills(idx, &candle, &mut all_fills)
                 .context("failed to settle pending fills")?;
 
             self.strategy_ctx.push_candle(candle.clone());
@@ -138,17 +148,16 @@ impl Backtester {
                 .context("strategy failed on candle")?;
             let signals = self.strategy.drain_signals();
             for signal in signals {
-                signals_emitted += 1;
                 let ctx = RiskContext {
                     signed_position_qty: self.portfolio.signed_position_qty(&signal.symbol),
+                    portfolio_equity: self.portfolio.equity(),
+                    last_price: candle.close,
                     liquidate_only: false,
                 };
                 if let Some(order) = self.execution.handle_signal(signal, ctx).await? {
-                    orders_sent += 1;
                     let latency = self.config.execution.latency_candles.max(1);
                     let due_index = idx + latency;
                     if due_index >= self.config.candles.len() {
-                        dropped_orders += 1;
                         warn!(
                             order_id = %order.id,
                             due_index,
@@ -159,28 +168,29 @@ impl Backtester {
                     self.pending.push_back(PendingFill { order, due_index });
                 }
             }
+
+            equity_curve.push((candle.timestamp, self.portfolio.equity()));
         }
 
-        Ok(BacktestReport {
-            signals_emitted,
-            orders_sent,
-            ending_equity: self.portfolio.equity(),
-            dropped_orders,
-        })
+        let reporter = Reporter::new(self.config.initial_equity, equity_curve, all_fills);
+        reporter.calculate()
     }
 
     fn process_pending_fills(
         &mut self,
         candle_index: usize,
         candle: &Candle,
+        all_fills: &mut Vec<Fill>,
     ) -> anyhow::Result<()> {
         let mut remaining = VecDeque::new();
         while let Some(pending) = self.pending.pop_front() {
             if pending.due_index == candle_index {
                 let fill = self.build_fill(&pending.order, candle);
-                self.portfolio
+                self
+                    .portfolio
                     .apply_fill(&fill)
                     .context("failed to update portfolio with fill")?;
+                all_fills.push(fill.clone());
                 self.strategy_ctx
                     .update_positions(self.portfolio.positions());
                 self.strategy

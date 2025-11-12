@@ -65,14 +65,18 @@ impl FromStr for PublicChannel {
 pub enum BybitSubscription {
     Trades { symbol: String },
     Kline { symbol: String, interval: Interval },
+    OrderBook { symbol: String, depth: usize },
 }
 
 impl BybitSubscription {
     fn topic(&self) -> String {
         match self {
-            Self::Trades { symbol } => format!("publicTrade.{symbol}"),
             Self::Kline { symbol, interval } => {
                 format!("kline.{}.{}", interval.to_bybit(), symbol)
+            }
+            Self::Trades { symbol } => format!("publicTrade.{symbol}"),
+            Self::OrderBook { symbol, depth } => {
+                format!("orderbook.{depth}.{symbol}")
             }
         }
     }
@@ -88,6 +92,7 @@ pub struct BybitMarketStream {
     command_tx: mpsc::UnboundedSender<WsCommand>,
     tick_rx: Mutex<mpsc::Receiver<Tick>>,
     candle_rx: Mutex<mpsc::Receiver<Candle>>,
+    order_book_rx: Mutex<mpsc::Receiver<tesser_core::OrderBook>>,
 }
 
 impl BybitMarketStream {
@@ -103,8 +108,9 @@ impl BybitMarketStream {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (tick_tx, tick_rx) = mpsc::channel(2048);
         let (candle_tx, candle_rx) = mpsc::channel(1024);
+        let (order_book_tx, order_book_rx) = mpsc::channel(256);
         tokio::spawn(async move {
-            if let Err(err) = run_ws_loop(ws, command_rx, tick_tx, candle_tx).await {
+            if let Err(err) = run_ws_loop(ws, command_rx, tick_tx, candle_tx, order_book_tx).await {
                 error!(error = %err, "bybit ws loop exited unexpectedly");
             }
         });
@@ -117,6 +123,7 @@ impl BybitMarketStream {
             command_tx,
             tick_rx: Mutex::new(tick_rx),
             candle_rx: Mutex::new(candle_rx),
+            order_book_rx: Mutex::new(order_book_rx),
         })
     }
 }
@@ -216,6 +223,15 @@ impl MarketStream for BybitMarketStream {
             Err(TryRecvError::Disconnected) => Ok(None),
         }
     }
+
+    async fn next_order_book(&mut self) -> BrokerResult<Option<tesser_core::OrderBook>> {
+        let mut rx = self.order_book_rx.lock().await;
+        match rx.try_recv() {
+            Ok(book) => Ok(Some(book)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Disconnected) => Ok(None),
+        }
+    }
 }
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -225,6 +241,7 @@ async fn run_ws_loop(
     mut commands: mpsc::UnboundedReceiver<WsCommand>,
     tick_tx: mpsc::Sender<Tick>,
     candle_tx: mpsc::Sender<Candle>,
+    order_book_tx: mpsc::Sender<tesser_core::OrderBook>,
 ) -> BrokerResult<()> {
     let mut heartbeat = interval(Duration::from_secs(20));
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -249,7 +266,7 @@ async fn run_ws_loop(
                             .await
                             .map_err(|err| BrokerError::from_display(err, BrokerErrorKind::Transport))?;
                     }
-                    Some(Ok(message)) => handle_message(message, &tick_tx, &candle_tx).await?,
+                    Some(Ok(message)) => handle_message(message, &tick_tx, &candle_tx, &order_book_tx).await?,
                     Some(Err(err)) => return Err(BrokerError::from_display(err, BrokerErrorKind::Transport)),
                     None => break,
                 }
@@ -286,14 +303,15 @@ async fn handle_message(
     message: Message,
     tick_tx: &mpsc::Sender<Tick>,
     candle_tx: &mpsc::Sender<Candle>,
+    order_book_tx: &mpsc::Sender<tesser_core::OrderBook>,
 ) -> BrokerResult<()> {
     match message {
         Message::Text(text) => {
-            process_text_message(&text, tick_tx, candle_tx).await;
+            process_text_message(&text, tick_tx, candle_tx, order_book_tx).await;
         }
         Message::Binary(bytes) => {
             if let Ok(text) = String::from_utf8(bytes) {
-                process_text_message(&text, tick_tx, candle_tx).await;
+                process_text_message(&text, tick_tx, candle_tx, order_book_tx).await;
             } else {
                 warn!("received non UTF-8 binary payload from Bybit ws");
             }
@@ -317,6 +335,7 @@ async fn process_text_message(
     text: &str,
     tick_tx: &mpsc::Sender<Tick>,
     candle_tx: &mpsc::Sender<Candle>,
+    order_book_tx: &mpsc::Sender<tesser_core::OrderBook>,
 ) {
     if let Ok(value) = serde_json::from_str::<Value>(text) {
         if let Some(topic) = value.get("topic").and_then(|t| t.as_str()) {
@@ -327,6 +346,10 @@ async fn process_text_message(
             } else if topic.starts_with("kline") {
                 if let Ok(payload) = serde_json::from_value::<KlineMessage>(value.clone()) {
                     forward_klines(payload, candle_tx).await;
+                }
+            } else if topic.starts_with("orderbook") {
+                if let Ok(payload) = serde_json::from_value::<OrderbookMessage>(value.clone()) {
+                    forward_order_books(payload, order_book_tx).await;
                 }
             } else if topic == "order" {
                 if let Ok(payload) = serde_json::from_value::<PrivateMessage<BybitWsOrder>>(value) {
@@ -509,6 +532,60 @@ fn parse_interval(value: &str) -> Option<Interval> {
         "D" | "d" => Some(Interval::OneDay),
         _ => None,
     }
+}
+
+#[derive(Deserialize, Debug)]
+struct OrderbookMessage {
+    #[serde(rename = "topic")]
+    _topic: String,
+    #[serde(rename = "type")]
+    _msg_type: String, // "snapshot" or "delta"
+    ts: i64,
+    data: OrderbookData,
+}
+
+#[derive(Deserialize, Debug)]
+struct OrderbookData {
+    s: String,
+    b: Vec<[String; 2]>, // Bids
+    a: Vec<[String; 2]>, // Asks
+    #[serde(rename = "u")]
+    _u: i64,
+}
+
+async fn forward_order_books(
+    payload: OrderbookMessage,
+    order_book_tx: &mpsc::Sender<tesser_core::OrderBook>,
+) {
+    // Note: For a production system, you'd want to maintain a local book and apply deltas.
+    // For simplicity here, we'll treat both snapshots and deltas as full snapshots,
+    // which is sufficient for many microstructure strategies that just need the latest state.
+    if let Some(book) = build_order_book(payload) {
+        if order_book_tx.send(book).await.is_err() {
+            warn!("dropping order book; downstream receiver closed");
+        }
+    }
+}
+
+fn build_order_book(msg: OrderbookMessage) -> Option<tesser_core::OrderBook> {
+    let to_levels = |entries: &[[String; 2]]| -> Vec<tesser_core::OrderBookLevel> {
+        entries
+            .iter()
+            .filter_map(|entry| {
+                Some(tesser_core::OrderBookLevel {
+                    price: entry.first()?.parse().ok()?,
+                    size: entry.get(1)?.parse().ok()?,
+                })
+            })
+            .collect()
+    };
+
+    Some(tesser_core::OrderBook {
+        symbol: msg.data.s,
+        bids: to_levels(&msg.data.b),
+        asks: to_levels(&msg.data.a),
+        timestamp: millis_to_datetime(msg.ts)?,
+    })
 }
 
 fn millis_to_datetime(value: i64) -> Option<DateTime<Utc>> {

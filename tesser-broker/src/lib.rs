@@ -4,7 +4,9 @@ use std::any::Any;
 
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use tesser_core::{AccountBalance, Candle, Order, OrderId, OrderRequest, Position, Signal, Tick};
+use tesser_core::{
+    AccountBalance, Candle, Order, OrderBook, OrderId, OrderRequest, Position, Signal, Tick,
+};
 use thiserror::Error;
 
 /// Convenience alias for broker results.
@@ -88,6 +90,9 @@ pub trait MarketStream: Send + Sync {
 
     /// Fetch the next candle when available.
     async fn next_candle(&mut self) -> BrokerResult<Option<Candle>>;
+
+    /// Fetch the next order book snapshot.
+    async fn next_order_book(&mut self) -> BrokerResult<Option<OrderBook>>;
 }
 
 /// Trait describing the execution interface (REST or WebSocket).

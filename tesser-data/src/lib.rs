@@ -9,7 +9,7 @@ use tokio::time::{sleep, Duration};
 use tracing::instrument;
 
 use tesser_broker::{BrokerResult, MarketStream};
-use tesser_core::{Candle, Tick};
+use tesser_core::{Candle, OrderBook, Tick};
 
 /// Abstract handler for tick events.
 #[async_trait]
@@ -23,6 +23,13 @@ pub trait TickHandler: Send {
 pub trait CandleHandler: Send {
     /// Called for each incoming candle.
     async fn on_candle(&mut self, candle: Candle) -> anyhow::Result<()>;
+}
+
+/// Abstract handler for order book events.
+#[async_trait]
+pub trait OrderBookHandler: Send {
+    /// Called for each incoming order book snapshot.
+    async fn on_order_book(&mut self, book: OrderBook) -> anyhow::Result<()>;
 }
 
 /// Pulls data from a [`MarketStream`] and forwards it to registered handlers.
@@ -49,6 +56,7 @@ where
         &mut self,
         tick_handler: &mut dyn TickHandler,
         candle_handler: &mut dyn CandleHandler,
+        order_book_handler: &mut dyn OrderBookHandler,
     ) -> BrokerResult<()> {
         loop {
             let mut progressed = false;
@@ -67,6 +75,15 @@ where
                     .on_candle(candle)
                     .await
                     .context("candle handler failed")
+                    .map_err(|err| tesser_broker::BrokerError::Other(err.to_string()))?;
+                progressed = true;
+            }
+
+            if let Some(book) = self.stream.next_order_book().await? {
+                order_book_handler
+                    .on_order_book(book)
+                    .await
+                    .context("order book handler failed")
                     .map_err(|err| tesser_broker::BrokerError::Other(err.to_string()))?;
                 progressed = true;
             }
@@ -118,6 +135,10 @@ mod tests {
         async fn next_candle(&mut self) -> BrokerResult<Option<Candle>> {
             Ok(self.candles.pop())
         }
+
+        async fn next_order_book(&mut self) -> BrokerResult<Option<tesser_core::OrderBook>> {
+            Ok(None)
+        }
     }
 
     struct CountHandler {
@@ -137,6 +158,13 @@ mod tests {
     impl CandleHandler for CountHandler {
         async fn on_candle(&mut self, _candle: Candle) -> anyhow::Result<()> {
             self.candles.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl OrderBookHandler for CountHandler {
+        async fn on_order_book(&mut self, _book: OrderBook) -> anyhow::Result<()> {
             Ok(())
         }
     }
@@ -172,9 +200,17 @@ mod tests {
             ticks: ticks_counter.clone(),
             candles: candles_counter.clone(),
         };
+        let mut order_book_handler = CountHandler {
+            ticks: ticks_counter.clone(),
+            candles: candles_counter.clone(),
+        };
         let _ = tokio::time::timeout(Duration::from_millis(50), async {
             distributor
-                .run(&mut tick_handler, &mut candle_handler)
+                .run(
+                    &mut tick_handler,
+                    &mut candle_handler,
+                    &mut order_book_handler,
+                )
                 .await
         })
         .await;

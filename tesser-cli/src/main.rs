@@ -19,13 +19,17 @@ use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
 use clap::{Args, Parser, Subcommand};
 use csv::Writer;
 use serde::{Deserialize, Serialize};
-use tesser_backtester::{BacktestConfig, BacktestReport, Backtester};
+use tesser_backtester::reporting::PerformanceReport;
+use tesser_backtester::{BacktestConfig, Backtester};
 use tesser_broker::ExecutionClient;
 use tesser_bybit::PublicChannel;
 use tesser_config::{load_config, AppConfig, RiskManagementConfig};
 use tesser_core::{Candle, Interval, Symbol};
 use tesser_data::download::{BybitDownloader, KlineRequest};
-use tesser_execution::{ExecutionEngine, FixedOrderSizer, NoopRiskChecker};
+use tesser_execution::{
+    ExecutionEngine, FixedOrderSizer, NoopRiskChecker, OrderSizer, PortfolioPercentSizer,
+    RiskAdjustedSizer,
+};
 use tesser_paper::PaperExecutionClient;
 use tesser_strategy::{builtin_strategy_names, load_strategy};
 use tracing::{info, warn};
@@ -330,6 +334,9 @@ struct BacktestRunArgs {
     /// Number of candles between signal and execution
     #[arg(long, default_value_t = 1)]
     latency_candles: usize,
+    /// Order sizer (e.g. "fixed:0.01", "percent:0.02")
+    #[arg(long, default_value = "fixed:0.01")]
+    sizer: String,
 }
 
 #[derive(Args)]
@@ -354,6 +361,9 @@ struct BacktestBatchArgs {
     /// Number of candles between signal and execution
     #[arg(long, default_value_t = 1)]
     latency_candles: usize,
+    /// Order sizer (e.g. "fixed:0.01", "percent:0.02")
+    #[arg(long, default_value = "fixed:0.01")]
+    sizer: String,
 }
 
 #[derive(Args)]
@@ -406,6 +416,12 @@ struct LiveRunArgs {
     risk_max_position_qty: Option<f64>,
     #[arg(long)]
     risk_max_drawdown: Option<f64>,
+    /// Bybit orderbook depth to subscribe to (e.g., 1, 25, 50)
+    #[arg(long)]
+    orderbook_depth: Option<usize>,
+    /// Order sizer (e.g. "fixed:0.01", "percent:0.02")
+    #[arg(long, default_value = "fixed:1.0")]
+    sizer: String,
 }
 
 impl LiveRunArgs {
@@ -550,7 +566,7 @@ async fn handle_state(cmd: StateCommand, config: &AppConfig) -> Result<()> {
 }
 
 impl BacktestRunArgs {
-    async fn run(&self, _config: &AppConfig) -> Result<()> {
+    async fn run(&self, config: &AppConfig) -> Result<()> {
         let contents = std::fs::read_to_string(&self.strategy_config)
             .with_context(|| format!("failed to read {}", self.strategy_config.display()))?;
         let def: StrategyConfigFile =
@@ -582,16 +598,12 @@ impl BacktestRunArgs {
         candles.sort_by_key(|c| c.timestamp);
 
         let execution_client: Arc<dyn ExecutionClient> = Arc::new(PaperExecutionClient::default());
-        let execution = ExecutionEngine::new(
-            execution_client,
-            Box::new(FixedOrderSizer {
-                quantity: self.quantity,
-            }),
-            Arc::new(NoopRiskChecker),
-        );
+        let sizer = parse_sizer(&self.sizer, Some(self.quantity))?;
+        let execution = ExecutionEngine::new(execution_client, sizer, Arc::new(NoopRiskChecker));
 
         let mut cfg = BacktestConfig::new(symbols[0].clone(), candles);
         cfg.order_quantity = self.quantity;
+        cfg.initial_equity = config.backtest.initial_equity;
         cfg.execution.slippage_bps = self.slippage_bps.max(0.0);
         cfg.execution.fee_bps = self.fee_bps.max(0.0);
         cfg.execution.latency_candles = self.latency_candles.max(1);
@@ -600,13 +612,13 @@ impl BacktestRunArgs {
             .run()
             .await
             .context("backtest failed")?;
-        print_report(report);
+        print_report(&report);
         Ok(())
     }
 }
 
 impl BacktestBatchArgs {
-    async fn run(&self, _config: &AppConfig) -> Result<()> {
+    async fn run(&self, config: &AppConfig) -> Result<()> {
         if self.config_paths.is_empty() {
             return Err(anyhow!("provide at least one --config path"));
         }
@@ -622,19 +634,16 @@ impl BacktestBatchArgs {
                 toml::from_str(&contents).context("failed to parse strategy config file")?;
             let strategy = load_strategy(&def.name, def.params)
                 .with_context(|| format!("failed to configure strategy {}", def.name))?;
+            let sizer = parse_sizer(&self.sizer, Some(self.quantity))?;
             let mut candles = load_candles_from_paths(&self.data_paths)?;
             candles.sort_by_key(|c| c.timestamp);
             let execution_client: Arc<dyn ExecutionClient> =
                 Arc::new(PaperExecutionClient::default());
-            let execution = ExecutionEngine::new(
-                execution_client,
-                Box::new(FixedOrderSizer {
-                    quantity: self.quantity,
-                }),
-                Arc::new(NoopRiskChecker),
-            );
+            let execution =
+                ExecutionEngine::new(execution_client, sizer, Arc::new(NoopRiskChecker));
             let mut cfg = BacktestConfig::new(strategy.symbol().to_string(), candles);
             cfg.order_quantity = self.quantity;
+            cfg.initial_equity = config.backtest.initial_equity;
             cfg.execution.slippage_bps = self.slippage_bps.max(0.0);
             cfg.execution.fee_bps = self.fee_bps.max(0.0);
             cfg.execution.latency_candles = self.latency_candles.max(1);
@@ -643,19 +652,11 @@ impl BacktestBatchArgs {
                 .run()
                 .await
                 .with_context(|| format!("backtest failed for {}", config_path.display()))?;
-            println!(
-                "[batch] {} -> signals {}, orders {}, dropped {}, ending equity {:.2}",
-                config_path.display(),
-                report.signals_emitted,
-                report.orders_sent,
-                report.dropped_orders,
-                report.ending_equity
-            );
             aggregated.push(BatchRow {
                 config: config_path.display().to_string(),
-                signals: report.signals_emitted,
-                orders: report.orders_sent,
-                dropped_orders: report.dropped_orders,
+                signals: 0, // Legacy field, can be removed or calculated from report
+                orders: 0,  // Legacy field, can be removed or calculated from report
+                dropped_orders: 0, // Legacy field, can be removed or calculated from report
                 ending_equity: report.ending_equity,
             });
         }
@@ -817,12 +818,8 @@ fn print_validation_summary(outcome: &ValidationOutcome) {
     }
 }
 
-fn print_report(report: BacktestReport) {
-    println!("Backtest completed:");
-    println!("  Signals generated: {}", report.signals_emitted);
-    println!("  Orders sent: {}", report.orders_sent);
-    println!("  Orders dropped: {}", report.dropped_orders);
-    println!("  Ending equity: {:.2}", report.ending_equity);
+fn print_report(report: &PerformanceReport) {
+    println!("\n{}", report);
 }
 
 fn synth_candles(symbol: &str, len: usize, offset_minutes: i64) -> Vec<Candle> {
@@ -1005,4 +1002,29 @@ fn write_batch_report(path: &Path, rows: &[BatchRow]) -> Result<()> {
     }
     writer.flush()?;
     Ok(())
+}
+
+fn parse_sizer(value: &str, cli_quantity: Option<f64>) -> Result<Box<dyn OrderSizer>> {
+    let parts: Vec<_> = value.split(':').collect();
+    match parts.as_slice() {
+        ["fixed", val] => {
+            let quantity = val.parse::<f64>().context("invalid fixed sizer quantity")?;
+            Ok(Box::new(FixedOrderSizer { quantity }))
+        }
+        ["fixed"] => {
+            let quantity = cli_quantity.unwrap_or(1.0);
+            Ok(Box::new(FixedOrderSizer { quantity }))
+        }
+        ["percent", val] => {
+            let percent = val.parse::<f64>().context("invalid percent sizer value")?;
+            Ok(Box::new(PortfolioPercentSizer { percent }))
+        }
+        ["risk-adjusted", val] => {
+            let risk_fraction = val.parse::<f64>().context("invalid risk fraction value")?;
+            Ok(Box::new(RiskAdjustedSizer { risk_fraction }))
+        }
+        _ => Err(anyhow!(
+            "invalid sizer format, expected 'fixed:value', 'percent:value', or 'risk-adjusted:value'"
+        )),
+    }
 }
