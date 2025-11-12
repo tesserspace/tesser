@@ -22,7 +22,7 @@ use tesser_bybit::{
     BybitClient, BybitConfig, BybitCredentials, BybitMarketStream, BybitSubscription, PublicChannel,
 };
 use tesser_config::{AlertingConfig, ExchangeConfig, RiskManagementConfig};
-use tesser_core::{Candle, Fill, Interval, Order, OrderStatus, Price, Side};
+use tesser_core::{Candle, Fill, Interval, Order, OrderBook, OrderStatus, Price, Side};
 use tesser_execution::{
     BasicRiskChecker, ExecutionEngine, FixedOrderSizer, OrderOrchestrator, PreTradeRiskChecker,
     RiskContext, RiskLimits, SqliteAlgoStateRepository,
@@ -55,6 +55,8 @@ impl ExecutionBackend {
         matches!(self, Self::Paper)
     }
 }
+
+const DEFAULT_ORDER_BOOK_DEPTH: usize = 50;
 
 pub struct LiveSessionSettings {
     pub category: PublicChannel,
@@ -110,6 +112,13 @@ pub async fn run_live(
             })
             .await
             .with_context(|| format!("failed to subscribe to klines for {symbol}"))?;
+        stream
+            .subscribe(BybitSubscription::OrderBook {
+                symbol: symbol.clone(),
+                depth: DEFAULT_ORDER_BOOK_DEPTH,
+            })
+            .await
+            .with_context(|| format!("failed to subscribe to order books for {symbol}"))?;
     }
 
     let execution_client = build_execution_client(&exchange, &settings)?;
@@ -463,6 +472,11 @@ impl LiveRuntime {
                 self.handle_candle(candle).await?;
             }
 
+            if let Some(book) = self.stream.next_order_book().await? {
+                progressed = true;
+                self.handle_order_book(book).await?;
+            }
+
             tokio::select! {
                 biased;
                 Some(event) = self.private_event_rx.recv() => {
@@ -624,6 +638,17 @@ impl LiveRuntime {
             .last_prices
             .insert(candle.symbol.clone(), candle.close);
         self.save_state().await?;
+        self.process_signals().await?;
+        Ok(())
+    }
+
+    async fn handle_order_book(&mut self, book: OrderBook) -> Result<()> {
+        self.metrics.update_staleness(0.0);
+        self.alerts.heartbeat().await;
+        self.strategy_ctx.push_order_book(book.clone());
+        self.strategy
+            .on_order_book(&self.strategy_ctx, &book)
+            .context("strategy failure on order book")?;
         self.process_signals().await?;
         Ok(())
     }
