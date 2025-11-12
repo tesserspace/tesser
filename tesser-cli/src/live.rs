@@ -219,16 +219,43 @@ impl LiveRuntime {
                 LiveState::default()
             }
         };
+        let mut live_bootstrap = None;
+        if matches!(settings.exec_backend, ExecutionBackend::Live) {
+            info!("Synchronizing portfolio state from exchange");
+            let execution_client = orchestrator.execution_engine().client();
+            let positions = execution_client
+                .positions()
+                .await
+                .context("failed to fetch remote positions")?;
+            let balances = execution_client
+                .account_balances()
+                .await
+                .context("failed to fetch remote account balances")?;
+            let mut open_orders = Vec::new();
+            for symbol in &symbols {
+                let mut symbol_orders = execution_client
+                    .list_open_orders(symbol)
+                    .await
+                    .with_context(|| format!("failed to fetch open orders for {symbol}"))?;
+                open_orders.append(&mut symbol_orders);
+            }
+            persisted.open_orders = open_orders;
+            live_bootstrap = Some((positions, balances));
+        }
+
         let portfolio_cfg = PortfolioConfig {
             initial_equity: settings.initial_equity,
             max_drawdown: Some(settings.risk.max_drawdown),
         };
-        let portfolio = if let Some(snapshot) = persisted.portfolio.take() {
+        let portfolio = if let Some((positions, balances)) = live_bootstrap {
+            Portfolio::from_exchange_state(positions, balances, portfolio_cfg.clone())
+        } else if let Some(snapshot) = persisted.portfolio.take() {
             Portfolio::from_state(snapshot, portfolio_cfg.clone())
         } else {
             Portfolio::new(portfolio_cfg.clone())
         };
         strategy_ctx.update_positions(portfolio.positions());
+        persisted.portfolio = Some(portfolio.snapshot());
 
         let mut market = HashMap::new();
         for symbol in &symbols {

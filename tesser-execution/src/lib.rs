@@ -242,13 +242,32 @@ impl ExecutionEngine {
             return Ok(None);
         }
 
+        let client_order_id = signal.id.to_string();
         let request = match signal.kind {
-            SignalKind::EnterLong => self.build_request(signal.symbol.clone(), Side::Buy, qty),
-            SignalKind::ExitLong | SignalKind::Flatten => {
-                self.build_request(signal.symbol.clone(), Side::Sell, qty)
-            }
-            SignalKind::EnterShort => self.build_request(signal.symbol.clone(), Side::Sell, qty),
-            SignalKind::ExitShort => self.build_request(signal.symbol.clone(), Side::Buy, qty),
+            SignalKind::EnterLong => self.build_request(
+                signal.symbol.clone(),
+                Side::Buy,
+                qty,
+                Some(client_order_id.clone()),
+            ),
+            SignalKind::ExitLong | SignalKind::Flatten => self.build_request(
+                signal.symbol.clone(),
+                Side::Sell,
+                qty,
+                Some(client_order_id.clone()),
+            ),
+            SignalKind::EnterShort => self.build_request(
+                signal.symbol.clone(),
+                Side::Sell,
+                qty,
+                Some(client_order_id.clone()),
+            ),
+            SignalKind::ExitShort => self.build_request(
+                signal.symbol.clone(),
+                Side::Buy,
+                qty,
+                Some(client_order_id.clone()),
+            ),
         };
 
         let order = self.send_order(request, &ctx).await?;
@@ -268,7 +287,7 @@ impl ExecutionEngine {
                 price: None,
                 trigger_price: Some(sl_price),
                 time_in_force: None,
-                client_order_id: None,
+                client_order_id: Some(format!("{}-sl", signal.id)),
                 take_profit: None,
                 stop_loss: None,
                 display_quantity: None,
@@ -287,7 +306,7 @@ impl ExecutionEngine {
                 price: None,
                 trigger_price: Some(tp_price),
                 time_in_force: None,
-                client_order_id: None,
+                client_order_id: Some(format!("{}-tp", signal.id)),
                 take_profit: None,
                 stop_loss: None,
                 display_quantity: None,
@@ -300,7 +319,13 @@ impl ExecutionEngine {
         Ok(Some(order))
     }
 
-    fn build_request(&self, symbol: Symbol, side: Side, qty: Quantity) -> OrderRequest {
+    fn build_request(
+        &self,
+        symbol: Symbol,
+        side: Side,
+        qty: Quantity,
+        client_order_id: Option<String>,
+    ) -> OrderRequest {
         OrderRequest {
             symbol,
             side,
@@ -309,7 +334,7 @@ impl ExecutionEngine {
             price: None,
             trigger_price: None,
             time_in_force: None,
-            client_order_id: None,
+            client_order_id,
             take_profit: None,
             stop_loss: None,
             display_quantity: None,

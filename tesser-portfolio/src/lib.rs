@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use tesser_core::{Fill, Order, Position, Price, Side, Symbol};
+use tesser_core::{AccountBalance, Fill, Order, Position, Price, Side, Symbol};
 use thiserror::Error;
 
 /// Result alias for portfolio operations.
@@ -66,6 +66,37 @@ impl Portfolio {
             peak_equity: config.initial_equity,
             liquidate_only: false,
         }
+    }
+
+    /// Build a portfolio snapshot from live exchange balances and positions.
+    pub fn from_exchange_state(
+        positions: Vec<Position>,
+        balances: Vec<AccountBalance>,
+        config: PortfolioConfig,
+    ) -> Self {
+        let drawdown_limit = config
+            .max_drawdown
+            .filter(|value| value.is_finite() && *value > 0.0);
+        let mut position_map = HashMap::new();
+        for position in positions.into_iter() {
+            if position.quantity.abs() < f64::EPSILON {
+                continue;
+            }
+            let symbol = position.symbol.clone();
+            position_map.insert(symbol, position);
+        }
+        let cash: Price = balances.iter().map(|balance| balance.available).sum();
+        let mut portfolio = Self {
+            cash,
+            positions: position_map,
+            realized_pnl: 0.0,
+            initial_equity: config.initial_equity,
+            drawdown_limit,
+            peak_equity: config.initial_equity.max(cash),
+            liquidate_only: false,
+        };
+        portfolio.update_drawdown_state();
+        portfolio
     }
 
     /// Apply a trade fill to the internal bookkeeping.
