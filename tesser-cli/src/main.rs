@@ -708,7 +708,6 @@ impl LiveRunArgs {
             quantity: self.quantity,
             slippage_bps: self.slippage_bps,
             fee_bps: self.fee_bps,
-            latency_ms: self.latency_ms,
             history,
             metrics_addr,
             state_path,

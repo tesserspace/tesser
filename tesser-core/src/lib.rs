@@ -16,6 +16,17 @@ pub type Symbol = String;
 /// Unique identifier assigned to orders (exchange or client provided).
 pub type OrderId = String;
 
+/// Execution hints for algorithmic order placement.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum ExecutionHint {
+    /// Time-Weighted Average Price execution over specified duration.
+    Twap { duration: Duration },
+    /// Volume-Weighted Average Price execution.
+    Vwap { duration: Duration },
+    /// Iceberg order (simulated in software).
+    IcebergSimulated { display_size: Quantity },
+}
+
 /// The side of an order or position.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum Side {
@@ -211,6 +222,9 @@ pub struct OrderRequest {
     pub trigger_price: Option<Price>,
     pub time_in_force: Option<TimeInForce>,
     pub client_order_id: Option<String>,
+    pub take_profit: Option<Price>,
+    pub stop_loss: Option<Price>,
+    pub display_quantity: Option<Quantity>,
 }
 
 /// High-level order status maintained inside the framework.
@@ -301,6 +315,7 @@ pub struct Signal {
     pub note: Option<String>,
     pub stop_loss: Option<Price>,
     pub take_profit: Option<Price>,
+    pub execution_hint: Option<ExecutionHint>,
 }
 
 /// The type of action a signal instructs the execution layer to take.
@@ -311,6 +326,23 @@ pub enum SignalKind {
     EnterShort,
     ExitShort,
     Flatten,
+}
+
+impl SignalKind {
+    /// Returns the Side for this signal kind.
+    #[must_use]
+    pub fn side(self) -> Side {
+        match self {
+            Self::EnterLong | Self::ExitShort => Side::Buy,
+            Self::EnterShort | Self::ExitLong => Side::Sell,
+            Self::Flatten => {
+                // For flatten, we need position context to determine side
+                // This is a simplification - in practice, the execution engine
+                // would determine the correct side based on current position
+                Side::Sell
+            }
+        }
+    }
 }
 
 impl Signal {
@@ -326,7 +358,15 @@ impl Signal {
             note: None,
             stop_loss: None,
             take_profit: None,
+            execution_hint: None,
         }
+    }
+
+    /// Add an execution hint to the signal.
+    #[must_use]
+    pub fn with_hint(mut self, hint: ExecutionHint) -> Self {
+        self.execution_hint = Some(hint);
+        self
     }
 }
 

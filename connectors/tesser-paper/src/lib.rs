@@ -1,62 +1,148 @@
 //! Simple paper-trading connector used by the backtester.
 
-use std::{any::Any, collections::VecDeque};
+use std::{
+    any::Any,
+    collections::{HashMap, VecDeque},
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use tesser_broker::{BrokerError, BrokerInfo, BrokerResult, ExecutionClient, MarketStream};
 use tesser_core::{
     AccountBalance, Candle, Fill, Order, OrderBook, OrderId, OrderRequest, OrderStatus, Position,
-    Side, Symbol, Tick,
+    Price, Side, Symbol, Tick,
 };
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::info;
 use uuid::Uuid;
 
 /// In-memory execution client that fills orders immediately at the provided limit (or last) price.
+#[derive(Clone)]
 pub struct PaperExecutionClient {
     info: BrokerInfo,
-    orders: AsyncMutex<Vec<Order>>,
-    balances: AsyncMutex<Vec<AccountBalance>>,
-    positions: AsyncMutex<Vec<Position>>,
-    pending_orders: AsyncMutex<Vec<Order>>,
+    orders: Arc<AsyncMutex<Vec<Order>>>,
+    balances: Arc<AsyncMutex<Vec<AccountBalance>>>,
+    positions: Arc<AsyncMutex<Vec<Position>>>,
+    pending_orders: Arc<AsyncMutex<Vec<Order>>>,
+    /// Latest market prices for each symbol
+    last_prices: Arc<Mutex<HashMap<Symbol, Price>>>,
+    /// Simulation parameters
+    slippage_bps: f64,
+    fee_bps: f64,
 }
 
 impl Default for PaperExecutionClient {
     fn default() -> Self {
-        Self::new("paper".into(), vec!["BTCUSDT".into()])
+        Self::new("paper".into(), vec!["BTCUSDT".into()], 0.0, 0.0)
     }
 }
 
 impl PaperExecutionClient {
     /// Create a new paper execution client configurable with instrument metadata.
-    pub fn new(name: String, markets: Vec<String>) -> Self {
+    pub fn new(name: String, markets: Vec<String>, slippage_bps: f64, fee_bps: f64) -> Self {
         Self {
             info: BrokerInfo {
                 name,
                 markets,
                 supports_testnet: true,
             },
-            orders: AsyncMutex::new(Vec::new()),
-            balances: AsyncMutex::new(vec![AccountBalance {
+            orders: Arc::new(AsyncMutex::new(Vec::new())),
+            balances: Arc::new(AsyncMutex::new(vec![AccountBalance {
                 currency: "USDT".into(),
                 total: 10_000.0,
                 available: 10_000.0,
                 updated_at: Utc::now(),
-            }]),
-            positions: AsyncMutex::new(Vec::new()),
-            pending_orders: AsyncMutex::new(Vec::new()),
+            }])),
+            positions: Arc::new(AsyncMutex::new(Vec::new())),
+            pending_orders: Arc::new(AsyncMutex::new(Vec::new())),
+            last_prices: Arc::new(Mutex::new(HashMap::new())),
+            slippage_bps,
+            fee_bps,
         }
     }
 
-    fn fill_order(request: &OrderRequest) -> Order {
+    /// Update the latest market price for a symbol.
+    pub fn update_price(&self, symbol: &Symbol, price: Price) {
+        let mut prices = self.last_prices.lock().unwrap();
+        prices.insert(symbol.clone(), price);
+    }
+
+    /// Create a Fill object from an order with proper fee calculation.
+    fn create_fill_from_order(
+        &self,
+        order: &Order,
+        fill_price: Price,
+        timestamp: DateTime<Utc>,
+    ) -> Fill {
+        let fee = if self.fee_bps > 0.0 {
+            let fee_rate = self.fee_bps / 10_000.0;
+            Some(fill_price.abs() * order.request.quantity.abs() * fee_rate)
+        } else {
+            None
+        };
+
+        Fill {
+            order_id: order.id.clone(),
+            symbol: order.request.symbol.clone(),
+            side: order.request.side,
+            fill_price,
+            fill_quantity: order.request.quantity,
+            fee,
+            timestamp,
+        }
+    }
+
+    fn fill_order(&self, request: &OrderRequest) -> Order {
         let now = Utc::now();
+
+        // Get the last known price for this symbol
+        let last_price = {
+            let prices = self.last_prices.lock().unwrap();
+            prices.get(&request.symbol).copied()
+        };
+
+        // Determine the base fill price
+        let base_price = match request.order_type {
+            tesser_core::OrderType::Market => {
+                // For market orders, use the last known market price or fallback to request price
+                last_price.or(request.price).unwrap_or_else(|| {
+                    tracing::warn!(
+                        symbol = %request.symbol,
+                        "No market price available for market order, using fallback price of 1.0"
+                    );
+                    1.0 // Emergency fallback
+                })
+            }
+            tesser_core::OrderType::Limit | tesser_core::OrderType::StopMarket => {
+                // For limit and stop orders, use the specified price
+                request.price.unwrap_or_else(|| {
+                    tracing::warn!(
+                        symbol = %request.symbol,
+                        "No price specified for limit/stop order, using fallback price of 1.0"
+                    );
+                    1.0 // Emergency fallback
+                })
+            }
+        };
+
+        // Apply slippage
+        let slippage_rate = self.slippage_bps / 10_000.0;
+        let fill_price = if slippage_rate > 0.0 {
+            match request.side {
+                Side::Buy => base_price * (1.0 + slippage_rate), // Buy at higher price
+                Side::Sell => base_price * (1.0 - slippage_rate), // Sell at lower price
+            }
+        } else {
+            base_price
+        };
+
         Order {
             id: Uuid::new_v4().to_string(),
             request: request.clone(),
             status: OrderStatus::Filled,
             filled_quantity: request.quantity,
-            avg_fill_price: request.price,
+            avg_fill_price: Some(fill_price),
             created_at: now,
             updated_at: now,
         }
@@ -82,15 +168,8 @@ impl PaperExecutionClient {
 
             if triggered {
                 let fill_price = order.request.trigger_price.unwrap_or(candle.open);
-                triggered_fills.push(Fill {
-                    order_id: order.id.clone(),
-                    symbol: order.request.symbol.clone(),
-                    side: order.request.side,
-                    fill_price,
-                    fill_quantity: order.request.quantity,
-                    fee: None,
-                    timestamp: candle.timestamp,
-                });
+                let fill = self.create_fill_from_order(&order, fill_price, candle.timestamp);
+                triggered_fills.push(fill);
             } else {
                 still_pending.push(order);
             }
@@ -110,11 +189,23 @@ impl ExecutionClient for PaperExecutionClient {
     async fn place_order(&self, request: OrderRequest) -> BrokerResult<Order> {
         match request.order_type {
             tesser_core::OrderType::Market | tesser_core::OrderType::Limit => {
-                let order = Self::fill_order(&request);
+                let order = self.fill_order(&request);
                 self.orders.lock().await.push(order.clone());
+
+                // Calculate fee if applicable
+                let fee = if self.fee_bps > 0.0 && order.avg_fill_price.is_some() {
+                    let fill_price = order.avg_fill_price.unwrap();
+                    let fee_rate = self.fee_bps / 10_000.0;
+                    Some(fill_price * order.request.quantity * fee_rate)
+                } else {
+                    None
+                };
+
                 info!(
                     symbol = %order.request.symbol,
                     qty = order.request.quantity,
+                    price = ?order.avg_fill_price,
+                    fee = ?fee,
                     side = ?order.request.side,
                     "paper order filled"
                 );
@@ -124,7 +215,7 @@ impl ExecutionClient for PaperExecutionClient {
                 let trigger_price = request.trigger_price.ok_or_else(|| {
                     BrokerError::InvalidRequest("StopMarket order requires a trigger_price".into())
                 })?;
-                let mut order = Self::fill_order(&request);
+                let mut order = self.fill_order(&request);
                 order.status = OrderStatus::PendingNew;
                 order.filled_quantity = 0.0;
                 order.avg_fill_price = None;

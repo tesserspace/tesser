@@ -7,9 +7,19 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tracing.workspace = true
 tesser-broker = { path = "../tesser-broker" }
 tesser-bybit = { path = "../connectors/tesser-bybit" }
 tesser-core = { path = "../tesser-core" }
 tesser-strategy = { path = "../tesser-strategy" }
 thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3.10"
+tokio = { workspace = true, features = ["test-util"] }
+tesser-paper = { path = "../connectors/tesser-paper" }

@@ -2,6 +2,15 @@
 
 use std::sync::Arc;
 
+pub mod algorithm;
+pub mod orchestrator;
+pub mod repository;
+
+// Re-export key types for convenience
+pub use algorithm::{AlgoStatus, ChildOrderRequest, ExecutionAlgorithm};
+pub use orchestrator::OrderOrchestrator;
+pub use repository::{AlgoStateRepository, SqliteAlgoStateRepository};
+
 use anyhow::Context;
 use tesser_broker::{BrokerError, BrokerResult, ExecutionClient};
 use tesser_bybit::{BybitClient, BybitCredentials};
@@ -260,6 +269,9 @@ impl ExecutionEngine {
                 trigger_price: Some(sl_price),
                 time_in_force: None,
                 client_order_id: None,
+                take_profit: None,
+                stop_loss: None,
+                display_quantity: None,
             };
             if let Err(e) = self.send_order(sl_request, &ctx).await {
                 warn!(error = %e, "failed to place stop-loss order");
@@ -276,6 +288,9 @@ impl ExecutionEngine {
                 trigger_price: Some(tp_price),
                 time_in_force: None,
                 client_order_id: None,
+                take_profit: None,
+                stop_loss: None,
+                display_quantity: None,
             };
             if let Err(e) = self.send_order(tp_request, &ctx).await {
                 warn!(error = %e, "failed to place take-profit order");
@@ -295,6 +310,9 @@ impl ExecutionEngine {
             trigger_price: None,
             time_in_force: None,
             client_order_id: None,
+            take_profit: None,
+            stop_loss: None,
+            display_quantity: None,
         }
     }
 
@@ -309,6 +327,10 @@ impl ExecutionEngine {
 
     pub fn client(&self) -> Arc<dyn ExecutionClient> {
         Arc::clone(&self.client)
+    }
+
+    pub fn sizer(&self) -> &dyn OrderSizer {
+        self.sizer.as_ref()
     }
 
     pub fn credentials(&self) -> Option<BybitCredentials> {

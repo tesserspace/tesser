@@ -14,7 +14,7 @@ use futures::StreamExt;
 use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use tesser_broker::{ExecutionClient, MarketStream};
 use tesser_bybit::ws::{BybitWsExecution, BybitWsOrder, PrivateMessage};
@@ -22,10 +22,10 @@ use tesser_bybit::{
     BybitClient, BybitConfig, BybitCredentials, BybitMarketStream, BybitSubscription, PublicChannel,
 };
 use tesser_config::{AlertingConfig, ExchangeConfig, RiskManagementConfig};
-use tesser_core::{Candle, Fill, Interval, Order, OrderStatus, Price, Side, Signal};
+use tesser_core::{Candle, Fill, Interval, Order, OrderStatus, Price, Side};
 use tesser_execution::{
-    BasicRiskChecker, ExecutionEngine, FixedOrderSizer, PreTradeRiskChecker, RiskContext,
-    RiskLimits,
+    BasicRiskChecker, ExecutionEngine, FixedOrderSizer, OrderOrchestrator, PreTradeRiskChecker,
+    RiskContext, RiskLimits, SqliteAlgoStateRepository,
 };
 use tesser_paper::PaperExecutionClient;
 use tesser_portfolio::{
@@ -62,7 +62,6 @@ pub struct LiveSessionSettings {
     pub quantity: f64,
     pub slippage_bps: f64,
     pub fee_bps: f64,
-    pub latency_ms: u64,
     pub history: usize,
     pub metrics_addr: SocketAddr,
     pub state_path: PathBuf,
@@ -131,7 +130,14 @@ pub async fn run_live(
         risk_checker,
     );
 
-    let runtime = LiveRuntime::new(stream, strategy, symbols, execution, settings).await?;
+    // Create algorithm state repository
+    let algo_repo_path = settings.state_path.with_extension("algos.db");
+    let algo_state_repo = Arc::new(SqliteAlgoStateRepository::new(&algo_repo_path)?);
+
+    // Create orchestrator with execution engine
+    let orchestrator = OrderOrchestrator::new(Arc::new(execution), algo_state_repo).await?;
+
+    let runtime = LiveRuntime::new(stream, strategy, symbols, orchestrator, settings).await?;
     runtime.run().await
 }
 
@@ -140,7 +146,12 @@ fn build_execution_client(
     settings: &LiveSessionSettings,
 ) -> Result<Arc<dyn ExecutionClient>> {
     match settings.exec_backend {
-        ExecutionBackend::Paper => Ok(Arc::new(PaperExecutionClient::default())),
+        ExecutionBackend::Paper => Ok(Arc::new(PaperExecutionClient::new(
+            "paper".to_string(),
+            vec!["BTCUSDT".to_string()],
+            settings.slippage_bps,
+            settings.fee_bps,
+        ))),
         ExecutionBackend::Live => {
             let api_key = exchange.api_key.trim();
             let api_secret = exchange.api_secret.trim();
@@ -167,13 +178,11 @@ struct LiveRuntime {
     stream: BybitMarketStream,
     strategy: Box<dyn Strategy>,
     strategy_ctx: StrategyContext,
-    execution: ExecutionEngine,
+    orchestrator: OrderOrchestrator,
     portfolio: Portfolio,
     metrics: LiveMetrics,
     alerts: AlertManager,
     market: HashMap<String, MarketSnapshot>,
-    fill_model: FillModel,
-    latency: Duration,
     state_repo: Arc<dyn StateRepository>,
     persisted: LiveState,
     shutdown: ShutdownSignal,
@@ -188,7 +197,7 @@ impl LiveRuntime {
         stream: BybitMarketStream,
         strategy: Box<dyn Strategy>,
         symbols: Vec<String>,
-        execution: ExecutionEngine,
+        orchestrator: OrderOrchestrator,
         settings: LiveSessionSettings,
     ) -> Result<Self> {
         let mut strategy_ctx = StrategyContext::new(settings.history);
@@ -239,11 +248,12 @@ impl LiveRuntime {
         let (private_event_tx, private_event_rx) = mpsc::channel(1024);
 
         if !settings.exec_backend.is_paper() {
-            let bybit_creds = match execution.credentials() {
+            let execution_engine = orchestrator.execution_engine();
+            let bybit_creds = match execution_engine.credentials() {
                 Some(creds) => creds,
                 None => bail!("live execution requires Bybit credentials"),
             };
-            let ws_url = execution.ws_url();
+            let ws_url = execution_engine.ws_url();
             let private_tx = private_event_tx.clone();
             tokio::spawn(async move {
                 let creds = bybit_creds;
@@ -324,13 +334,11 @@ impl LiveRuntime {
             stream,
             strategy,
             strategy_ctx,
-            execution,
+            orchestrator,
             portfolio,
             metrics,
             alerts,
             market,
-            fill_model: FillModel::new(settings.slippage_bps, settings.fee_bps),
-            latency: Duration::from_millis(settings.latency_ms),
             state_repo,
             persisted,
             shutdown,
@@ -348,6 +356,7 @@ impl LiveRuntime {
             .context("initial state reconciliation failed")?;
         let backoff = Duration::from_millis(200);
         let mut reconciliation_timer = tokio::time::interval(Duration::from_secs(60));
+        let mut orchestrator_timer = tokio::time::interval(Duration::from_secs(1));
 
         while !self.shutdown.triggered() {
             let mut progressed = false;
@@ -380,6 +389,12 @@ impl LiveRuntime {
                         error!("Periodic state reconciliation failed: {}", e);
                     }
                 }
+                _ = orchestrator_timer.tick() => {
+                    // Drive TWAP and other time-based algorithms
+                    if let Err(e) = self.orchestrator.on_timer_tick().await {
+                        error!("Orchestrator timer tick failed: {}", e);
+                    }
+                }
                 else => {}
             }
 
@@ -404,7 +419,7 @@ impl LiveRuntime {
         }
 
         info!("Running state reconciliation...");
-        let client = self.execution.client();
+        let client = self.orchestrator.execution_engine().client();
         match client.positions().await {
             Ok(remote_positions) => {
                 let local_positions = self.portfolio.positions();
@@ -462,6 +477,23 @@ impl LiveRuntime {
             .insert(tick.symbol.clone(), tick.price);
         self.portfolio.mark_price(&tick.symbol, tick.price);
         self.metrics.update_price(&tick.symbol, tick.price);
+
+        // Update price in paper trading client if using paper mode
+        if let Some(paper_client) = self
+            .orchestrator
+            .execution_engine()
+            .client()
+            .as_any()
+            .downcast_ref::<PaperExecutionClient>()
+        {
+            paper_client.update_price(&tick.symbol, tick.price);
+        }
+
+        // Route tick to orchestrator for algorithmic orders
+        if let Err(e) = self.orchestrator.on_tick(&tick).await {
+            tracing::warn!(error = %e, "Orchestrator failed to process tick");
+        }
+
         self.strategy_ctx.push_tick(tick.clone());
         self.strategy
             .on_tick(&self.strategy_ctx, &tick)
@@ -479,6 +511,18 @@ impl LiveRuntime {
         self.metrics.update_price(&candle.symbol, candle.close);
         self.metrics.update_staleness(0.0);
         self.alerts.heartbeat().await;
+
+        // Update price in paper trading client if using paper mode
+        if let Some(paper_client) = self
+            .orchestrator
+            .execution_engine()
+            .client()
+            .as_any()
+            .downcast_ref::<PaperExecutionClient>()
+        {
+            paper_client.update_price(&candle.symbol, candle.close);
+        }
+
         self.strategy_ctx.push_candle(candle.clone());
         self.strategy
             .on_candle(&self.strategy_ctx, &candle)
@@ -499,7 +543,11 @@ impl LiveRuntime {
         }
         self.metrics.inc_signals(signals.len());
         for signal in signals {
-            let last_price = self.market.get(&signal.symbol).and_then(|s| s.price()).unwrap_or(0.0);
+            let last_price = self
+                .market
+                .get(&signal.symbol)
+                .and_then(|s| s.price())
+                .unwrap_or(0.0);
 
             let ctx = RiskContext {
                 signed_position_qty: self.portfolio.signed_position_qty(&signal.symbol),
@@ -507,52 +555,22 @@ impl LiveRuntime {
                 last_price,
                 liquidate_only: self.portfolio.liquidate_only(),
             };
-            match self.execution.handle_signal(signal.clone(), ctx).await {
-                Ok(Some(order)) => {
-                    self.metrics.inc_order();
-                    let result = if self.exec_backend.is_paper() {
-                        self.settle_order(order, signal.clone()).await
-                    } else {
-                        self.handle_live_submission(order).await
-                    };
-                    match result {
-                        Ok(()) => {
-                            self.alerts.reset_order_failures().await;
-                        }
-                        Err(err) => {
-                            warn!(error = %err, symbol = %signal.symbol, "failed to settle order");
-                            self.metrics.inc_order_failure();
-                            self.alerts
-                                .order_failure(&format!("settlement error: {err}"))
-                                .await;
-                        }
-                    }
+            match self.orchestrator.on_signal(&signal, &ctx).await {
+                Ok(()) => {
+                    // The orchestrator handles order submission internally
+                    // Metrics and alerts are handled when fills are received
+                    self.alerts.reset_order_failures().await;
                 }
-                Ok(None) => {}
                 Err(err) => {
-                    warn!(error = %err, "execution rejected order");
+                    warn!(error = %err, "orchestrator rejected signal");
                     self.metrics.inc_order_failure();
                     self.alerts
-                        .order_failure(&format!("execution error: {err}"))
+                        .order_failure(&format!("orchestrator error: {err}"))
                         .await;
                 }
             }
         }
         Ok(())
-    }
-
-    async fn handle_live_submission(&mut self, order: Order) -> Result<()> {
-        info!(
-            order_id = %order.id,
-            symbol = %order.request.symbol,
-            status = ?order.status,
-            "sent live order to external broker"
-        );
-        self.persisted
-            .open_orders
-            .retain(|existing| existing.id != order.id);
-        self.persisted.open_orders.push(order);
-        self.save_state().await
     }
 
     async fn handle_order_update(&mut self, order: Order) -> Result<()> {
@@ -593,6 +611,12 @@ impl LiveRuntime {
             qty = fill.fill_quantity,
             "Processing real fill"
         );
+
+        // Route fill to orchestrator first (for algorithmic orders)
+        if let Err(e) = self.orchestrator.on_fill(&fill).await {
+            warn!(error = %e, "Orchestrator failed to process fill");
+        }
+
         self.portfolio
             .apply_fill(&fill)
             .context("Failed to apply real fill to portfolio")?;
@@ -602,50 +626,24 @@ impl LiveRuntime {
             .on_fill(&self.strategy_ctx, &fill)
             .context("Strategy failed on real fill event")?;
         self.metrics.update_equity(self.portfolio.equity());
+        self.metrics.inc_order(); // Count the fill as a completed order
         self.alerts.update_equity(self.portfolio.equity()).await;
+        self.alerts
+            .notify(
+                "Order Filled",
+                &format!(
+                    "order filled: {}@{:.2} ({})",
+                    fill.fill_quantity,
+                    fill.fill_price,
+                    match fill.side {
+                        Side::Buy => "buy",
+                        Side::Sell => "sell",
+                    }
+                ),
+            )
+            .await;
         self.persisted.portfolio = Some(self.portfolio.snapshot());
         self.save_state().await
-    }
-
-    async fn settle_order(&mut self, order: Order, signal: Signal) -> Result<()> {
-        if self.latency.as_millis() > 0 {
-            tokio::time::sleep(self.latency).await;
-        }
-        let price = self
-            .market
-            .get(&order.request.symbol)
-            .and_then(|snap| snap.price())
-            .ok_or_else(|| anyhow!("no market price available for {}", order.request.symbol))?;
-        let (fill_price, fee) =
-            self.fill_model
-                .apply(order.request.side, price, order.request.quantity);
-        let fill = Fill {
-            order_id: order.id.clone(),
-            symbol: order.request.symbol.clone(),
-            side: order.request.side,
-            fill_price,
-            fill_quantity: order.request.quantity,
-            fee,
-            timestamp: Utc::now(),
-        };
-        self.portfolio
-            .apply_fill(&fill)
-            .context("failed to update portfolio with fill")?;
-        self.strategy_ctx
-            .update_positions(self.portfolio.positions());
-        self.strategy
-            .on_fill(&self.strategy_ctx, &fill)
-            .context("strategy failure on fill")?;
-        self.metrics.update_equity(self.portfolio.equity());
-        self.alerts.update_equity(self.portfolio.equity()).await;
-        self.persisted.portfolio = Some(self.portfolio.snapshot());
-        self.persisted
-            .last_prices
-            .insert(order.request.symbol.clone(), fill_price);
-        self.save_state().await?;
-
-        debug!(order_id = %order.id, symbol = %signal.symbol, "order settled in paper engine");
-        Ok(())
     }
 
     async fn save_state(&self) -> Result<()> {
@@ -669,36 +667,6 @@ impl MarketSnapshot {
     fn price(&self) -> Option<Price> {
         self.last_trade
             .or_else(|| self.last_candle.as_ref().map(|c| c.close))
-    }
-}
-
-struct FillModel {
-    slippage: f64,
-    fee: f64,
-}
-
-impl FillModel {
-    fn new(slippage_bps: f64, fee_bps: f64) -> Self {
-        Self {
-            slippage: slippage_bps.max(0.0) / 10_000.0,
-            fee: fee_bps.max(0.0) / 10_000.0,
-        }
-    }
-
-    fn apply(&self, side: Side, price: Price, qty: f64) -> (Price, Option<Price>) {
-        let mut filled = price;
-        if self.slippage > 0.0 {
-            filled *= match side {
-                Side::Buy => 1.0 + self.slippage,
-                Side::Sell => 1.0 - self.slippage,
-            };
-        }
-        let fee = if self.fee > 0.0 {
-            Some(filled.abs() * qty.abs() * self.fee)
-        } else {
-            None
-        };
-        (filled, fee)
     }
 }
 

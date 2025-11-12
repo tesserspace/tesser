@@ -126,8 +126,7 @@ impl Backtester {
                         price = fill.fill_price,
                         "triggered paper conditional order"
                     );
-                    self
-                        .portfolio
+                    self.portfolio
                         .apply_fill(&fill)
                         .context("failed to update portfolio with triggered fill")?;
                     all_fills.push(fill.clone());
@@ -186,8 +185,7 @@ impl Backtester {
         while let Some(pending) = self.pending.pop_front() {
             if pending.due_index == candle_index {
                 let fill = self.build_fill(&pending.order, candle);
-                self
-                    .portfolio
+                self.portfolio
                     .apply_fill(&fill)
                     .context("failed to update portfolio with fill")?;
                 all_fills.push(fill.clone());
