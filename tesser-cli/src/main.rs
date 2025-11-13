@@ -19,6 +19,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use csv::Writer;
+use rust_decimal::{
+    prelude::{FromPrimitive, ToPrimitive},
+    Decimal,
+};
 use serde::{Deserialize, Serialize};
 use tesser_backtester::reporting::PerformanceReport;
 use tesser_backtester::{BacktestConfig, BacktestMode, Backtester, MarketEvent, MarketEventKind};
@@ -642,7 +646,8 @@ impl BacktestRunArgs {
                 let engine = Arc::new(MatchingEngine::new(
                     "matching-engine",
                     symbols.clone(),
-                    config.backtest.initial_equity,
+                    Decimal::from_f64(config.backtest.initial_equity)
+                        .unwrap_or_else(|| Decimal::from_i64(10_000).unwrap()),
                 ));
                 (
                     Vec::new(),
@@ -654,11 +659,13 @@ impl BacktestRunArgs {
         };
 
         let sizer = parse_sizer(&self.sizer, Some(self.quantity))?;
+        let order_quantity =
+            Decimal::from_f64(self.quantity).ok_or_else(|| anyhow!("invalid --quantity value"))?;
         let execution = ExecutionEngine::new(execution_client, sizer, Arc::new(NoopRiskChecker));
 
         let mut cfg = BacktestConfig::new(symbols[0].clone(), candles);
         cfg.lob_events = lob_events;
-        cfg.order_quantity = self.quantity;
+        cfg.order_quantity = order_quantity;
         cfg.initial_equity = config.backtest.initial_equity;
         cfg.execution.slippage_bps = self.slippage_bps.max(0.0);
         cfg.execution.fee_bps = self.fee_bps.max(0.0);
@@ -692,6 +699,8 @@ impl BacktestBatchArgs {
             let strategy = load_strategy(&def.name, def.params)
                 .with_context(|| format!("failed to configure strategy {}", def.name))?;
             let sizer = parse_sizer(&self.sizer, Some(self.quantity))?;
+            let order_quantity = Decimal::from_f64(self.quantity)
+                .ok_or_else(|| anyhow!("invalid --quantity value"))?;
             let mut candles = load_candles_from_paths(&self.data_paths)?;
             candles.sort_by_key(|c| c.timestamp);
             let execution_client: Arc<dyn ExecutionClient> =
@@ -699,7 +708,7 @@ impl BacktestBatchArgs {
             let execution =
                 ExecutionEngine::new(execution_client, sizer, Arc::new(NoopRiskChecker));
             let mut cfg = BacktestConfig::new(strategy.symbol().to_string(), candles);
-            cfg.order_quantity = self.quantity;
+            cfg.order_quantity = order_quantity;
             cfg.initial_equity = config.backtest.initial_equity;
             cfg.execution.slippage_bps = self.slippage_bps.max(0.0);
             cfg.execution.fee_bps = self.fee_bps.max(0.0);
@@ -750,6 +759,13 @@ impl LiveRunArgs {
         if self.quantity <= 0.0 {
             bail!("--quantity must be greater than zero");
         }
+        let quantity =
+            Decimal::from_f64(self.quantity).ok_or_else(|| anyhow!("--quantity must be finite"))?;
+        if quantity <= Decimal::ZERO {
+            bail!("--quantity must be greater than zero");
+        }
+        let initial_equity = Decimal::from_f64(self.resolved_initial_equity(config))
+            .ok_or_else(|| anyhow!("initial equity must be finite"))?;
 
         let interval: Interval = self.interval.parse().map_err(|err: String| anyhow!(err))?;
         let category =
@@ -762,13 +778,13 @@ impl LiveRunArgs {
         let settings = LiveSessionSettings {
             category,
             interval,
-            quantity: self.quantity,
+            quantity,
             slippage_bps: self.slippage_bps,
             fee_bps: self.fee_bps,
             history,
             metrics_addr,
             state_path,
-            initial_equity: self.resolved_initial_equity(config),
+            initial_equity,
             alerting,
             exec_backend: self.exec,
             risk: self.build_risk_config(config),
@@ -884,14 +900,19 @@ fn synth_candles(symbol: &str, len: usize, offset_minutes: i64) -> Vec<Candle> {
         let base = 50_000.0 + ((i as f64) + offset_minutes as f64).sin() * 500.0;
         let open = base + (i as f64 % 3.0) * 10.0;
         let close = open + (i as f64 % 5.0) * 5.0 - 10.0;
+        let open_dec =
+            Decimal::from_f64(open).unwrap_or_else(|| Decimal::from_i64(base as i64).unwrap());
+        let close_dec = Decimal::from_f64(close).unwrap_or(open_dec);
+        let high = Decimal::from_f64(open.max(close) + 20.0).unwrap_or(open_dec);
+        let low = Decimal::from_f64(open.min(close) - 20.0).unwrap_or(close_dec);
         candles.push(Candle {
             symbol: Symbol::from(symbol),
             interval: Interval::OneMinute,
-            open,
-            high: open.max(close) + 20.0,
-            low: open.min(close) - 20.0,
-            close,
-            volume: 1.0,
+            open: open_dec,
+            high,
+            low,
+            close: close_dec,
+            volume: Decimal::ONE,
             timestamp: Utc::now() - Duration::minutes((len - i) as i64)
                 + Duration::minutes(offset_minutes),
         });
@@ -945,14 +966,32 @@ fn load_candles_from_paths(paths: &[PathBuf]) -> Result<Vec<Candle>> {
                     )
                 })?;
             let interval = infer_interval_from_path(path).unwrap_or(Interval::OneMinute);
+            let open = Decimal::from_f64(row.open).ok_or_else(|| {
+                anyhow!("invalid open value '{}' in {}", row.open, path.display())
+            })?;
+            let high = Decimal::from_f64(row.high).ok_or_else(|| {
+                anyhow!("invalid high value '{}' in {}", row.high, path.display())
+            })?;
+            let low = Decimal::from_f64(row.low)
+                .ok_or_else(|| anyhow!("invalid low value '{}' in {}", row.low, path.display()))?;
+            let close = Decimal::from_f64(row.close).ok_or_else(|| {
+                anyhow!("invalid close value '{}' in {}", row.close, path.display())
+            })?;
+            let volume = Decimal::from_f64(row.volume).ok_or_else(|| {
+                anyhow!(
+                    "invalid volume value '{}' in {}",
+                    row.volume,
+                    path.display()
+                )
+            })?;
             candles.push(Candle {
                 symbol,
                 interval,
-                open: row.open,
-                high: row.high,
-                low: row.low,
-                close: row.close,
-                volume: row.volume,
+                open,
+                high,
+                low,
+                close,
+                volume,
                 timestamp,
             });
         }
@@ -1009,10 +1048,12 @@ fn load_lob_events_from_paths(paths: &[PathBuf]) -> Result<Vec<MarketEvent>> {
                     let symbol = symbol
                         .or_else(|| symbol_hint.clone())
                         .ok_or_else(|| anyhow!("missing symbol in snapshot {}", path.display()))?;
+                    let bids = convert_levels(&bids)?;
+                    let asks = convert_levels(&asks)?;
                     let book = OrderBook {
                         symbol: symbol.clone(),
-                        bids: convert_levels(&bids),
-                        asks: convert_levels(&asks),
+                        bids,
+                        asks,
                         timestamp: ts,
                     };
                     events.push(MarketEvent {
@@ -1030,10 +1071,12 @@ fn load_lob_events_from_paths(paths: &[PathBuf]) -> Result<Vec<MarketEvent>> {
                     let symbol = symbol.or_else(|| symbol_hint.clone()).ok_or_else(|| {
                         anyhow!("missing symbol in depth update {}", path.display())
                     })?;
+                    let bids = convert_levels(&bids)?;
+                    let asks = convert_levels(&asks)?;
                     let update = DepthUpdate {
                         symbol: symbol.clone(),
-                        bids: convert_levels(&bids),
-                        asks: convert_levels(&asks),
+                        bids,
+                        asks,
                         timestamp: ts,
                     };
                     events.push(MarketEvent {
@@ -1057,6 +1100,12 @@ fn load_lob_events_from_paths(paths: &[PathBuf]) -> Result<Vec<MarketEvent>> {
                         "sell" | "ask" | "s" => Side::Sell,
                         other => bail!("unsupported trade side '{other}' in {}", path.display()),
                     };
+                    let price = Decimal::from_f64(price).ok_or_else(|| {
+                        anyhow!("invalid trade price '{}' in {}", price, path.display())
+                    })?;
+                    let size = Decimal::from_f64(size).ok_or_else(|| {
+                        anyhow!("invalid trade size '{}' in {}", size, path.display())
+                    })?;
                     let tick = Tick {
                         symbol: symbol.clone(),
                         price,
@@ -1077,12 +1126,15 @@ fn load_lob_events_from_paths(paths: &[PathBuf]) -> Result<Vec<MarketEvent>> {
     Ok(events)
 }
 
-fn convert_levels(levels: &[[f64; 2]]) -> Vec<OrderBookLevel> {
+fn convert_levels(levels: &[[f64; 2]]) -> Result<Vec<OrderBookLevel>> {
     levels
         .iter()
-        .map(|pair| OrderBookLevel {
-            price: pair[0],
-            size: pair[1],
+        .map(|pair| {
+            let price = Decimal::from_f64(pair[0])
+                .ok_or_else(|| anyhow!("invalid depth price {}", pair[0]))?;
+            let size = Decimal::from_f64(pair[1])
+                .ok_or_else(|| anyhow!("invalid depth size {}", pair[1]))?;
+            Ok(OrderBookLevel { price, size })
         })
         .collect()
 }
@@ -1152,11 +1204,11 @@ fn write_candles_csv(path: &Path, candles: &[Candle]) -> Result<()> {
         let row = CandleRow {
             symbol: &candle.symbol,
             timestamp: candle.timestamp.to_rfc3339(),
-            open: candle.open,
-            high: candle.high,
-            low: candle.low,
-            close: candle.close,
-            volume: candle.volume,
+            open: candle.open.to_f64().unwrap_or(0.0),
+            high: candle.high.to_f64().unwrap_or(0.0),
+            low: candle.low.to_f64().unwrap_or(0.0),
+            close: candle.close.to_f64().unwrap_or(0.0),
+            volume: candle.volume.to_f64().unwrap_or(0.0),
         };
         writer.serialize(row)?;
     }
@@ -1192,11 +1244,15 @@ fn parse_sizer(value: &str, cli_quantity: Option<f64>) -> Result<Box<dyn OrderSi
     match parts.as_slice() {
         ["fixed", val] => {
             let quantity = val.parse::<f64>().context("invalid fixed sizer quantity")?;
-            Ok(Box::new(FixedOrderSizer { quantity }))
+            let qty = Decimal::from_f64(quantity)
+                .ok_or_else(|| anyhow!("invalid fixed sizer quantity"))?;
+            Ok(Box::new(FixedOrderSizer { quantity: qty }))
         }
         ["fixed"] => {
             let quantity = cli_quantity.unwrap_or(1.0);
-            Ok(Box::new(FixedOrderSizer { quantity }))
+            let qty = Decimal::from_f64(quantity)
+                .ok_or_else(|| anyhow!("invalid CLI quantity for fixed sizer"))?;
+            Ok(Box::new(FixedOrderSizer { quantity: qty }))
         }
         ["percent", val] => {
             let percent = val.parse::<f64>().context("invalid percent sizer value")?;

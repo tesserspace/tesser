@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::{anyhow, bail, Result};
 use chrono::{DateTime, Duration, Utc};
+use rust_decimal::{prelude::ToPrimitive, Decimal};
 use tesser_core::{Candle, Interval, Symbol};
 
 /// Configuration flags used when validating a dataset.
@@ -88,9 +89,11 @@ pub fn validate_dataset(
     let mut prev_close: Option<f64> = None;
     let mut prev_timestamp: Option<DateTime<Utc>> = None;
     for candle in &candles {
-        if candle.volume <= 0.0 {
+        let volume = candle.volume.to_f64().unwrap_or(0.0);
+        if volume <= 0.0 {
             zero_volume_candles += 1;
         }
+        let close = candle.close.to_f64().unwrap_or(0.0);
         if let (Some(last_close), Some(last_ts)) = (prev_close, prev_timestamp) {
             let delta: Duration = candle.timestamp - last_ts;
             let delta_ms = delta.num_milliseconds();
@@ -109,7 +112,7 @@ pub fn validate_dataset(
             }
 
             let denom = last_close.abs().max(f64::EPSILON);
-            let price_change = (candle.close - last_close).abs() / denom;
+            let price_change = (close - last_close).abs() / denom;
             if price_change >= config.price_jump_threshold {
                 price_spikes.push(SpikeRecord {
                     timestamp: candle.timestamp,
@@ -118,23 +121,27 @@ pub fn validate_dataset(
             }
         }
 
-        prev_close = Some(candle.close);
+        prev_close = Some(close);
         prev_timestamp = Some(candle.timestamp);
     }
 
     if let Some(reference_data) = reference.as_ref() {
         let mut map = HashMap::with_capacity(reference_data.len());
         for candle in reference_data {
-            map.insert(candle.timestamp.timestamp_millis(), candle.close);
+            map.insert(
+                candle.timestamp.timestamp_millis(),
+                candle.close.to_f64().unwrap_or(0.0),
+            );
         }
         for candle in &candles {
             if let Some(reference_close) = map.get(&candle.timestamp.timestamp_millis()) {
+                let close = candle.close.to_f64().unwrap_or(0.0);
                 let denom = reference_close.abs().max(f64::EPSILON);
-                let diff = (candle.close - reference_close).abs() / denom;
+                let diff = (close - reference_close).abs() / denom;
                 if diff >= config.reference_tolerance {
                     cross_mismatches.push(CrossMismatch {
                         timestamp: candle.timestamp,
-                        primary_close: candle.close,
+                        primary_close: close,
                         reference_close: *reference_close,
                         delta_fraction: diff,
                     });
@@ -165,7 +172,7 @@ pub fn validate_dataset(
                             high: fill_price,
                             low: fill_price,
                             close: fill_price,
-                            volume: 0.0,
+                            volume: Decimal::ZERO,
                             timestamp: ts,
                         };
                         repaired.insert(idx + step, fill);

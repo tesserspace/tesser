@@ -11,6 +11,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use clap::ValueEnum;
 use futures::StreamExt;
+use rust_decimal::{prelude::ToPrimitive, Decimal};
 use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
@@ -22,7 +23,7 @@ use tesser_bybit::{
     BybitClient, BybitConfig, BybitCredentials, BybitMarketStream, BybitSubscription, PublicChannel,
 };
 use tesser_config::{AlertingConfig, ExchangeConfig, RiskManagementConfig};
-use tesser_core::{Candle, Fill, Interval, Order, OrderBook, OrderStatus, Price, Side};
+use tesser_core::{Candle, Fill, Interval, Order, OrderBook, OrderStatus, Price, Quantity, Side};
 use tesser_execution::{
     BasicRiskChecker, ExecutionEngine, FixedOrderSizer, OrderOrchestrator, PreTradeRiskChecker,
     RiskContext, RiskLimits, SqliteAlgoStateRepository,
@@ -61,13 +62,13 @@ const DEFAULT_ORDER_BOOK_DEPTH: usize = 50;
 pub struct LiveSessionSettings {
     pub category: PublicChannel,
     pub interval: Interval,
-    pub quantity: f64,
+    pub quantity: Quantity,
     pub slippage_bps: f64,
     pub fee_bps: f64,
     pub history: usize,
     pub metrics_addr: SocketAddr,
     pub state_path: PathBuf,
-    pub initial_equity: f64,
+    pub initial_equity: Price,
     pub alerting: AlertingConfig,
     pub exec_backend: ExecutionBackend,
     pub risk: RiskManagementConfig,
@@ -91,7 +92,7 @@ pub async fn run_live(
     if symbols.is_empty() {
         return Err(anyhow!("strategy did not declare any subscriptions"));
     }
-    if settings.quantity <= 0.0 {
+    if settings.quantity <= Decimal::ZERO {
         return Err(anyhow!("--quantity must be positive"));
     }
 
@@ -435,7 +436,7 @@ impl LiveRuntime {
                 .get(symbol)
                 .and_then(|snapshot| snapshot.price())
                 .or_else(|| persisted.last_prices.get(symbol).copied())
-                .unwrap_or(0.0);
+                .unwrap_or(Decimal::ZERO);
             let ctx = RiskContext {
                 signed_position_qty: portfolio.signed_position_qty(symbol),
                 portfolio_equity: portfolio.equity(),
@@ -563,10 +564,10 @@ impl LiveRuntime {
                 if let Some(usdt) = remote_balances.iter().find(|b| b.currency == "USDT") {
                     let local_cash = self.portfolio.cash();
                     let diff = (usdt.available - local_cash).abs();
-                    if diff > 1.0 {
+                    if diff > Decimal::ONE {
                         warn!(
-                            remote = usdt.available,
-                            local = local_cash,
+                            remote = %usdt.available,
+                            local = %local_cash,
                             "Cash balance mismatch"
                         );
                         self.alerts
@@ -597,7 +598,9 @@ impl LiveRuntime {
             .last_prices
             .insert(tick.symbol.clone(), tick.price);
         self.portfolio.mark_price(&tick.symbol, tick.price);
-        self.metrics.update_price(&tick.symbol, tick.price);
+        if let Some(price) = tick.price.to_f64() {
+            self.metrics.update_price(&tick.symbol, price);
+        }
         self.refresh_risk_context(&tick.symbol);
 
         // Update price in paper trading client if using paper mode
@@ -630,7 +633,9 @@ impl LiveRuntime {
             snapshot.last_trade = Some(candle.close);
         }
         self.metrics.inc_candle();
-        self.metrics.update_price(&candle.symbol, candle.close);
+        if let Some(price) = candle.close.to_f64() {
+            self.metrics.update_price(&candle.symbol, price);
+        }
         self.metrics.update_staleness(0.0);
         self.alerts.heartbeat().await;
         self.refresh_risk_context(&candle.symbol);
@@ -675,7 +680,7 @@ impl LiveRuntime {
             .get(symbol)
             .and_then(|snapshot| snapshot.price())
             .or_else(|| self.persisted.last_prices.get(symbol).copied())
-            .unwrap_or(0.0);
+            .unwrap_or(Decimal::ZERO);
         RiskContext {
             signed_position_qty: self.portfolio.signed_position_qty(symbol),
             portfolio_equity: self.portfolio.equity(),
@@ -752,8 +757,8 @@ impl LiveRuntime {
         info!(
             order_id = %fill.order_id,
             symbol = %fill.symbol,
-            price = fill.fill_price,
-            qty = fill.fill_quantity,
+            price = %fill.fill_price,
+            qty = %fill.fill_quantity,
             "Processing real fill"
         );
 
@@ -772,14 +777,16 @@ impl LiveRuntime {
         self.strategy
             .on_fill(&self.strategy_ctx, &fill)
             .context("Strategy failed on real fill event")?;
-        self.metrics.update_equity(self.portfolio.equity());
+        if let Some(equity) = self.portfolio.equity().to_f64() {
+            self.metrics.update_equity(equity);
+            self.alerts.update_equity(equity).await;
+        }
         self.metrics.inc_order(); // Count the fill as a completed order
-        self.alerts.update_equity(self.portfolio.equity()).await;
         self.alerts
             .notify(
                 "Order Filled",
                 &format!(
-                    "order filled: {}@{:.2} ({})",
+                    "order filled: {}@{} ({})",
                     fill.fill_quantity,
                     fill.fill_price,
                     match fill.side {
