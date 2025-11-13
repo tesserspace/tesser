@@ -6,8 +6,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-use crate::algorithm::twap::TwapAlgorithm;
-use crate::algorithm::{AlgoStatus, ChildOrderRequest, ExecutionAlgorithm};
+use crate::algorithm::{
+    AlgoStatus, ChildOrderRequest, ExecutionAlgorithm, IcebergAlgorithm, TwapAlgorithm,
+    VwapAlgorithm,
+};
 use crate::repository::AlgoStateRepository;
 use crate::{ExecutionEngine, RiskContext};
 use tesser_core::{ExecutionHint, Fill, Order, Signal, Tick};
@@ -120,13 +122,19 @@ impl OrderOrchestrator {
                 self.handle_twap_signal(signal.clone(), *duration, ctx)
                     .await
             }
-            Some(ExecutionHint::Vwap { .. }) => {
-                // TODO: Implement VWAP
-                Err(anyhow!("VWAP algorithm not yet implemented"))
+            Some(ExecutionHint::Vwap {
+                duration,
+                participation_rate,
+            }) => {
+                self.handle_vwap_signal(signal.clone(), *duration, *participation_rate, ctx)
+                    .await
             }
-            Some(ExecutionHint::IcebergSimulated { .. }) => {
-                // TODO: Implement Iceberg
-                Err(anyhow!("Iceberg algorithm not yet implemented"))
+            Some(ExecutionHint::IcebergSimulated {
+                display_size,
+                limit_offset_bps,
+            }) => {
+                self.handle_iceberg_signal(signal.clone(), *display_size, *limit_offset_bps, ctx)
+                    .await
             }
             None => {
                 // Handle normal, non-algorithmic orders
@@ -190,6 +198,98 @@ impl OrderOrchestrator {
             self.send_child_order(child_req, Some(*ctx)).await?;
         }
 
+        Ok(())
+    }
+
+    async fn handle_vwap_signal(
+        &self,
+        signal: Signal,
+        duration: Duration,
+        participation_rate: Option<f64>,
+        ctx: &RiskContext,
+    ) -> Result<()> {
+        self.update_risk_context(signal.symbol.clone(), *ctx);
+        let total_quantity =
+            self.execution_engine
+                .sizer()
+                .size(&signal, ctx.portfolio_equity, ctx.last_price)?;
+        if total_quantity <= 0.0 {
+            tracing::warn!("VWAP order size is zero, skipping");
+            return Ok(());
+        }
+
+        let mut algo = VwapAlgorithm::new(signal, total_quantity, duration, participation_rate)?;
+        let algo_id = *algo.id();
+        tracing::info!(
+            id = %algo_id,
+            qty = total_quantity,
+            duration_mins = duration.num_minutes(),
+            participation = ?participation_rate,
+            "Starting new VWAP algorithm"
+        );
+
+        let initial_orders = algo.start()?;
+        {
+            let mut algorithms = self.algorithms.lock().unwrap();
+            algorithms.insert(algo_id, Box::new(algo));
+        }
+        self.persist_algo_state(&algo_id).await?;
+        for child in initial_orders {
+            self.send_child_order(child, Some(*ctx)).await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_iceberg_signal(
+        &self,
+        signal: Signal,
+        display_size: f64,
+        limit_offset_bps: Option<f64>,
+        ctx: &RiskContext,
+    ) -> Result<()> {
+        self.update_risk_context(signal.symbol.clone(), *ctx);
+        let total_quantity =
+            self.execution_engine
+                .sizer()
+                .size(&signal, ctx.portfolio_equity, ctx.last_price)?;
+        if total_quantity <= 0.0 {
+            tracing::warn!("Iceberg order size is zero, skipping");
+            return Ok(());
+        }
+        let limit_price = if ctx.last_price > 0.0 {
+            ctx.last_price
+        } else {
+            tracing::warn!(
+                "last price unavailable for iceberg order; defaulting to 1.0 for {}",
+                signal.symbol
+            );
+            1.0
+        };
+
+        let mut algo = IcebergAlgorithm::new(
+            signal,
+            total_quantity,
+            display_size,
+            limit_price,
+            limit_offset_bps,
+        )?;
+        let algo_id = *algo.id();
+        tracing::info!(
+            id = %algo_id,
+            qty = total_quantity,
+            display = display_size,
+            "Starting new Iceberg algorithm"
+        );
+
+        let initial_orders = algo.start()?;
+        {
+            let mut algorithms = self.algorithms.lock().unwrap();
+            algorithms.insert(algo_id, Box::new(algo));
+        }
+        self.persist_algo_state(&algo_id).await?;
+        for child in initial_orders {
+            self.send_child_order(child, Some(*ctx)).await?;
+        }
         Ok(())
     }
 

@@ -66,5 +66,9 @@ pub trait ExecutionAlgorithm: Send + Sync {
         Self: Sized;
 }
 
+pub mod iceberg;
 pub mod twap;
+pub mod vwap;
+pub use iceberg::IcebergAlgorithm;
 pub use twap::TwapAlgorithm;
+pub use vwap::VwapAlgorithm;
