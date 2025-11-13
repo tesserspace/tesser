@@ -30,7 +30,7 @@ impl Input for Candle {
     }
 }
 
-impl<'a, T> Input for &'a T
+impl<T> Input for &T
 where
     T: Input + ?Sized,
 {
@@ -148,6 +148,6 @@ mod tests {
     #[test]
     fn reference_input_delegates_to_inner_type() {
         let price = Decimal::from(100);
-        assert_eq!((&price).value(), Decimal::from(100));
+        assert_eq!((price).value(), Decimal::from(100));
     }
 }
