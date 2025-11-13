@@ -1,7 +1,9 @@
 //! Order orchestrator for managing algorithmic execution.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use chrono::Duration;
+use serde::{Deserialize, Serialize};
+use serde_json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
@@ -16,6 +18,12 @@ use tesser_core::{ExecutionHint, Fill, Order, Signal, Tick};
 
 /// Maps order IDs to their parent algorithm IDs for routing fills.
 type OrderToAlgoMap = HashMap<String, Uuid>;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct StoredAlgoState {
+    algo_type: String,
+    state: serde_json::Value,
+}
 
 /// Core orchestrator for managing algorithmic order execution.
 ///
@@ -71,17 +79,24 @@ impl OrderOrchestrator {
 
         let mut algorithms = self.algorithms.lock().unwrap();
 
-        for (id, state) in states {
-            // For now, we only support TWAP. In the future, we'd need to detect
-            // the algorithm type from the state and dispatch accordingly.
-            match TwapAlgorithm::from_state(state) {
+        let mut restored = 0usize;
+
+        for (id, raw_state) in states {
+            let decoded = Self::decode_stored_state(raw_state);
+            match Self::instantiate_algorithm(&decoded.algo_type, decoded.state) {
                 Ok(algo) => {
-                    tracing::info!(id = %id, "Restored TWAP algorithm from state");
-                    algorithms.insert(id, Box::new(algo));
+                    tracing::info!(
+                        id = %id,
+                        algo_type = algo.kind(),
+                        "Restored algorithm from state"
+                    );
+                    algorithms.insert(id, algo);
+                    restored += 1;
                 }
                 Err(e) => {
                     tracing::warn!(
                         id = %id,
+                        algo_type = decoded.algo_type,
                         error = %e,
                         "Failed to restore algorithm, deleting state"
                     );
@@ -97,11 +112,30 @@ impl OrderOrchestrator {
         }
 
         tracing::info!(
-            count = algorithms.len(),
+            count = restored,
             "Restored algorithms from persistent state"
         );
 
         Ok(())
+    }
+
+    fn decode_stored_state(value: serde_json::Value) -> StoredAlgoState {
+        serde_json::from_value::<StoredAlgoState>(value.clone()).unwrap_or(StoredAlgoState {
+            algo_type: "TWAP".to_string(),
+            state: value,
+        })
+    }
+
+    fn instantiate_algorithm(
+        algo_type: &str,
+        state: serde_json::Value,
+    ) -> Result<Box<dyn ExecutionAlgorithm>> {
+        match algo_type {
+            "TWAP" => Ok(Box::new(TwapAlgorithm::from_state(state)?)),
+            "VWAP" => Ok(Box::new(VwapAlgorithm::from_state(state)?)),
+            "ICEBERG" => Ok(Box::new(IcebergAlgorithm::from_state(state)?)),
+            other => bail!("unsupported algorithm type '{other}'"),
+        }
     }
 
     /// Update the latest risk context for a symbol.
@@ -547,15 +581,18 @@ impl OrderOrchestrator {
 
     /// Persist the state of a specific algorithm.
     async fn persist_algo_state(&self, id: &Uuid) -> Result<()> {
-        let state_json = {
+        let payload = {
             let algorithms = self.algorithms.lock().unwrap();
             let algo = algorithms
                 .get(id)
                 .ok_or_else(|| anyhow!("Algorithm not found for persistence: {}", id))?;
-            algo.state()
+            StoredAlgoState {
+                algo_type: algo.kind().to_string(),
+                state: algo.state(),
+            }
         };
 
-        self.state_repo.save(id, state_json)?;
+        self.state_repo.save(id, serde_json::to_value(payload)?)?;
         Ok(())
     }
 

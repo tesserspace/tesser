@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
-use tesser_core::{Order, OrderRequest, OrderType, Signal, Side, Tick, TimeInForce};
+use tesser_core::{Order, OrderRequest, OrderType, Side, Signal, Tick, TimeInForce};
 use uuid::Uuid;
 
 use super::{AlgoStatus, ChildOrderRequest, ExecutionAlgorithm};
@@ -126,6 +126,10 @@ impl IcebergAlgorithm {
 }
 
 impl ExecutionAlgorithm for IcebergAlgorithm {
+    fn kind(&self) -> &'static str {
+        "ICEBERG"
+    }
+
     fn id(&self) -> &Uuid {
         &self.state.id
     }

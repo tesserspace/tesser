@@ -112,6 +112,10 @@ impl VwapAlgorithm {
 }
 
 impl ExecutionAlgorithm for VwapAlgorithm {
+    fn kind(&self) -> &'static str {
+        "VWAP"
+    }
+
     fn id(&self) -> &Uuid {
         &self.state.id
     }

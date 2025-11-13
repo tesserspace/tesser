@@ -33,6 +33,9 @@ pub enum AlgoStatus {
 /// and generates child orders as needed. The algorithm maintains its own internal
 /// state and can be persisted and restored.
 pub trait ExecutionAlgorithm: Send + Sync {
+    /// Human-readable identifier for persistence/logging.
+    fn kind(&self) -> &'static str;
+
     /// Returns the unique ID of this algorithm instance.
     fn id(&self) -> &Uuid;
 
