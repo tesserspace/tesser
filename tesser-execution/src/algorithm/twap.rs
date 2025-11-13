@@ -150,6 +150,10 @@ impl TwapAlgorithm {
 }
 
 impl ExecutionAlgorithm for TwapAlgorithm {
+    fn kind(&self) -> &'static str {
+        "TWAP"
+    }
+
     fn id(&self) -> &Uuid {
         &self.state.id
     }

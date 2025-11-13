@@ -25,9 +25,17 @@ pub enum ExecutionHint {
     /// Time-Weighted Average Price execution over specified duration.
     Twap { duration: Duration },
     /// Volume-Weighted Average Price execution.
-    Vwap { duration: Duration },
+    Vwap {
+        duration: Duration,
+        #[serde(default)]
+        participation_rate: Option<f64>,
+    },
     /// Iceberg order (simulated in software).
-    IcebergSimulated { display_size: Quantity },
+    IcebergSimulated {
+        display_size: Quantity,
+        #[serde(default)]
+        limit_offset_bps: Option<f64>,
+    },
 }
 
 /// The side of an order or position.

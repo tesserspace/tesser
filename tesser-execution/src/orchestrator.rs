@@ -1,19 +1,29 @@
 //! Order orchestrator for managing algorithmic execution.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use chrono::Duration;
+use serde::{Deserialize, Serialize};
+use serde_json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-use crate::algorithm::twap::TwapAlgorithm;
-use crate::algorithm::{AlgoStatus, ChildOrderRequest, ExecutionAlgorithm};
+use crate::algorithm::{
+    AlgoStatus, ChildOrderRequest, ExecutionAlgorithm, IcebergAlgorithm, TwapAlgorithm,
+    VwapAlgorithm,
+};
 use crate::repository::AlgoStateRepository;
 use crate::{ExecutionEngine, RiskContext};
 use tesser_core::{ExecutionHint, Fill, Order, Signal, Tick};
 
 /// Maps order IDs to their parent algorithm IDs for routing fills.
 type OrderToAlgoMap = HashMap<String, Uuid>;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct StoredAlgoState {
+    algo_type: String,
+    state: serde_json::Value,
+}
 
 /// Core orchestrator for managing algorithmic order execution.
 ///
@@ -69,17 +79,24 @@ impl OrderOrchestrator {
 
         let mut algorithms = self.algorithms.lock().unwrap();
 
-        for (id, state) in states {
-            // For now, we only support TWAP. In the future, we'd need to detect
-            // the algorithm type from the state and dispatch accordingly.
-            match TwapAlgorithm::from_state(state) {
+        let mut restored = 0usize;
+
+        for (id, raw_state) in states {
+            let decoded = Self::decode_stored_state(raw_state);
+            match Self::instantiate_algorithm(&decoded.algo_type, decoded.state) {
                 Ok(algo) => {
-                    tracing::info!(id = %id, "Restored TWAP algorithm from state");
-                    algorithms.insert(id, Box::new(algo));
+                    tracing::info!(
+                        id = %id,
+                        algo_type = algo.kind(),
+                        "Restored algorithm from state"
+                    );
+                    algorithms.insert(id, algo);
+                    restored += 1;
                 }
                 Err(e) => {
                     tracing::warn!(
                         id = %id,
+                        algo_type = decoded.algo_type,
                         error = %e,
                         "Failed to restore algorithm, deleting state"
                     );
@@ -95,11 +112,30 @@ impl OrderOrchestrator {
         }
 
         tracing::info!(
-            count = algorithms.len(),
+            count = restored,
             "Restored algorithms from persistent state"
         );
 
         Ok(())
+    }
+
+    fn decode_stored_state(value: serde_json::Value) -> StoredAlgoState {
+        serde_json::from_value::<StoredAlgoState>(value.clone()).unwrap_or(StoredAlgoState {
+            algo_type: "TWAP".to_string(),
+            state: value,
+        })
+    }
+
+    fn instantiate_algorithm(
+        algo_type: &str,
+        state: serde_json::Value,
+    ) -> Result<Box<dyn ExecutionAlgorithm>> {
+        match algo_type {
+            "TWAP" => Ok(Box::new(TwapAlgorithm::from_state(state)?)),
+            "VWAP" => Ok(Box::new(VwapAlgorithm::from_state(state)?)),
+            "ICEBERG" => Ok(Box::new(IcebergAlgorithm::from_state(state)?)),
+            other => bail!("unsupported algorithm type '{other}'"),
+        }
     }
 
     /// Update the latest risk context for a symbol.
@@ -120,13 +156,19 @@ impl OrderOrchestrator {
                 self.handle_twap_signal(signal.clone(), *duration, ctx)
                     .await
             }
-            Some(ExecutionHint::Vwap { .. }) => {
-                // TODO: Implement VWAP
-                Err(anyhow!("VWAP algorithm not yet implemented"))
+            Some(ExecutionHint::Vwap {
+                duration,
+                participation_rate,
+            }) => {
+                self.handle_vwap_signal(signal.clone(), *duration, *participation_rate, ctx)
+                    .await
             }
-            Some(ExecutionHint::IcebergSimulated { .. }) => {
-                // TODO: Implement Iceberg
-                Err(anyhow!("Iceberg algorithm not yet implemented"))
+            Some(ExecutionHint::IcebergSimulated {
+                display_size,
+                limit_offset_bps,
+            }) => {
+                self.handle_iceberg_signal(signal.clone(), *display_size, *limit_offset_bps, ctx)
+                    .await
             }
             None => {
                 // Handle normal, non-algorithmic orders
@@ -190,6 +232,98 @@ impl OrderOrchestrator {
             self.send_child_order(child_req, Some(*ctx)).await?;
         }
 
+        Ok(())
+    }
+
+    async fn handle_vwap_signal(
+        &self,
+        signal: Signal,
+        duration: Duration,
+        participation_rate: Option<f64>,
+        ctx: &RiskContext,
+    ) -> Result<()> {
+        self.update_risk_context(signal.symbol.clone(), *ctx);
+        let total_quantity =
+            self.execution_engine
+                .sizer()
+                .size(&signal, ctx.portfolio_equity, ctx.last_price)?;
+        if total_quantity <= 0.0 {
+            tracing::warn!("VWAP order size is zero, skipping");
+            return Ok(());
+        }
+
+        let mut algo = VwapAlgorithm::new(signal, total_quantity, duration, participation_rate)?;
+        let algo_id = *algo.id();
+        tracing::info!(
+            id = %algo_id,
+            qty = total_quantity,
+            duration_mins = duration.num_minutes(),
+            participation = ?participation_rate,
+            "Starting new VWAP algorithm"
+        );
+
+        let initial_orders = algo.start()?;
+        {
+            let mut algorithms = self.algorithms.lock().unwrap();
+            algorithms.insert(algo_id, Box::new(algo));
+        }
+        self.persist_algo_state(&algo_id).await?;
+        for child in initial_orders {
+            self.send_child_order(child, Some(*ctx)).await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_iceberg_signal(
+        &self,
+        signal: Signal,
+        display_size: f64,
+        limit_offset_bps: Option<f64>,
+        ctx: &RiskContext,
+    ) -> Result<()> {
+        self.update_risk_context(signal.symbol.clone(), *ctx);
+        let total_quantity =
+            self.execution_engine
+                .sizer()
+                .size(&signal, ctx.portfolio_equity, ctx.last_price)?;
+        if total_quantity <= 0.0 {
+            tracing::warn!("Iceberg order size is zero, skipping");
+            return Ok(());
+        }
+        let limit_price = if ctx.last_price > 0.0 {
+            ctx.last_price
+        } else {
+            tracing::warn!(
+                "last price unavailable for iceberg order; defaulting to 1.0 for {}",
+                signal.symbol
+            );
+            1.0
+        };
+
+        let mut algo = IcebergAlgorithm::new(
+            signal,
+            total_quantity,
+            display_size,
+            limit_price,
+            limit_offset_bps,
+        )?;
+        let algo_id = *algo.id();
+        tracing::info!(
+            id = %algo_id,
+            qty = total_quantity,
+            display = display_size,
+            "Starting new Iceberg algorithm"
+        );
+
+        let initial_orders = algo.start()?;
+        {
+            let mut algorithms = self.algorithms.lock().unwrap();
+            algorithms.insert(algo_id, Box::new(algo));
+        }
+        self.persist_algo_state(&algo_id).await?;
+        for child in initial_orders {
+            self.send_child_order(child, Some(*ctx)).await?;
+        }
         Ok(())
     }
 
@@ -447,15 +581,18 @@ impl OrderOrchestrator {
 
     /// Persist the state of a specific algorithm.
     async fn persist_algo_state(&self, id: &Uuid) -> Result<()> {
-        let state_json = {
+        let payload = {
             let algorithms = self.algorithms.lock().unwrap();
             let algo = algorithms
                 .get(id)
                 .ok_or_else(|| anyhow!("Algorithm not found for persistence: {}", id))?;
-            algo.state()
+            StoredAlgoState {
+                algo_type: algo.kind().to_string(),
+                state: algo.state(),
+            }
         };
 
-        self.state_repo.save(id, state_json)?;
+        self.state_repo.save(id, serde_json::to_value(payload)?)?;
         Ok(())
     }
 

@@ -5,12 +5,15 @@ extern crate self as tesser_strategy;
 pub use tesser_strategy_macros::register_strategy;
 pub use toml::Value;
 
+use chrono::Duration;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::sync::{Arc, RwLock};
-use tesser_core::{Candle, Fill, OrderBook, Position, Signal, SignalKind, Symbol, Tick};
+use tesser_core::{
+    Candle, ExecutionHint, Fill, OrderBook, Position, Signal, SignalKind, Symbol, Tick,
+};
 use thiserror::Error;
 
 /// Result alias used within strategy implementations.
@@ -400,6 +403,8 @@ pub struct SmaCrossConfig {
     pub fast_period: usize,
     pub slow_period: usize,
     pub min_samples: usize,
+    pub vwap_duration_secs: Option<i64>,
+    pub vwap_participation: Option<f64>,
 }
 
 impl Default for SmaCrossConfig {
@@ -409,6 +414,8 @@ impl Default for SmaCrossConfig {
             fast_period: 5,
             slow_period: 20,
             min_samples: 25,
+            vwap_duration_secs: None,
+            vwap_participation: None,
         }
     }
 }
@@ -457,6 +464,17 @@ impl SmaCross {
                 let mut signal = Signal::new(self.cfg.symbol.clone(), SignalKind::EnterLong, 0.75);
                 if let Some(last_candle) = ctx.candles().back() {
                     signal.stop_loss = Some(last_candle.low * 0.98);
+                }
+                if let Some(duration_secs) = self.cfg.vwap_duration_secs.filter(|v| *v > 0) {
+                    let duration = Duration::seconds(duration_secs);
+                    let participation = self
+                        .cfg
+                        .vwap_participation
+                        .map(|value| value.clamp(0.0, 1.0));
+                    signal.execution_hint = Some(ExecutionHint::Vwap {
+                        duration,
+                        participation_rate: participation,
+                    });
                 }
                 self.signals.push(signal);
             } else if fast_prev >= slow_prev && fast_last < slow_last {
