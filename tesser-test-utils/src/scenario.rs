@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hyper::StatusCode;
+use rust_decimal::Decimal;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -20,6 +21,15 @@ pub enum ScenarioAction {
     Delay(Duration),
     Fail { status: StatusCode, reason: String },
     InjectPrivateEvent(Value),
+    FillPlan { steps: Vec<OrderFillStep> },
+}
+
+/// Declarative instruction for staged fills.
+#[derive(Clone, Debug)]
+pub struct OrderFillStep {
+    pub after: Duration,
+    pub quantity: Decimal,
+    pub price: Option<Decimal>,
 }
 
 /// Declarative scenario scheduled for execution.

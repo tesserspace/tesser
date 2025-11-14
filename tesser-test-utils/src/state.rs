@@ -2,11 +2,16 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use chrono::Utc;
+use rust_decimal::Decimal;
 use tokio::sync::{mpsc, Mutex};
 
-use tesser_core::{AccountBalance, Candle, Fill, Order, OrderId, Position, Symbol, Tick};
+use tesser_core::{AccountBalance, Candle, Fill, Order, OrderId, Position, Side, Symbol, Tick};
 
 use crate::scenario::ScenarioManager;
+
+const EXEC_HISTORY_LIMIT: usize = 1024;
+const DEFAULT_QUOTE_CURRENCY: &str = "USDT";
 
 pub type ApiKey = String;
 
@@ -23,9 +28,9 @@ pub struct MockExchangeState {
 #[allow(dead_code)]
 pub(crate) struct Inner {
     pub accounts: HashMap<ApiKey, AccountState>,
-    pub orders: HashMap<OrderId, Order>,
     pub market_data: MarketDataQueues,
     pub private_ws_sender: Option<mpsc::UnboundedSender<PrivateMessage>>,
+    pub order_seq: u64,
 }
 
 #[derive(Clone)]
@@ -34,6 +39,7 @@ pub struct AccountState {
     pub balances: HashMap<String, AccountBalance>,
     pub positions: HashMap<Symbol, Position>,
     pub executions: VecDeque<Fill>,
+    pub orders: HashMap<OrderId, Order>,
 }
 
 impl AccountState {
@@ -51,7 +57,125 @@ impl AccountState {
                 .map(|position| (position.symbol.clone(), position))
                 .collect(),
             executions: VecDeque::new(),
+            orders: HashMap::new(),
         }
+    }
+
+    pub fn insert_order(&mut self, order: Order) {
+        self.orders.insert(order.id.clone(), order);
+    }
+
+    pub fn update_order<F>(&mut self, order_id: &OrderId, mut update: F) -> Result<Order>
+    where
+        F: FnMut(&mut Order) -> Result<()>,
+    {
+        let order = self
+            .orders
+            .get_mut(order_id)
+            .ok_or_else(|| anyhow!("unknown order id {order_id}"))?;
+        update(order)?;
+        Ok(order.clone())
+    }
+
+    pub fn apply_fill(&mut self, fill: &Fill) {
+        self.executions.push_back(fill.clone());
+        if self.executions.len() > EXEC_HISTORY_LIMIT {
+            self.executions.pop_front();
+        }
+        self.update_positions(fill);
+        self.update_balances(fill);
+    }
+
+    fn update_positions(&mut self, fill: &Fill) {
+        let entry = self
+            .positions
+            .entry(fill.symbol.clone())
+            .or_insert_with(|| Position {
+                symbol: fill.symbol.clone(),
+                side: None,
+                quantity: Decimal::ZERO,
+                entry_price: None,
+                unrealized_pnl: Decimal::ZERO,
+                updated_at: Utc::now(),
+            });
+        entry.updated_at = Utc::now();
+
+        match (entry.side, fill.side) {
+            (None, Side::Buy) => {
+                entry.side = Some(Side::Buy);
+                entry.quantity = fill.fill_quantity;
+                entry.entry_price = Some(fill.fill_price);
+            }
+            (None, Side::Sell) => {
+                entry.side = Some(Side::Sell);
+                entry.quantity = fill.fill_quantity;
+                entry.entry_price = Some(fill.fill_price);
+            }
+            (Some(Side::Buy), Side::Buy) => {
+                let total_qty = entry.quantity + fill.fill_quantity;
+                let existing_value = entry.entry_price.unwrap_or(Decimal::ZERO) * entry.quantity;
+                let fill_value = fill.fill_price * fill.fill_quantity;
+                entry.quantity = total_qty;
+                entry.entry_price = Some((existing_value + fill_value) / total_qty);
+            }
+            (Some(Side::Sell), Side::Sell) => {
+                let total_qty = entry.quantity + fill.fill_quantity;
+                let existing_value = entry.entry_price.unwrap_or(Decimal::ZERO) * entry.quantity;
+                let fill_value = fill.fill_price * fill.fill_quantity;
+                entry.quantity = total_qty;
+                entry.entry_price = Some((existing_value + fill_value) / total_qty);
+            }
+            (Some(Side::Buy), Side::Sell) => {
+                if fill.fill_quantity < entry.quantity {
+                    entry.quantity -= fill.fill_quantity;
+                } else if fill.fill_quantity == entry.quantity {
+                    entry.quantity = Decimal::ZERO;
+                    entry.side = None;
+                    entry.entry_price = None;
+                } else {
+                    entry.side = Some(Side::Sell);
+                    entry.quantity = fill.fill_quantity - entry.quantity;
+                    entry.entry_price = Some(fill.fill_price);
+                }
+            }
+            (Some(Side::Sell), Side::Buy) => {
+                if fill.fill_quantity < entry.quantity {
+                    entry.quantity -= fill.fill_quantity;
+                } else if fill.fill_quantity == entry.quantity {
+                    entry.quantity = Decimal::ZERO;
+                    entry.side = None;
+                    entry.entry_price = None;
+                } else {
+                    entry.side = Some(Side::Buy);
+                    entry.quantity = fill.fill_quantity - entry.quantity;
+                    entry.entry_price = Some(fill.fill_price);
+                }
+            }
+        }
+    }
+
+    fn update_balances(&mut self, fill: &Fill) {
+        let quote = self
+            .balances
+            .entry(DEFAULT_QUOTE_CURRENCY.to_string())
+            .or_insert(AccountBalance {
+                currency: DEFAULT_QUOTE_CURRENCY.into(),
+                total: Decimal::ZERO,
+                available: Decimal::ZERO,
+                updated_at: Utc::now(),
+            });
+        let notional = fill.fill_price * fill.fill_quantity;
+        match fill.side {
+            Side::Buy => {
+                quote.total -= notional;
+                quote.available = quote.total;
+            }
+            Side::Sell => {
+                quote.total += notional;
+                quote.available = quote.total;
+            }
+        }
+        quote.updated_at = Utc::now();
     }
 }
 
@@ -171,9 +295,9 @@ impl MockExchangeState {
             .collect();
         let inner = Inner {
             accounts,
-            orders: HashMap::new(),
             market_data,
             private_ws_sender: None,
+            order_seq: 1,
         };
         Self {
             inner: Arc::new(Mutex::new(inner)),
@@ -211,5 +335,44 @@ impl MockExchangeState {
         } else {
             Ok(())
         }
+    }
+
+    pub async fn account_secret(&self, api_key: &str) -> Option<String> {
+        let guard = self.inner.lock().await;
+        guard
+            .accounts
+            .get(api_key)
+            .map(|account| account.api_secret.clone())
+    }
+
+    pub async fn with_account_mut<F, T>(&self, api_key: &str, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut AccountState) -> Result<T>,
+    {
+        let mut guard = self.inner.lock().await;
+        let account = guard
+            .accounts
+            .get_mut(api_key)
+            .ok_or_else(|| anyhow!("unknown API key {api_key}"))?;
+        f(account)
+    }
+
+    pub async fn with_account<F, T>(&self, api_key: &str, f: F) -> Result<T>
+    where
+        F: FnOnce(&AccountState) -> T,
+    {
+        let guard = self.inner.lock().await;
+        let account = guard
+            .accounts
+            .get(api_key)
+            .ok_or_else(|| anyhow!("unknown API key {api_key}"))?;
+        Ok(f(account))
+    }
+
+    pub async fn next_order_id(&self) -> OrderId {
+        let mut guard = self.inner.lock().await;
+        let id = guard.order_seq;
+        guard.order_seq += 1;
+        format!("MOCK-ORDER-{id}")
     }
 }

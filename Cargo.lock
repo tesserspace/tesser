@@ -2266,10 +2266,12 @@ name = "tesser-test-utils"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "futures",
  "hex",
  "hmac",
  "hyper 0.14.32",
+ "rust_decimal",
  "serde",
  "serde_json",
  "sha2",
@@ -2277,6 +2279,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

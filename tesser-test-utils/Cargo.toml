@@ -22,3 +22,6 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 tracing.workspace = true
 tesser-core.workspace = true
+chrono.workspace = true
+rust_decimal.workspace = true
+uuid.workspace = true
