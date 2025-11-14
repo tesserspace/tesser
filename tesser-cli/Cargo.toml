@@ -33,3 +33,7 @@ tesser-broker = { path = "../tesser-broker" }
 tesser-paper = { path = "../connectors/tesser-paper" }
 tesser-bybit = { path = "../connectors/tesser-bybit" }
 rust_decimal.workspace = true
+
+[dev-dependencies]
+tesser-test-utils = { path = "../tesser-test-utils" }
+tempfile = "3.10"

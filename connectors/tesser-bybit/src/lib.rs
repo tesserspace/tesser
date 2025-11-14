@@ -37,6 +37,7 @@ pub struct BybitConfig {
     pub base_url: String,
     pub category: String,
     pub recv_window: u64,
+    pub ws_url: Option<String>,
 }
 
 impl Default for BybitConfig {
@@ -45,6 +46,7 @@ impl Default for BybitConfig {
             base_url: "https://api-testnet.bybit.com".into(),
             category: "linear".into(),
             recv_window: 5_000,
+            ws_url: None,
         }
     }
 }
@@ -87,7 +89,10 @@ impl BybitClient {
     }
 
     pub fn get_ws_url(&self) -> String {
-        self.config.base_url.replace("https://api", "wss://stream")
+        self.config
+            .ws_url
+            .clone()
+            .unwrap_or_else(|| self.config.base_url.replace("https://api", "wss://stream"))
     }
 
     /// Fetch Bybit server time (docs/v5/market/time.mdx).

@@ -12,7 +12,7 @@ members = [
     "tesser-cli",
     "connectors/tesser-bybit",
     "connectors/tesser-paper",
-    "tesser-config", "tesser-indicators",
+    "tesser-config", "tesser-indicators", "tesser-test-utils",
 ]
 
 [workspace.package]
@@ -32,6 +32,7 @@ futures = "0.3"
 hex = "0.4"
 hmac = "0.12"
 hyper = { version = "0.14", features = ["http1", "tcp", "server"] }
+http = "0.2"
 num-traits = "0.2"
 prometheus = { version = "0.13", default-features = false, features = ["process"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }

@@ -1,19 +1,14 @@
-mod alerts;
-mod data_validation;
-mod live;
-mod state;
-mod telemetry;
-
-use crate::alerts::sanitize_webhook;
-use crate::data_validation::{validate_dataset, ValidationConfig, ValidationOutcome};
-use crate::live::{run_live, ExecutionBackend, LiveSessionSettings};
-use crate::telemetry::init_tracing;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use tesser_cli::alerts::sanitize_webhook;
+use tesser_cli::data_validation::{validate_dataset, ValidationConfig, ValidationOutcome};
+use tesser_cli::live::{run_live, ExecutionBackend, LiveSessionSettings};
+use tesser_cli::state;
+use tesser_cli::telemetry::init_tracing;
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};

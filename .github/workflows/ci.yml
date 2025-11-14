@@ -55,3 +55,7 @@ jobs:
       # 6. Run all tests in the workspace
       - name: Run tests
         run: cargo test --release --all-targets
+
+      # 7. Execute the live_run integration test with full logs for better diagnostics
+      - name: Run live run integration test
+        run: cargo test --release --test live_run -- --nocapture

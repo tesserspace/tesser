@@ -2116,6 +2116,7 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
+ "tempfile",
  "tesser-backtester",
  "tesser-broker",
  "tesser-bybit",
@@ -2126,6 +2127,7 @@ dependencies = [
  "tesser-paper",
  "tesser-portfolio",
  "tesser-strategy",
+ "tesser-test-utils",
  "tokio",
  "tokio-tungstenite",
  "toml",
@@ -2259,6 +2261,29 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.109",
+]
+
+[[package]]
+name = "tesser-test-utils"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures",
+ "hex",
+ "hmac",
+ "http 0.2.12",
+ "hyper 0.14.32",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2",
+ "tesser-core",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

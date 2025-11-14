@@ -89,6 +89,17 @@ pub async fn run_live(
     exchange: ExchangeConfig,
     settings: LiveSessionSettings,
 ) -> Result<()> {
+    run_live_with_shutdown(strategy, symbols, exchange, settings, ShutdownSignal::new()).await
+}
+
+/// Variant of [`run_live`] that accepts a manually controlled shutdown signal.
+pub async fn run_live_with_shutdown(
+    strategy: Box<dyn Strategy>,
+    symbols: Vec<String>,
+    exchange: ExchangeConfig,
+    settings: LiveSessionSettings,
+    shutdown: ShutdownSignal,
+) -> Result<()> {
     if symbols.is_empty() {
         return Err(anyhow!("strategy did not declare any subscriptions"));
     }
@@ -147,7 +158,8 @@ pub async fn run_live(
     // Create orchestrator with execution engine
     let orchestrator = OrderOrchestrator::new(Arc::new(execution), algo_state_repo).await?;
 
-    let runtime = LiveRuntime::new(stream, strategy, symbols, orchestrator, settings).await?;
+    let runtime =
+        LiveRuntime::new(stream, strategy, symbols, orchestrator, settings, shutdown).await?;
     runtime.run().await
 }
 
@@ -173,6 +185,7 @@ fn build_execution_client(
                     base_url: exchange.rest_url.clone(),
                     category: settings.category.as_path().to_string(),
                     recv_window: 5_000,
+                    ws_url: Some(exchange.ws_url.clone()),
                 },
                 Some(BybitCredentials {
                     api_key: api_key.to_string(),
@@ -211,6 +224,7 @@ impl LiveRuntime {
         symbols: Vec<String>,
         orchestrator: OrderOrchestrator,
         settings: LiveSessionSettings,
+        shutdown: ShutdownSignal,
     ) -> Result<Self> {
         let mut strategy_ctx = StrategyContext::new(settings.history);
         let state_repo: Arc<dyn StateRepository> =
@@ -283,7 +297,6 @@ impl LiveRuntime {
         let dispatcher = AlertDispatcher::new(settings.alerting.webhook_url.clone());
         let alerts = AlertManager::new(settings.alerting, dispatcher);
         let alert_task = alerts.spawn_watchdog();
-        let shutdown = ShutdownSignal::new();
         let (private_event_tx, private_event_rx) = mpsc::channel(1024);
         let last_private_sync = Arc::new(tokio::sync::Mutex::new(persisted.last_candle_ts));
 
@@ -825,13 +838,14 @@ impl MarketSnapshot {
     }
 }
 
-struct ShutdownSignal {
+#[derive(Clone)]
+pub struct ShutdownSignal {
     flag: Arc<AtomicBool>,
     notify: Arc<Notify>,
 }
 
 impl ShutdownSignal {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let flag = Arc::new(AtomicBool::new(false));
         let notify = Arc::new(Notify::new());
         let flag_clone = flag.clone();
@@ -845,6 +859,11 @@ impl ShutdownSignal {
         Self { flag, notify }
     }
 
+    pub fn trigger(&self) {
+        self.flag.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
     fn triggered(&self) -> bool {
         self.flag.load(Ordering::SeqCst)
     }
@@ -854,5 +873,11 @@ impl ShutdownSignal {
             _ = tokio::time::sleep(duration) => true,
             _ = self.notify.notified() => false,
         }
+    }
+}
+
+impl Default for ShutdownSignal {
+    fn default() -> Self {
+        Self::new()
     }
 }

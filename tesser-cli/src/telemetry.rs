@@ -149,6 +149,12 @@ impl LiveMetrics {
     }
 }
 
+impl Default for LiveMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Launch a lightweight HTTP server that exposes Prometheus metrics.
 pub fn spawn_metrics_server(registry: Registry, addr: SocketAddr) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
