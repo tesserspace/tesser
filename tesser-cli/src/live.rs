@@ -920,6 +920,7 @@ fn spawn_event_subscribers(
                         market_alerts.clone(),
                         market_snapshot.clone(),
                         market_portfolio.clone(),
+                        market_state.clone(),
                         market_persisted.clone(),
                         market_bus.clone(),
                     )
@@ -1084,6 +1085,7 @@ async fn process_tick_event(
     alerts: Arc<AlertManager>,
     market: Arc<Mutex<HashMap<String, MarketSnapshot>>>,
     portfolio: Arc<Mutex<Portfolio>>,
+    state_repo: Arc<dyn StateRepository>,
     persisted: Arc<Mutex<LiveState>>,
     bus: Arc<EventBus>,
 ) -> Result<()> {
@@ -1097,15 +1099,39 @@ async fn process_tick_event(
             snapshot.last_trade_ts = Some(tick.exchange_timestamp);
         }
     }
+    let mut drawdown_triggered = false;
+    let mut snapshot_on_trigger = None;
+    {
+        let mut guard = portfolio.lock().await;
+        let was_liquidate_only = guard.liquidate_only();
+        match guard.update_market_data(&tick.symbol, tick.price) {
+            Ok(_) => {
+                if !was_liquidate_only && guard.liquidate_only() {
+                    drawdown_triggered = true;
+                    snapshot_on_trigger = Some(guard.snapshot());
+                }
+            }
+            Err(err) => {
+                warn!(
+                    symbol = %tick.symbol,
+                    error = %err,
+                    "failed to refresh market data"
+                );
+            }
+        }
+    }
     {
         let mut state = persisted.lock().await;
         state.last_prices.insert(tick.symbol.clone(), tick.price);
-    }
-    {
-        let mut guard = portfolio.lock().await;
-        if let Err(err) = guard.update_market_data(&tick.symbol, tick.price) {
-            warn!(symbol = %tick.symbol, error = %err, "failed to refresh market data");
+        if drawdown_triggered {
+            if let Some(snapshot) = snapshot_on_trigger.take() {
+                state.portfolio = Some(snapshot);
+            }
         }
+    }
+    if drawdown_triggered {
+        persist_state(state_repo.clone(), persisted.clone()).await?;
+        alert_liquidate_only(alerts.clone()).await;
     }
     {
         let mut ctx = strategy_ctx.lock().await;
@@ -1151,11 +1177,33 @@ async fn process_candle_event(
             paper.update_price(&candle.symbol, candle.close);
         }
     }
+    let mut candle_drawdown_triggered = false;
+    let mut candle_snapshot = None;
     {
         let mut guard = portfolio.lock().await;
-        if let Err(err) = guard.update_market_data(&candle.symbol, candle.close) {
-            warn!(symbol = %candle.symbol, error = %err, "failed to refresh market data");
+        let was_liquidate_only = guard.liquidate_only();
+        match guard.update_market_data(&candle.symbol, candle.close) {
+            Ok(_) => {
+                if !was_liquidate_only && guard.liquidate_only() {
+                    candle_drawdown_triggered = true;
+                    candle_snapshot = Some(guard.snapshot());
+                }
+            }
+            Err(err) => {
+                warn!(
+                    symbol = %candle.symbol,
+                    error = %err,
+                    "failed to refresh market data"
+                );
+            }
         }
+    }
+    if candle_drawdown_triggered {
+        if let Some(snapshot) = candle_snapshot.take() {
+            let mut persisted_guard = persisted.lock().await;
+            persisted_guard.portfolio = Some(snapshot);
+        }
+        alert_liquidate_only(alerts.clone()).await;
     }
     {
         let mut ctx = strategy_ctx.lock().await;
@@ -1239,11 +1287,16 @@ async fn process_fill_event(
     state_repo: Arc<dyn StateRepository>,
     persisted: Arc<Mutex<LiveState>>,
 ) -> Result<()> {
+    let mut drawdown_triggered = false;
     {
         let mut guard = portfolio.lock().await;
+        let was_liquidate_only = guard.liquidate_only();
         guard
             .apply_fill(&fill)
             .context("Failed to apply fill to portfolio")?;
+        if !was_liquidate_only && guard.liquidate_only() {
+            drawdown_triggered = true;
+        }
         let snapshot = guard.snapshot();
         let mut persisted_guard = persisted.lock().await;
         persisted_guard.portfolio = Some(snapshot);
@@ -1287,6 +1340,9 @@ async fn process_fill_event(
             ),
         )
         .await;
+    if drawdown_triggered {
+        alert_liquidate_only(alerts.clone()).await;
+    }
     persist_state(state_repo.clone(), persisted.clone()).await?;
     Ok(())
 }
@@ -1386,6 +1442,15 @@ async fn shared_risk_context(
         last_price,
         liquidate_only,
     }
+}
+
+async fn alert_liquidate_only(alerts: Arc<AlertManager>) {
+    alerts
+        .notify(
+            "Max drawdown triggered",
+            "Portfolio entered liquidate-only mode; new exposure blocked until review",
+        )
+        .await;
 }
 
 async fn load_market_registry(

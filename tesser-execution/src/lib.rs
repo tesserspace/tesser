@@ -239,6 +239,63 @@ mod tests {
             "unexpected error: {err}"
         );
     }
+
+    #[test]
+    fn liquidate_only_blocks_new_exposure() {
+        let checker = BasicRiskChecker::new(RiskLimits {
+            max_order_quantity: Decimal::ZERO,
+            max_position_quantity: Decimal::ZERO,
+        });
+        let ctx = RiskContext {
+            signed_position_qty: Decimal::from(2),
+            portfolio_equity: Decimal::from(10_000),
+            last_price: Decimal::from(25_000),
+            liquidate_only: true,
+        };
+        let order = OrderRequest {
+            symbol: "BTCUSDT".into(),
+            side: Side::Buy,
+            order_type: OrderType::Market,
+            quantity: Decimal::ONE,
+            price: None,
+            trigger_price: None,
+            time_in_force: None,
+            client_order_id: None,
+            take_profit: None,
+            stop_loss: None,
+            display_quantity: None,
+        };
+        let result = checker.check(&order, &ctx);
+        assert!(matches!(result, Err(RiskError::LiquidateOnly)));
+    }
+
+    #[test]
+    fn liquidate_only_allows_position_reduction() {
+        let checker = BasicRiskChecker::new(RiskLimits {
+            max_order_quantity: Decimal::ZERO,
+            max_position_quantity: Decimal::ZERO,
+        });
+        let ctx = RiskContext {
+            signed_position_qty: Decimal::from(2),
+            portfolio_equity: Decimal::from(10_000),
+            last_price: Decimal::from(25_000),
+            liquidate_only: true,
+        };
+        let reduce = OrderRequest {
+            symbol: "BTCUSDT".into(),
+            side: Side::Sell,
+            order_type: OrderType::Market,
+            quantity: Decimal::ONE,
+            price: None,
+            trigger_price: None,
+            time_in_force: None,
+            client_order_id: None,
+            take_profit: None,
+            stop_loss: None,
+            display_quantity: None,
+        };
+        assert!(checker.check(&reduce, &ctx).is_ok());
+    }
 }
 
 /// Errors surfaced by pre-trade risk checks.

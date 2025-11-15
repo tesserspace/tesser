@@ -680,4 +680,22 @@ mod tests {
         portfolio.apply_fill(&buy).unwrap();
         assert!(portfolio.cash() < Decimal::from(10_000));
     }
+
+    #[test]
+    fn triggers_liquidate_only_on_drawdown() {
+        let registry = sample_registry();
+        let config = PortfolioConfig {
+            max_drawdown: Some(Decimal::new(2, 2)), // 2%
+            ..PortfolioConfig::default()
+        };
+        let mut portfolio = Portfolio::new(config, registry);
+        let buy = sample_fill(Side::Buy, Decimal::from(10), Decimal::from(10));
+        portfolio.apply_fill(&buy).unwrap();
+        assert!(!portfolio.liquidate_only());
+        // Price crash reduces equity by more than 2%
+        portfolio
+            .update_market_data(&buy.symbol, Decimal::ZERO)
+            .unwrap();
+        assert!(portfolio.liquidate_only());
+    }
 }
