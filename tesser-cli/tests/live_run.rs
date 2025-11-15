@@ -439,10 +439,23 @@ async fn alerts_on_rejected_order() -> Result<()> {
     ));
 
     // Wait for a rejection alert
-    let alert = timeout(Duration::from_secs(5), alert_rx.recv())
-        .await
-        .context("alert listener timed out")?
-        .context("alert channel closed unexpectedly")?;
+    let alert = timeout(Duration::from_secs(5), async {
+        loop {
+            match alert_rx.recv().await {
+                Some(alert)
+                    if alert.get("title").and_then(|value| value.as_str())
+                        == Some("Order rejected") =>
+                {
+                    break Some(alert);
+                }
+                Some(_) => continue,
+                None => break None,
+            }
+        }
+    })
+    .await
+    .context("alert listener timed out")?
+    .context("alert channel closed unexpectedly")?;
     assert_eq!(
         alert.get("title").and_then(|value| value.as_str()),
         Some("Order rejected")
