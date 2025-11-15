@@ -134,6 +134,8 @@ async fn live_run_executes_round_trip() -> Result<()> {
         .await;
 
     let temp = tempdir()?;
+    let markets_file =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/markets.toml");
     let settings = LiveSessionSettings {
         category: PublicChannel::Linear,
         interval: Interval::OneMinute,
@@ -145,7 +147,7 @@ async fn live_run_executes_round_trip() -> Result<()> {
         state_path: temp.path().join("live_state.db"),
         initial_balances: HashMap::from([(String::from("USDT"), Decimal::new(10_000, 0))]),
         reporting_currency: "USDT".into(),
-        markets_file: Some(PathBuf::from("config/markets.toml")),
+        markets_file: Some(markets_file),
         alerting: AlertingConfig::default(),
         exec_backend: ExecutionBackend::Live,
         risk: RiskManagementConfig::default(),
