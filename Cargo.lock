@@ -2048,6 +2048,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tesser"
+version = "0.1.0"
+dependencies = [
+ "tesser-backtester",
+ "tesser-broker",
+ "tesser-bybit",
+ "tesser-config",
+ "tesser-core",
+ "tesser-data",
+ "tesser-events",
+ "tesser-execution",
+ "tesser-indicators",
+ "tesser-markets",
+ "tesser-paper",
+ "tesser-portfolio",
+ "tesser-strategy",
+ "tesser-strategy-macros",
+]
+
+[[package]]
 name = "tesser-backtester"
 version = "0.1.0"
 dependencies = [

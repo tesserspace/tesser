@@ -13,7 +13,11 @@ members = [
     "tesser-events",
     "connectors/tesser-bybit",
     "connectors/tesser-paper",
-    "tesser-config", "tesser-indicators", "tesser-test-utils", "tesser-markets",
+    "tesser-config", 
+    "tesser-indicators", 
+    "tesser-test-utils", 
+    "tesser-markets",
+    "tesser",
 ]
 
 [workspace.package]
