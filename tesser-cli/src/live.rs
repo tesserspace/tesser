@@ -644,10 +644,23 @@ impl LiveRuntime {
                     progressed = true;
                     match event {
                         BrokerEvent::OrderUpdate(order) => {
+                            info!(
+                                order_id = %order.id,
+                                status = ?order.status,
+                                symbol = %order.request.symbol,
+                                "received private order update"
+                            );
                             self.event_bus
                                 .publish(Event::OrderUpdate(OrderUpdateEvent { order }));
                         }
                         BrokerEvent::Fill(fill) => {
+                            info!(
+                                order_id = %fill.order_id,
+                                symbol = %fill.symbol,
+                                qty = %fill.fill_quantity,
+                                price = %fill.fill_price,
+                                "received private fill"
+                            );
                             self.event_bus.publish(Event::Fill(FillEvent { fill }));
                         }
                     }

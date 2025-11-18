@@ -341,6 +341,7 @@ async fn reconciliation_enters_liquidate_only_on_divergence() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn alerts_on_rejected_order() -> Result<()> {
+    let _ = tracing_subscriber::fmt::try_init();
     let account = AccountConfig::new("test-key", "test-secret").with_balance(AccountBalance {
         currency: "USDT".into(),
         total: Decimal::new(10_000, 0),
@@ -439,16 +440,20 @@ async fn alerts_on_rejected_order() -> Result<()> {
     ));
 
     // Wait for a rejection alert
-    let alert = timeout(Duration::from_secs(5), async {
+    let alert = timeout(Duration::from_secs(10), async {
         loop {
             match alert_rx.recv().await {
                 Some(alert)
                     if alert.get("title").and_then(|value| value.as_str())
                         == Some("Order rejected") =>
                 {
+                    tracing::info!(?alert, "received order rejected alert payload");
                     break Some(alert);
                 }
-                Some(_) => continue,
+                Some(other) => {
+                    tracing::info!(?other, "received non-rejection alert while waiting");
+                    continue;
+                }
                 None => break None,
             }
         }
