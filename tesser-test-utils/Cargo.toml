@@ -4,7 +4,9 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Mock exchange utilities for end-to-end testing Tesser live trading flows"
+repository.workspace = true
+description = "Mock exchange, scenarios, and helpers for end-to-end testing Tesser"
+readme = "README.md"
 
 [lib]
 path = "src/lib.rs"

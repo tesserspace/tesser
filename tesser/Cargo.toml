@@ -8,6 +8,7 @@ description = "Unified facade for the Tesser trading framework"
 repository = "https://github.com/pluveto/tesser"
 keywords = ["trading", "framework"]
 categories = ["algorithms", "finance"]
+readme = "README.md"
 
 [dependencies]
 tesser-core = { path = "../tesser-core" }

@@ -4,6 +4,9 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+description = "Technical indicators and signal helpers for Tesser strategies"
+readme = "README.md"
 
 [dependencies]
 num-traits.workspace = true

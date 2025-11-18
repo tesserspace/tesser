@@ -2,6 +2,11 @@
 name = "tesser-events"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Event definitions and lightweight event bus interfaces for Tesser"
+readme = "README.md"
 
 [dependencies]
 tesser-core = { path = "../tesser-core" }

@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Core domain types and utilities for the Tesser trading framework"
 
 [dependencies]
 chrono.workspace = true

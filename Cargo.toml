@@ -25,6 +25,9 @@ edition = "2021"
 version = "0.1.0"
 license = "MIT OR Apache-2.0"
 authors = ["Tesser Contributors <dev@tesser.local>"]
+repository = "https://github.com/pluveto/tesser"
+description = "Tesser trading framework"
+readme = "README.md"
 
 [workspace.dependencies]
 anyhow = "1.0"

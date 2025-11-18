@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+description = "Broker abstraction and execution client interfaces for Tesser"
+readme = "README.md"
 
 [dependencies]
 async-trait.workspace = true

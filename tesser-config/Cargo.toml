@@ -4,6 +4,9 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+description = "Configuration loading and typed settings for Tesser components"
+readme = "README.md"
 
 [dependencies]
 anyhow.workspace = true

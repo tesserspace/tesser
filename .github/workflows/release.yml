@@ -48,7 +48,17 @@ jobs:
       - name: Determine tag name
         id: tag
         run: |
-          TAG=$(git describe --tags --abbrev=0)
+          set -euo pipefail
+          TAG=$(git tag --list --sort=-creatordate | head -n1)
+          if [ -z "$TAG" ]; then
+            TAG="v$(python - <<'PY'
+import tomllib
+with open("Cargo.toml","rb") as f:
+    data = tomllib.load(f)
+print(data["workspace"]["package"]["version"])
+PY
+)"
+          fi
           echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Generate release notes

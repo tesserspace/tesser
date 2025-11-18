@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+description = "Paper trading connector for running Tesser without a live exchange"
+readme = "README.md"
 
 [dependencies]
 async-trait.workspace = true

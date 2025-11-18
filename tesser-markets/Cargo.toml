@@ -4,6 +4,9 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+description = "Market metadata, symbols, and marketplace registry for Tesser"
+readme = "README.md"
 
 [dependencies]
 serde = { workspace = true }
