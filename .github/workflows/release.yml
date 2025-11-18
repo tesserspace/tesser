@@ -172,7 +172,7 @@ jobs:
       - name: Compute publish order
         id: publish_order
         run: |
-          ORDER=$(python scripts/compute_publish_order.py)
+          ORDER=$(python .github/scripts/compute_publish_order.py)
           {
             echo 'crates<<EOF'
             echo "$ORDER"
