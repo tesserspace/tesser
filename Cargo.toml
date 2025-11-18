@@ -53,3 +53,9 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"]
 tesser-core = { path = "tesser-core" }
 tesser-indicators = { path = "tesser-indicators" }
 uuid = { version = "1.10", features = ["v4", "serde"] }
+
+[workspace.metadata.release]
+pre-release-commit-message = "chore(release): v{{version}}"
+tag-message = "chore(release): v{{version}}"
+publish = false
+push = false
