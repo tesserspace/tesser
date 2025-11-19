@@ -254,7 +254,15 @@ jobs:
           while IFS= read -r crate; do
             [ -z "$crate" ] && continue
             echo "::group::Publishing $crate"
-            cargo publish -p "$crate"
+            version=$(cargo pkgid -p "$crate" | sed 's/.*://')
+            if ! cargo publish -p "$crate"; then
+              if curl -sSf "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null; then
+                echo "::warning::${crate} v${version} already published, skipping"
+              else
+                echo "::error::Failed to publish ${crate} v${version}"
+                exit 1
+              fi
+            fi
             echo "::endgroup::"
             echo "Sleeping 2 minutes to satisfy crates.io rate limits..."
             sleep 120
