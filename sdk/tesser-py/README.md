@@ -8,7 +8,26 @@
 - [`uv`](https://github.com/astral-sh/uv) for dependency management (pip/venv also works, but all docs/tests assume uv)
 - `protoc` (v27+) available on PATH when regenerating protobuf stubs
 
+## Installation
+
+Install the published package directly from PyPI (`tesser`) when writing strategies outside of this monorepo:
+
+```bash
+pip install tesser
+# or with uv
+uv pip install tesser
+```
+
+For local development against the repo sources (needed when touching protobufs or contributing to the SDK), stay inside `sdk/tesser-py` and sync dependencies via uv:
+
+```bash
+cd sdk/tesser-py
+uv sync --all-extras
+```
+
 ## Quick Start
+
+Generate protobuf stubs, run tests, and then start iterating on strategies:
 
 ```bash
 cd sdk/tesser-py

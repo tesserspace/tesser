@@ -7,10 +7,21 @@ The Python SDK (`tesser-py`) lets you implement remote strategies that speak the
 
 ## Installation
 
-The SDK lives inside this monorepo under `sdk/tesser-py`, but you can also install the published wheel once it lands on PyPI.
+### PyPI (recommended for strategy authors)
 
-- Repository package: [GitHub – sdk/tesser-py](https://github.com/tesserspace/tesser/tree/main/sdk/tesser-py)
-- PyPI package: [tesser](https://pypi.org/project/tesser/)
+Install the published wheel straight from PyPI when you only need to consume the SDK:
+
+```bash
+pip install tesser
+# or
+uv pip install tesser
+```
+
+The package is listed as [`tesser` on PyPI](https://pypi.org/project/tesser/).
+
+### From source (for contributors)
+
+The SDK sources live under `sdk/tesser-py` in this repo. Sync dependencies and regenerate protobuf code before running tests:
 
 ```bash
 cd sdk/tesser-py
