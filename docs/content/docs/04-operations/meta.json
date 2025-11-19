@@ -1,0 +1,9 @@
+{
+  "title": "Operations & Risk",
+  "pages": [
+    "backtesting",
+    "live-trading",
+    "risk-management",
+    "data-engineering"
+  ]
+}
