@@ -14,8 +14,8 @@ async-trait.workspace = true
 futures.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tesser-broker.workspace = true
-tesser-core.workspace = true
+tesser-broker = { version = "0.2.1", path = "../tesser-broker" }
+tesser-core = { version = "0.2.1", path = "../tesser-core" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

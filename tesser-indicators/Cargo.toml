@@ -12,7 +12,7 @@ readme = "README.md"
 num-traits.workspace = true
 rust_decimal.workspace = true
 thiserror.workspace = true
-tesser-core.workspace = true
+tesser-core = { version = "0.2.1", path = "../tesser-core" }
 
 [dev-dependencies]
 chrono.workspace = true

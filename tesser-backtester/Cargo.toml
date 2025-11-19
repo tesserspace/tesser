@@ -14,13 +14,13 @@ chrono.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tesser-broker.workspace = true
-tesser-core.workspace = true
-tesser-data.workspace = true
-tesser-execution.workspace = true
-tesser-portfolio.workspace = true
-tesser-markets.workspace = true
-tesser-strategy.workspace = true
-tesser-paper.workspace = true
+tesser-broker = { version = "0.2.1", path = "../tesser-broker" }
+tesser-core = { version = "0.2.1", path = "../tesser-core" }
+tesser-data = { version = "0.2.1", path = "../tesser-data" }
+tesser-execution = { version = "0.2.1", path = "../tesser-execution" }
+tesser-portfolio = { version = "0.2.1", path = "../tesser-portfolio" }
+tesser-markets = { version = "0.2.1", path = "../tesser-markets" }
+tesser-strategy = { version = "0.2.1", path = "../tesser-strategy" }
+tesser-paper = { version = "0.2.1", path = "../connectors/tesser-paper" }
 itertools = "0.13"
 rust_decimal.workspace = true

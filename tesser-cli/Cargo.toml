@@ -25,20 +25,20 @@ prometheus.workspace = true
 hyper.workspace = true
 tracing-appender.workspace = true
 csv.workspace = true
-tesser-backtester.workspace = true
-tesser-config.workspace = true
-tesser-core.workspace = true
-tesser-data.workspace = true
-tesser-events.workspace = true
-tesser-execution.workspace = true
-tesser-portfolio.workspace = true
-tesser-markets.workspace = true
-tesser-strategy.workspace = true
-tesser-broker.workspace = true
-tesser-paper.workspace = true
-tesser-bybit.workspace = true
+tesser-backtester = { version = "0.2.1", path = "../tesser-backtester" }
+tesser-config = { version = "0.2.1", path = "../tesser-config" }
+tesser-core = { version = "0.2.1", path = "../tesser-core" }
+tesser-data = { version = "0.2.1", path = "../tesser-data" }
+tesser-events = { version = "0.2.1", path = "../tesser-events" }
+tesser-execution = { version = "0.2.1", path = "../tesser-execution" }
+tesser-portfolio = { version = "0.2.1", path = "../tesser-portfolio" }
+tesser-markets = { version = "0.2.1", path = "../tesser-markets" }
+tesser-strategy = { version = "0.2.1", path = "../tesser-strategy" }
+tesser-broker = { version = "0.2.1", path = "../tesser-broker" }
+tesser-paper = { version = "0.2.1", path = "../connectors/tesser-paper" }
+tesser-bybit = { version = "0.2.1", path = "../connectors/tesser-bybit" }
 rust_decimal.workspace = true
 
 [dev-dependencies]
-tesser-test-utils.workspace = true
+tesser-test-utils = { version = "0.2.1", path = "../tesser-test-utils" }
 tempfile = "3.10"

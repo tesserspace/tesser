@@ -11,17 +11,17 @@ categories = ["algorithms", "finance"]
 readme = "README.md"
 
 [dependencies]
-tesser-core.workspace = true
-tesser-config.workspace = true
-tesser-data.workspace = true
-tesser-events.workspace = true
-tesser-execution.workspace = true
-tesser-portfolio.workspace = true
-tesser-markets.workspace = true
-tesser-strategy.workspace = true
-tesser-strategy-macros.workspace = true
-tesser-indicators.workspace = true
-tesser-broker.workspace = true
-tesser-backtester.workspace = true
-tesser-paper.workspace = true
-tesser-bybit.workspace = true
+tesser-core = { version = "0.2.1", path = "../tesser-core" }
+tesser-config = { version = "0.2.1", path = "../tesser-config" }
+tesser-data = { version = "0.2.1", path = "../tesser-data" }
+tesser-events = { version = "0.2.1", path = "../tesser-events" }
+tesser-execution = { version = "0.2.1", path = "../tesser-execution" }
+tesser-portfolio = { version = "0.2.1", path = "../tesser-portfolio" }
+tesser-markets = { version = "0.2.1", path = "../tesser-markets" }
+tesser-strategy = { version = "0.2.1", path = "../tesser-strategy" }
+tesser-strategy-macros = { version = "0.2.1", path = "../tesser-strategy-macros" }
+tesser-indicators = { version = "0.2.1", path = "../tesser-indicators" }
+tesser-broker = { version = "0.2.1", path = "../tesser-broker" }
+tesser-backtester = { version = "0.2.1", path = "../tesser-backtester" }
+tesser-paper = { version = "0.2.1", path = "../connectors/tesser-paper" }
+tesser-bybit = { version = "0.2.1", path = "../connectors/tesser-bybit" }
