@@ -12,7 +12,7 @@ body = """
 {% for group, commits in commits | group_by(attribute="group") %}\
     ### {{ group | upper_first }}
     {% for commit in commits %}\
-        - {{ commit.message | upper_first }} ([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/pluveto/tesser/commit/{{ commit.id }}))\
+        - {{ commit.message | upper_first }} ([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/tesserspace/tesser/commit/{{ commit.id }}))\
     {% endfor %}\
 {% endfor %}\n
 """
