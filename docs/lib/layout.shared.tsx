@@ -1,27 +1,39 @@
 import Image from 'next/image';
-import Link from 'next/link';
 import type { BaseLayoutProps } from 'fumadocs-ui/layouts/shared';
+import type { LinkItemType } from 'fumadocs-ui/layouts/docs';
 import { SITE_NAME } from './metadata';
 
-export function baseOptions(): BaseLayoutProps {
+const homeLinks: LinkItemType[] = [
+  {
+    type: 'main',
+    text: 'Docs',
+    description: 'Explore guides and references',
+    url: '/docs',
+    on: 'nav',
+    active: 'nested-url',
+  },
+];
+
+type BaseOptionsConfig = {
+  includeNavLinks?: boolean;
+};
+
+export function baseOptions(
+  config: BaseOptionsConfig = {},
+): BaseLayoutProps {
+  const { includeNavLinks = false } = config;
+
   return {
     nav: {
       title: <NavLogo />,
       url: '/',
-      children: (
-        <Link
-          href="/docs"
-          className="hidden text-sm font-medium text-fd-muted-foreground ring-offset-background transition-colors hover:text-fd-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fd-primary focus-visible:ring-offset-2 md:inline-flex"
-        >
-          Docs
-        </Link>
-      ),
     },
     themeSwitch: {
       enabled: true,
       mode: 'light-dark',
     },
     githubUrl: 'https://github.com/tesserspace/tesser',
+    links: includeNavLinks ? homeLinks : undefined,
   };
 }
 
