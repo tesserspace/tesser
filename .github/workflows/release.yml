@@ -303,3 +303,13 @@ jobs:
               exit 1
             fi
           done <<< "${{ steps.publish_order.outputs.crates }}"
+
+  publish-sdks:
+    name: Publish SDKs
+    needs:
+      - publish-final
+      - tag-and-push
+    uses: ./.github/workflows/publish-sdks.yml
+    with:
+      ref: ${{ needs.tag-and-push.outputs.tag_name }}
+    secrets: inherit
