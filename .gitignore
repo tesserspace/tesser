@@ -58,6 +58,8 @@ research/.venv/
 *.db
 *.sqlite
 *.sqlite3
+node_modules/
+docs/.next/
 
 
 # #################################################
