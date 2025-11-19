@@ -1,0 +1,185 @@
+syntax = "proto3";
+package tesser.rpc.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+// Strictly typed Decimal wrapper to avoid floating point issues
+message Decimal {
+  string value = 1;
+}
+
+enum Side {
+  SIDE_UNSPECIFIED = 0;
+  SIDE_BUY = 1;
+  SIDE_SELL = 2;
+}
+
+enum OrderType {
+  ORDER_TYPE_UNSPECIFIED = 0;
+  ORDER_TYPE_MARKET = 1;
+  ORDER_TYPE_LIMIT = 2;
+  ORDER_TYPE_STOP_MARKET = 3;
+}
+
+enum Interval {
+  INTERVAL_UNSPECIFIED = 0;
+  INTERVAL_1S = 1;
+  INTERVAL_1M = 2;
+  INTERVAL_5M = 3;
+  INTERVAL_15M = 4;
+  INTERVAL_1H = 5;
+  INTERVAL_4H = 6;
+  INTERVAL_1D = 7;
+}
+
+// Market Data
+
+message Tick {
+  string symbol = 1;
+  Decimal price = 2;
+  Decimal size = 3;
+  Side side = 4;
+  google.protobuf.Timestamp exchange_timestamp = 5;
+  google.protobuf.Timestamp received_at = 6;
+}
+
+message Candle {
+  string symbol = 1;
+  Interval interval = 2;
+  Decimal open = 3;
+  Decimal high = 4;
+  Decimal low = 5;
+  Decimal close = 6;
+  Decimal volume = 7;
+  google.protobuf.Timestamp timestamp = 8;
+}
+
+message OrderBookLevel {
+  Decimal price = 1;
+  Decimal size = 2;
+}
+
+message OrderBook {
+  string symbol = 1;
+  repeated OrderBookLevel bids = 2;
+  repeated OrderBookLevel asks = 3;
+  google.protobuf.Timestamp timestamp = 4;
+}
+
+// Context & State
+
+message Position {
+  string symbol = 1;
+  Side side = 2;
+  Decimal quantity = 3;
+  Decimal entry_price = 4;
+  Decimal unrealized_pnl = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+message StrategyContext {
+  repeated Position positions = 1;
+}
+
+message Fill {
+  string order_id = 1;
+  string symbol = 2;
+  Side side = 3;
+  Decimal fill_price = 4;
+  Decimal fill_quantity = 5;
+  Decimal fee = 6;
+  google.protobuf.Timestamp timestamp = 7;
+}
+
+// Execution Hints
+
+message TwapHint { google.protobuf.Duration duration = 1; }
+message VwapHint { google.protobuf.Duration duration = 1; Decimal participation_rate = 2; }
+message IcebergHint { Decimal display_size = 1; Decimal limit_offset_bps = 2; }
+message PeggedHint { Decimal offset_bps = 1; Decimal clip_size = 2; uint64 refresh_secs = 3; }
+message SniperHint { Decimal trigger_price = 1; google.protobuf.Duration timeout = 2; }
+
+message ExecutionHint {
+  oneof hint {
+    TwapHint twap = 1;
+    VwapHint vwap = 2;
+    IcebergHint iceberg = 3;
+    PeggedHint pegged = 4;
+    SniperHint sniper = 5;
+  }
+}
+
+// Signals
+
+message Signal {
+  string symbol = 1;
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_ENTER_LONG = 1;
+    KIND_EXIT_LONG = 2;
+    KIND_ENTER_SHORT = 3;
+    KIND_EXIT_SHORT = 4;
+    KIND_FLATTEN = 5;
+  }
+  Kind kind = 2;
+  double confidence = 3;
+  Decimal stop_loss = 4;
+  Decimal take_profit = 5;
+  ExecutionHint execution_hint = 6;
+  string note = 7;
+}
+
+message SignalList {
+  repeated Signal signals = 1;
+}
+
+// Service Messages
+
+message InitRequest {
+  string config_json = 1;
+}
+
+message InitResponse {
+  repeated string symbols = 1;
+  bool success = 2;
+  string error_message = 3;
+}
+
+message TickRequest {
+  Tick tick = 1;
+  StrategyContext context = 2;
+}
+
+message CandleRequest {
+  Candle candle = 1;
+  StrategyContext context = 2;
+}
+
+message OrderBookRequest {
+  OrderBook order_book = 1;
+  StrategyContext context = 2;
+}
+
+message FillRequest {
+  Fill fill = 1;
+  StrategyContext context = 2;
+}
+
+message HeartbeatRequest {
+  google.protobuf.Timestamp timestamp = 1;
+}
+
+message HeartbeatResponse {
+  bool healthy = 1;
+  string status_msg = 2;
+}
+
+service StrategyService {
+  rpc Initialize (InitRequest) returns (InitResponse);
+  rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+  rpc OnTick (TickRequest) returns (SignalList);
+  rpc OnCandle (CandleRequest) returns (SignalList);
+  rpc OnOrderBook (OrderBookRequest) returns (SignalList);
+  rpc OnFill (FillRequest) returns (SignalList);
+}

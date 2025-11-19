@@ -1,0 +1,29 @@
+[package]
+name = "tesser-rpc"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+authors.workspace = true
+description = "gRPC interface for external Tesser strategies"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+prost = "0.12"
+prost-types = "0.12"
+rust_decimal.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tesser-core.workspace = true
+tesser-strategy.workspace = true
+tesser-strategy-macros.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tonic = "0.11"
+tracing.workspace = true
+uuid.workspace = true
+toml.workspace = true
+
+[build-dependencies]
+tonic-build = "0.11"
