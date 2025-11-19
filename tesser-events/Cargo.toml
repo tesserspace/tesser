@@ -1,6 +1,6 @@
 [package]
 name = "tesser-events"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 license.workspace = true
 authors.workspace = true
@@ -9,6 +9,6 @@ description = "Event definitions and lightweight event bus interfaces for Tesser
 readme = "README.md"
 
 [dependencies]
-tesser-core = { version = "0.2.2", path = "../tesser-core" }
+tesser-core = { version = "0.2.3", path = "../tesser-core" }
 tokio = { version = "1", features = ["sync"] }
 serde = { version = "1", features = ["derive"] }

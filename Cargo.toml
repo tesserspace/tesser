@@ -22,7 +22,7 @@ members = [
 
 [workspace.package]
 edition = "2021"
-version = "0.2.2"
+version = "0.2.3"
 license = "MIT OR Apache-2.0"
 authors = ["Tesser Contributors <dev@tesser.local>"]
 repository = "https://github.com/pluveto/tesser"
@@ -57,23 +57,23 @@ toml = "0.8"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
-tesser-backtester = { version = "0.2.2", path = "tesser-backtester" }
-tesser-broker = { version = "0.2.2", path = "tesser-broker" }
-tesser-cli = { version = "0.2.2", path = "tesser-cli" }
-tesser-config = { version = "0.2.2", path = "tesser-config" }
-tesser-core = { version = "0.2.2", path = "tesser-core" }
-tesser-data = { version = "0.2.2", path = "tesser-data" }
-tesser-events = { version = "0.2.2", path = "tesser-events" }
-tesser-execution = { version = "0.2.2", path = "tesser-execution" }
-tesser-indicators = { version = "0.2.2", path = "tesser-indicators" }
-tesser-markets = { version = "0.2.2", path = "tesser-markets" }
-tesser-portfolio = { version = "0.2.2", path = "tesser-portfolio" }
-tesser-strategy = { version = "0.2.2", path = "tesser-strategy" }
-tesser-strategy-macros = { version = "0.2.2", path = "tesser-strategy-macros" }
-tesser-test-utils = { version = "0.2.2", path = "tesser-test-utils" }
-tesser = { version = "0.2.2", path = "tesser" }
-tesser-bybit = { version = "0.2.2", path = "connectors/tesser-bybit" }
-tesser-paper = { version = "0.2.2", path = "connectors/tesser-paper" }
+tesser-backtester = { version = "0.2.3", path = "tesser-backtester" }
+tesser-broker = { version = "0.2.3", path = "tesser-broker" }
+tesser-cli = { version = "0.2.3", path = "tesser-cli" }
+tesser-config = { version = "0.2.3", path = "tesser-config" }
+tesser-core = { version = "0.2.3", path = "tesser-core" }
+tesser-data = { version = "0.2.3", path = "tesser-data" }
+tesser-events = { version = "0.2.3", path = "tesser-events" }
+tesser-execution = { version = "0.2.3", path = "tesser-execution" }
+tesser-indicators = { version = "0.2.3", path = "tesser-indicators" }
+tesser-markets = { version = "0.2.3", path = "tesser-markets" }
+tesser-portfolio = { version = "0.2.3", path = "tesser-portfolio" }
+tesser-strategy = { version = "0.2.3", path = "tesser-strategy" }
+tesser-strategy-macros = { version = "0.2.3", path = "tesser-strategy-macros" }
+tesser-test-utils = { version = "0.2.3", path = "tesser-test-utils" }
+tesser = { version = "0.2.3", path = "tesser" }
+tesser-bybit = { version = "0.2.3", path = "connectors/tesser-bybit" }
+tesser-paper = { version = "0.2.3", path = "connectors/tesser-paper" }
 uuid = { version = "1.10", features = ["v4", "serde"] }
 
 [workspace.metadata.release]

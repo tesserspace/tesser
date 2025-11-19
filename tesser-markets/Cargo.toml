@@ -12,5 +12,5 @@ readme = "README.md"
 serde = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
-tesser-core = { version = "0.2.2", path = "../tesser-core" }
-tesser-broker = { version = "0.2.2", path = "../tesser-broker" }
+tesser-core = { version = "0.2.3", path = "../tesser-core" }
+tesser-broker = { version = "0.2.3", path = "../tesser-broker" }

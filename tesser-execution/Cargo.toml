@@ -15,10 +15,10 @@ rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-tesser-broker = { version = "0.2.2", path = "../tesser-broker" }
-tesser-bybit = { version = "0.2.2", path = "../connectors/tesser-bybit" }
-tesser-core = { version = "0.2.2", path = "../tesser-core" }
-tesser-strategy = { version = "0.2.2", path = "../tesser-strategy" }
+tesser-broker = { version = "0.2.3", path = "../tesser-broker" }
+tesser-bybit = { version = "0.2.3", path = "../connectors/tesser-bybit" }
+tesser-core = { version = "0.2.3", path = "../tesser-core" }
+tesser-strategy = { version = "0.2.3", path = "../tesser-strategy" }
 thiserror.workspace = true
 uuid.workspace = true
 rust_decimal.workspace = true
@@ -26,4 +26,4 @@ rust_decimal.workspace = true
 [dev-dependencies]
 tempfile = "3.10"
 tokio = { workspace = true, features = ["test-util"] }
-tesser-paper = { version = "0.2.2", path = "../connectors/tesser-paper" }
+tesser-paper = { version = "0.2.3", path = "../connectors/tesser-paper" }

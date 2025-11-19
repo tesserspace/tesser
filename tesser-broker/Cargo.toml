@@ -13,4 +13,4 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tesser-core = { version = "0.2.2", path = "../tesser-core" }
+tesser-core = { version = "0.2.3", path = "../tesser-core" }
