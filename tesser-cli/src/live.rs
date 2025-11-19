@@ -5,7 +5,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
@@ -15,7 +15,7 @@ use rust_decimal::{prelude::ToPrimitive, Decimal};
 use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 
 use tesser_broker::{ExecutionClient, MarketStream};
 use tesser_bybit::ws::{BybitWsExecution, BybitWsOrder, PrivateMessage};
@@ -66,6 +66,8 @@ impl ExecutionBackend {
 }
 
 const DEFAULT_ORDER_BOOK_DEPTH: usize = 50;
+const STRATEGY_LOCK_WARN_THRESHOLD: Duration = Duration::from_millis(25);
+const STRATEGY_CALL_WARN_THRESHOLD: Duration = Duration::from_millis(250);
 
 pub struct LiveSessionSettings {
     pub category: PublicChannel,
@@ -1259,11 +1261,15 @@ async fn process_tick_event(
     {
         let mut ctx = strategy_ctx.lock().await;
         ctx.push_tick(tick.clone());
+        let lock_start = Instant::now();
         let mut strat = strategy.lock().await;
+        log_strategy_lock("tick", lock_start.elapsed());
+        let call_start = Instant::now();
         strat
             .on_tick(&ctx, &tick)
             .await
             .context("strategy failure on tick event")?;
+        log_strategy_call("tick", call_start.elapsed());
     }
     emit_signals(strategy.clone(), bus.clone(), metrics.clone()).await;
     Ok(())
@@ -1333,11 +1339,15 @@ async fn process_candle_event(
     {
         let mut ctx = strategy_ctx.lock().await;
         ctx.push_candle(candle.clone());
+        let lock_start = Instant::now();
         let mut strat = strategy.lock().await;
+        log_strategy_lock("candle", lock_start.elapsed());
+        let call_start = Instant::now();
         strat
             .on_candle(&ctx, &candle)
             .await
             .context("strategy failure on candle event")?;
+        log_strategy_call("candle", call_start.elapsed());
     }
     {
         let mut snapshot = persisted.lock().await;
@@ -1372,11 +1382,15 @@ async fn process_order_book_event(
     {
         let mut ctx = strategy_ctx.lock().await;
         ctx.push_order_book(book.clone());
+        let lock_start = Instant::now();
         let mut strat = strategy.lock().await;
+        log_strategy_lock("order_book", lock_start.elapsed());
+        let call_start = Instant::now();
         strat
             .on_order_book(&ctx, &book)
             .await
             .context("strategy failure on order book")?;
+        log_strategy_call("order_book", call_start.elapsed());
     }
     emit_signals(strategy.clone(), bus.clone(), metrics.clone()).await;
     Ok(())
@@ -1405,6 +1419,24 @@ async fn process_signal_event(
         }
     }
     Ok(())
+}
+
+fn log_strategy_lock(event: &str, wait: Duration) {
+    let wait_ms = wait.as_secs_f64() * 1000.0;
+    if wait >= STRATEGY_LOCK_WARN_THRESHOLD {
+        warn!(target: "strategy", event, wait_ms, "strategy lock wait exceeded threshold");
+    } else {
+        trace!(target: "strategy", event, wait_ms, "strategy lock acquired");
+    }
+}
+
+fn log_strategy_call(event: &str, elapsed: Duration) {
+    let duration_ms = elapsed.as_secs_f64() * 1000.0;
+    if elapsed >= STRATEGY_CALL_WARN_THRESHOLD {
+        warn!(target: "strategy", event, duration_ms, "strategy call latency above threshold");
+    } else {
+        trace!(target: "strategy", event, duration_ms, "strategy call completed");
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1443,12 +1475,16 @@ async fn process_fill_event(
     }
     orchestrator.on_fill(&fill).await.ok();
     {
-        let mut strat = strategy.lock().await;
         let ctx = strategy_ctx.lock().await;
+        let lock_start = Instant::now();
+        let mut strat = strategy.lock().await;
+        log_strategy_lock("fill", lock_start.elapsed());
+        let call_start = Instant::now();
         strat
             .on_fill(&ctx, &fill)
             .await
             .context("Strategy failed on fill event")?;
+        log_strategy_call("fill", call_start.elapsed());
     }
     let equity = {
         let guard = portfolio.lock().await;
