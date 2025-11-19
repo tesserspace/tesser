@@ -1,7 +1,7 @@
 # Tesser: A High-Performance Quantitative Trading Framework in Rust
 
 
-[![CI](https://github.com/pluveto/tesser/actions/workflows/ci.yml/badge.svg)](https://github.com/pluveto/tesser/actions/workflows/ci.yml)
+[![CI](https://github.com/tesserspace/tesser/actions/workflows/ci.yml/badge.svg)](https://github.com/tesserspace/tesser/actions/workflows/ci.yml)
 [![License: MIT/Apache-2.0](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](https://opensource.org/licenses/MIT)
 [![Crates.io](https://img.shields.io/crates/v/tesser.svg)](https://crates.io/crates/tesser)
 
@@ -133,7 +133,7 @@ tesser/
 
 1.  Clone the repository:
     ```sh
-    git clone https://github.com/pluveto/tesser.git
+    git clone https://github.com/tesserspace/tesser.git
     cd tesser
     ```
 
@@ -299,7 +299,7 @@ Instead of embedding a heavy multi-strategy scheduler inside the binary, the rec
 version: "3.9"
 services:
   momentum:
-    image: ghcr.io/pluveto/tesser:latest
+    image: ghcr.io/tesserspace/tesser:latest
     restart: unless-stopped
     volumes:
       - ./config:/app/config:ro
@@ -319,7 +319,7 @@ services:
         --alert-max-data-gap-secs 120
         --webhook-url https://hooks.slack.com/services/XXX/YYY/ZZZ
   meanrev:
-    image: ghcr.io/pluveto/tesser:latest
+    image: ghcr.io/tesserspace/tesser:latest
     restart: unless-stopped
     volumes:
       - ./config:/app/config:ro
