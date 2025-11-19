@@ -50,3 +50,7 @@ sdk/tesser-py/
 ## Code Generation
 
 `uv run scripts/codegen.py` compiles the protobuf definition located under `tesser-rpc/proto` and drops the generated files in `src/tesser/protos`. This step runs automatically in CI and should be executed whenever the proto changes.
+
+## Version Sync
+
+The Python package version is derived from the workspace `Cargo.toml`. Run `uv run scripts/sync_version.py` whenever the Rust version changes to keep the SDK aligned with the rest of the monorepo.

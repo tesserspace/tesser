@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tesser"
-version = "0.1.0"
+version = "0.2.3"
 description = "Python SDK for Tesser Trading Engine"
 readme = "README.md"
 requires-python = ">=3.9"

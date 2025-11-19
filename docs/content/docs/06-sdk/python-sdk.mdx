@@ -1,0 +1,57 @@
+---
+title: Python SDK
+description: Build remote strategies in Python with the tesser-py package.
+---
+
+The Python SDK (`tesser-py`) lets you implement remote strategies that speak the same gRPC protocol as the Rust core. It hides the protobuf plumbing behind a Pythonic API so quants can stay in the pandas/numpy ecosystem while Tesser handles ingestion, risk, and execution.
+
+## Installation
+
+The SDK lives inside this monorepo under `sdk/tesser-py`, but you can also install the published wheel once it lands on PyPI.
+
+- Repository package: [GitHub – sdk/tesser-py](https://github.com/tesserspace/tesser/tree/main/sdk/tesser-py)
+- PyPI package: [tesser](https://pypi.org/project/tesser/)
+
+```bash
+cd sdk/tesser-py
+uv sync --all-extras --group dev
+uv run scripts/codegen.py
+uv run pytest
+```
+
+The `codegen.py` step regenerates the gRPC stubs from `tesser-rpc/proto` so the SDK always matches the latest protocol.
+
+## Writing a Strategy
+
+Create a class that derives from `tesser.strategy.Strategy` and override whichever hooks you need (`on_tick`, `on_candle`, etc.). Each hook returns a list of `Signal` instances.
+
+```python
+import asyncio
+from decimal import Decimal
+
+from tesser import Runner, Signal, SignalKind, Strategy
+
+class PySma(Strategy):
+    def __init__(self):
+        super().__init__(name="py-sma", symbol="BTC-USD")
+
+    async def on_tick(self, context, tick):
+        if tick.price > Decimal("50000"):
+            return [Signal(symbol=tick.symbol, kind=SignalKind.ENTER_LONG)]
+        return []
+
+if __name__ == "__main__":
+    asyncio.run(Runner(PySma(), port=50051).serve())
+```
+
+Start the process, point the Rust config at the server endpoint, and Tesser will stream events to the Python loop.
+
+## Versioning
+
+`tesser-py` tracks the top-level `Cargo.toml` version. When the Rust release is bumped, run `uv run scripts/sync_version.py` before committing so the Python package advertises the same semantic version. This keeps the release workflows for Rust and Python in lockstep.
+
+## Next Steps
+
+- Explore the sample strategies in `sdk/tesser-py/examples/`.
+- Read the inline docstrings in `tesser/models.py` for the full dataclass reference.
+- Add the Python job from `.github/workflows/sdk-python.yml` to your own forks if you maintain custom SDK extensions.
