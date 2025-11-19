@@ -78,7 +78,7 @@ jobs:
         # --execute applies changes locally.
         # --no-publish skips crates.io (we do that last).
         # --no-push skips git push (we do that explicitly later).
-        run: cargo release ${{ github.event.inputs.version }} --execute --no-publish --no-push
+        run: cargo release ${{ github.event.inputs.version }} --execute --no-publish --no-push --no-confirm
 
       - name: Determine tag name
         id: tag
