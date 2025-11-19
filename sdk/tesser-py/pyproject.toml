@@ -30,6 +30,7 @@ dev = [
   "mypy>=1.8.0",
   "ruff>=0.2.0",
   "types-protobuf>=4.24.0",
+  "pandas-stubs>=2.0.0",
 ]
 
 [tool.pytest.ini_options]
@@ -44,3 +45,21 @@ exclude = [
   "src/tesser/protos/tesser_pb2.py",
   "src/tesser/protos/tesser_pb2_grpc.py",
 ]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+strict_optional = false
+
+[[tool.mypy.overrides]]
+module = [
+  "tesser.protos.*",
+]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = [
+  "grpc",
+  "grpc.*",
+]
+ignore_missing_imports = true

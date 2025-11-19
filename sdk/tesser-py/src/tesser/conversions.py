@@ -105,9 +105,10 @@ def context_from_proto(message: proto.StrategyContext) -> StrategyContext:
 
 
 def signal_to_proto(signal: Signal) -> proto.Signal:
+    kind_name = f"KIND_{signal.kind.name}"
     proto_signal = proto.Signal(
         symbol=signal.symbol,
-        kind=proto.Signal.Kind.Value(f"KIND_{signal.kind.name}"),
+        kind=kind_name,
         confidence=signal.confidence,
     )
     if signal.stop_loss is not None:
