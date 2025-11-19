@@ -14,7 +14,7 @@ def to_dataframe(items: Iterable[object]):  # pragma: no cover
 
     rows: List[dict[str, Any]] = []
     for item in items:
-        if not is_dataclass(item):  # type: ignore[arg-type]
+        if not is_dataclass(item) or isinstance(item, type):
             raise TypeError("to_dataframe expects dataclass instances")
-        rows.append(asdict(item))
+        rows.append(asdict(item))  # type: ignore[arg-type]
     return pd.DataFrame(rows)
