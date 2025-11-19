@@ -1,3 +1,4 @@
+import Image from 'next/image';
 import type { BaseLayoutProps } from 'fumadocs-ui/layouts/shared';
 import { Github } from 'lucide-react';
 import type { LinkItemType } from 'fumadocs-ui/layouts/docs';
@@ -29,7 +30,7 @@ const links: LinkItemType[] = [
 export function baseOptions(): BaseLayoutProps {
   return {
     nav: {
-      title: SITE_NAME,
+      title: <NavLogo />,
       url: '/',
     },
     themeSwitch: {
@@ -39,4 +40,20 @@ export function baseOptions(): BaseLayoutProps {
     githubUrl: 'https://github.com/tesserspace/tesser',
     links,
   };
+}
+
+function NavLogo() {
+  return (
+    <span className="inline-flex items-center gap-2 font-semibold text-fd-foreground">
+      <Image
+        src="/tesser-logo.png"
+        alt="Tesser"
+        width={28}
+        height={28}
+        className="rounded"
+        priority
+      />
+      <span>{SITE_NAME}</span>
+    </span>
+  );
 }

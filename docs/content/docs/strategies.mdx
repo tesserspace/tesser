@@ -1,0 +1,63 @@
+---
+title: Writing Strategies
+description: Learn how to implement the Strategy trait and use indicators.
+---
+
+A Strategy in Tesser is a struct that implements the `Strategy` trait. It reacts to market events (Ticks, Candles) and updates to your Orders/Fills.
+
+## The Strategy Trait
+
+```rust
+pub trait Strategy: Send + Sync {
+    fn name(&self) -> &str;
+    fn symbol(&self) -> &str;
+    
+    // Event Hooks
+    fn on_tick(&mut self, ctx: &StrategyContext, tick: &Tick) -> StrategyResult<()>;
+    fn on_candle(&mut self, ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()>;
+    fn on_fill(&mut self, ctx: &StrategyContext, fill: &Fill) -> StrategyResult<()>;
+    
+    // Output
+    fn drain_signals(&mut self) -> Vec<Signal>;
+}
+```
+
+## Using Indicators
+
+`tesser-indicators` provides zero-allocation, incremental indicators.
+
+```rust
+use tesser_indicators::indicators::{Rsi, Sma};
+use tesser_indicators::Indicator;
+
+struct MyStrategy {
+    rsi: Rsi,
+    // ...
+}
+
+impl MyStrategy {
+    fn on_candle(&mut self, ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
+        // Feed the close price into RSI
+        if let Some(value) = self.rsi.next(candle.close) {
+            if value < 30.0 {
+                // Signal Buy...
+            }
+        }
+        Ok(())
+    }
+}
+```
+
+## Configuration (TOML)
+
+Strategies are configured via TOML files. The `configure` method receives these parameters at startup.
+
+```toml
+# config/strategies/my_strategy.toml
+strategy_name = "MyStrategy"
+
+[params]
+symbol = "BTCUSDT"
+rsi_period = 14
+oversold = 30
+```
