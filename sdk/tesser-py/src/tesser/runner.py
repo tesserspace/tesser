@@ -28,9 +28,13 @@ class Runner:
         )
         server.add_insecure_port(f"{self.host}:{self.port}")
         self._server = server
-        await server.start()
-        print(f"Strategy '{self.strategy.name}' listening on {self.host}:{self.port}")
-        await self._graceful_wait(server)
+        try:
+            await server.start()
+            print(f"Strategy '{self.strategy.name}' listening on {self.host}:{self.port}")
+            await self._graceful_wait(server)
+        finally:
+            await server.stop(0)
+            self._server = None
 
     async def _graceful_wait(self, server: grpc.aio.Server):
         loop = asyncio.get_event_loop()
@@ -46,6 +50,7 @@ class Runner:
             loop.create_task(self._wait_for_keyboard(stop_event))
         await stop_event.wait()
         await server.stop(5)
+        self._server = None
 
     async def _wait_for_keyboard(self, stop_event: asyncio.Event):
         loop = asyncio.get_running_loop()
