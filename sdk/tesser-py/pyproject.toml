@@ -22,8 +22,8 @@ data = [
   "numpy>=1.25",
 ]
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
   "grpcio-tools>=1.60.0",
   "pytest>=8.0.0",
   "pytest-asyncio>=0.23.0",

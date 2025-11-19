@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import grpc
 
-from .protos.tesser.rpc.v1 import tesser_pb2 as proto
-from .protos.tesser.rpc.v1 import tesser_pb2_grpc
+from .protos import tesser_pb2 as proto
+from .protos import tesser_pb2_grpc
 
 
 class StrategyServiceClient:

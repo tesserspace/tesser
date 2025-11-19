@@ -5,8 +5,8 @@ import pytest
 
 from tesser import Runner, Signal, SignalKind, Strategy
 from tesser.models import StrategyContext, Tick
-from tesser.protos.tesser.rpc.v1 import tesser_pb2 as proto
-from tesser.protos.tesser.rpc.v1 import tesser_pb2_grpc
+from tesser.protos import tesser_pb2 as proto
+from tesser.protos import tesser_pb2_grpc
 
 
 class DummyStrategy(Strategy):

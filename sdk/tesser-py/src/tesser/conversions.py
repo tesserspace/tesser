@@ -18,7 +18,7 @@ from .models import (
     Tick,
 )
 from .utils.decimal import from_decimal, from_timestamp, to_decimal, to_timestamp
-from .protos.tesser.rpc.v1 import tesser_pb2 as proto
+from .protos import tesser_pb2 as proto
 
 
 _SIDE_MAP = {
@@ -111,8 +111,6 @@ def signal_to_proto(signal: Signal) -> proto.Signal:
         kind=proto.Signal.Kind.Value(f"KIND_{signal.kind.name}"),
         confidence=signal.confidence,
     )
-    if signal.price is not None:
-        proto_signal.price.value = from_decimal(signal.price)
     if signal.stop_loss is not None:
         proto_signal.stop_loss.value = from_decimal(signal.stop_loss)
     if signal.take_profit is not None:

@@ -7,7 +7,7 @@ from typing import Optional
 
 import grpc
 
-from .protos.tesser.rpc.v1 import tesser_pb2_grpc
+from .protos import tesser_pb2_grpc
 from .service import StrategyServiceImpl
 from .strategy import Strategy
 from .utils.logging import configure_logging

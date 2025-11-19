@@ -98,7 +98,6 @@ class Signal:
     symbol: str
     kind: SignalKind
     confidence: float = 1.0
-    price: Optional[Decimal] = None
     stop_loss: Optional[Decimal] = None
     take_profit: Optional[Decimal] = None
     note: Optional[str] = None

@@ -16,8 +16,8 @@ from .conversions import (
     tick_from_proto,
 )
 from .models import Signal, StrategyContext
-from .protos.tesser.rpc.v1 import tesser_pb2 as proto
-from .protos.tesser.rpc.v1 import tesser_pb2_grpc
+from .protos import tesser_pb2 as proto
+from .protos import tesser_pb2_grpc
 from .strategy import Strategy
 
 logger = logging.getLogger(__name__)

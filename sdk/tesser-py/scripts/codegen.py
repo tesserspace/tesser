@@ -20,9 +20,8 @@ def run() -> None:
         sys.exit(1)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    for package in [OUT_DIR, OUT_DIR / "tesser", OUT_DIR / "tesser" / "rpc", OUT_DIR / "tesser" / "rpc" / "v1"]:
-        package.mkdir(parents=True, exist_ok=True)
-        (package / "__init__.py").touch()
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    (OUT_DIR / "__init__.py").touch()
 
     proto_files = sorted(PROTO_DIR.glob("*.proto"))
     if not proto_files:
@@ -46,7 +45,21 @@ def run() -> None:
         print(result.stderr, file=sys.stderr)
         sys.exit(result.returncode)
 
+    for suffix in ("py", "pyi"):
+        path = OUT_DIR / f"tesser_pb2.{suffix}"
+        if path.exists():
+            path.write_text(_rewrite_imports(path.read_text()))
+        path = OUT_DIR / f"tesser_pb2_grpc.{suffix}"
+        if path.exists():
+            path.write_text(_rewrite_imports(path.read_text()))
+
     print("Protobuf generation complete.")
+
+
+def _rewrite_imports(content: str) -> str:
+    content = content.replace("import tesser_pb2 as", "from . import tesser_pb2 as")
+    content = content.replace("import tesser_pb2\n", "from . import tesser_pb2\n")
+    return content
 
 
 if __name__ == "__main__":
