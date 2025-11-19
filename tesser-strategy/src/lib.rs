@@ -2,6 +2,7 @@
 
 extern crate self as tesser_strategy;
 
+use async_trait::async_trait;
 pub use tesser_strategy_macros::register_strategy;
 pub use toml::Value;
 
@@ -140,6 +141,7 @@ impl Default for StrategyContext {
 }
 
 /// Strategy lifecycle hooks used by engines that drive market data and fills.
+#[async_trait]
 pub trait Strategy: Send + Sync {
     /// Human-friendly identifier used in logs and telemetry.
     fn name(&self) -> &str;
@@ -156,16 +158,20 @@ pub trait Strategy: Send + Sync {
     fn configure(&mut self, params: toml::Value) -> StrategyResult<()>;
 
     /// Called whenever the data pipeline emits a new tick.
-    fn on_tick(&mut self, ctx: &StrategyContext, tick: &Tick) -> StrategyResult<()>;
+    async fn on_tick(&mut self, ctx: &StrategyContext, tick: &Tick) -> StrategyResult<()>;
 
     /// Called whenever a candle is produced or replayed.
-    fn on_candle(&mut self, ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()>;
+    async fn on_candle(&mut self, ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()>;
 
     /// Called whenever one of the strategy's orders is filled.
-    fn on_fill(&mut self, ctx: &StrategyContext, fill: &Fill) -> StrategyResult<()>;
+    async fn on_fill(&mut self, ctx: &StrategyContext, fill: &Fill) -> StrategyResult<()>;
 
     /// Called whenever an order book snapshot is received. Default implementation is a no-op.
-    fn on_order_book(&mut self, _ctx: &StrategyContext, _book: &OrderBook) -> StrategyResult<()> {
+    async fn on_order_book(
+        &mut self,
+        _ctx: &StrategyContext,
+        _book: &OrderBook,
+    ) -> StrategyResult<()> {
         Ok(())
     }
 
@@ -486,6 +492,7 @@ impl SmaCross {
     }
 }
 
+#[async_trait]
 impl Strategy for SmaCross {
     fn name(&self) -> &str {
         "sma-cross"
@@ -506,18 +513,18 @@ impl Strategy for SmaCross {
         self.rebuild_indicators()
     }
 
-    fn on_tick(&mut self, _ctx: &StrategyContext, _tick: &Tick) -> StrategyResult<()> {
+    async fn on_tick(&mut self, _ctx: &StrategyContext, _tick: &Tick) -> StrategyResult<()> {
         Ok(())
     }
 
-    fn on_candle(&mut self, _ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
+    async fn on_candle(&mut self, _ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
         if candle.symbol != self.cfg.symbol {
             return Ok(());
         }
         self.maybe_emit_signal(candle)
     }
 
-    fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
+    async fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
         Ok(())
     }
 
@@ -616,6 +623,7 @@ impl RsiReversion {
     }
 }
 
+#[async_trait]
 impl Strategy for RsiReversion {
     fn name(&self) -> &str {
         "rsi-reversion"
@@ -638,18 +646,18 @@ impl Strategy for RsiReversion {
         self.rebuild_indicator()
     }
 
-    fn on_tick(&mut self, _ctx: &StrategyContext, _tick: &Tick) -> StrategyResult<()> {
+    async fn on_tick(&mut self, _ctx: &StrategyContext, _tick: &Tick) -> StrategyResult<()> {
         Ok(())
     }
 
-    fn on_candle(&mut self, _ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
+    async fn on_candle(&mut self, _ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
         if candle.symbol != self.cfg.symbol {
             return Ok(());
         }
         self.maybe_emit_signal(candle)
     }
 
-    fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
+    async fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
         Ok(())
     }
 
@@ -758,6 +766,7 @@ impl BollingerBreakout {
     }
 }
 
+#[async_trait]
 impl Strategy for BollingerBreakout {
     fn name(&self) -> &str {
         "bollinger-breakout"
@@ -780,18 +789,18 @@ impl Strategy for BollingerBreakout {
         self.rebuild_indicator()
     }
 
-    fn on_tick(&mut self, _ctx: &StrategyContext, _tick: &Tick) -> StrategyResult<()> {
+    async fn on_tick(&mut self, _ctx: &StrategyContext, _tick: &Tick) -> StrategyResult<()> {
         Ok(())
     }
 
-    fn on_candle(&mut self, _ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
+    async fn on_candle(&mut self, _ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
         if candle.symbol != self.cfg.symbol {
             return Ok(());
         }
         self.maybe_emit_signal(candle)
     }
 
-    fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
+    async fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
         Ok(())
     }
 
@@ -875,6 +884,7 @@ impl MlClassifier {
     }
 }
 
+#[async_trait]
 impl Strategy for MlClassifier {
     fn name(&self) -> &str {
         "ml-classifier"
@@ -910,11 +920,11 @@ impl Strategy for MlClassifier {
         Ok(())
     }
 
-    fn on_tick(&mut self, _ctx: &StrategyContext, _tick: &Tick) -> StrategyResult<()> {
+    async fn on_tick(&mut self, _ctx: &StrategyContext, _tick: &Tick) -> StrategyResult<()> {
         Ok(())
     }
 
-    fn on_candle(&mut self, ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
+    async fn on_candle(&mut self, ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
         if candle.symbol != self.cfg.symbol {
             return Ok(());
         }
@@ -936,7 +946,7 @@ impl Strategy for MlClassifier {
         Ok(())
     }
 
-    fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
+    async fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
         Ok(())
     }
 
@@ -1024,6 +1034,7 @@ impl PairsTradingArbitrage {
     }
 }
 
+#[async_trait]
 impl Strategy for PairsTradingArbitrage {
     fn name(&self) -> &str {
         "pairs-trading"
@@ -1052,11 +1063,11 @@ impl Strategy for PairsTradingArbitrage {
         self.rebuild_thresholds()
     }
 
-    fn on_tick(&mut self, _ctx: &StrategyContext, _tick: &Tick) -> StrategyResult<()> {
+    async fn on_tick(&mut self, _ctx: &StrategyContext, _tick: &Tick) -> StrategyResult<()> {
         Ok(())
     }
 
-    fn on_candle(&mut self, ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
+    async fn on_candle(&mut self, ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
         if self.cfg.symbols.contains(&candle.symbol) {
             if let Some(spreads) = self.spreads(ctx) {
                 if let Some(z) = z_score(&spreads) {
@@ -1099,7 +1110,7 @@ impl Strategy for PairsTradingArbitrage {
         Ok(())
     }
 
-    fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
+    async fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
         Ok(())
     }
 
@@ -1143,6 +1154,7 @@ pub struct OrderBookImbalance {
     signals: Vec<Signal>,
 }
 
+#[async_trait]
 impl Strategy for OrderBookImbalance {
     fn name(&self) -> &str {
         "orderbook-imbalance"
@@ -1167,19 +1179,23 @@ impl Strategy for OrderBookImbalance {
         Ok(())
     }
 
-    fn on_tick(&mut self, _ctx: &StrategyContext, _tick: &Tick) -> StrategyResult<()> {
+    async fn on_tick(&mut self, _ctx: &StrategyContext, _tick: &Tick) -> StrategyResult<()> {
         Ok(())
     }
 
-    fn on_candle(&mut self, _ctx: &StrategyContext, _candle: &Candle) -> StrategyResult<()> {
+    async fn on_candle(&mut self, _ctx: &StrategyContext, _candle: &Candle) -> StrategyResult<()> {
         Ok(())
     }
 
-    fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
+    async fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
         Ok(())
     }
 
-    fn on_order_book(&mut self, _ctx: &StrategyContext, book: &OrderBook) -> StrategyResult<()> {
+    async fn on_order_book(
+        &mut self,
+        _ctx: &StrategyContext,
+        book: &OrderBook,
+    ) -> StrategyResult<()> {
         if book.symbol != self.cfg.symbol {
             return Ok(());
         }
@@ -1292,6 +1308,7 @@ impl OrderBookScalper {
     }
 }
 
+#[async_trait]
 impl Strategy for OrderBookScalper {
     fn name(&self) -> &str {
         "orderbook-scalper"
@@ -1317,14 +1334,14 @@ impl Strategy for OrderBookScalper {
         Ok(())
     }
 
-    fn on_tick(&mut self, _ctx: &StrategyContext, tick: &Tick) -> StrategyResult<()> {
+    async fn on_tick(&mut self, _ctx: &StrategyContext, tick: &Tick) -> StrategyResult<()> {
         if tick.symbol == self.cfg.symbol {
             self.last_tick_size = tick.size.abs();
         }
         Ok(())
     }
 
-    fn on_candle(&mut self, _ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
+    async fn on_candle(&mut self, _ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
         if candle.symbol == self.cfg.symbol {
             if let Some(output) = self.macd.next(candle.close) {
                 self.last_histogram = Some(output.histogram);
@@ -1333,7 +1350,11 @@ impl Strategy for OrderBookScalper {
         Ok(())
     }
 
-    fn on_order_book(&mut self, _ctx: &StrategyContext, book: &OrderBook) -> StrategyResult<()> {
+    async fn on_order_book(
+        &mut self,
+        _ctx: &StrategyContext,
+        book: &OrderBook,
+    ) -> StrategyResult<()> {
         if book.symbol != self.cfg.symbol {
             return Ok(());
         }
@@ -1361,7 +1382,7 @@ impl Strategy for OrderBookScalper {
         Ok(())
     }
 
-    fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
+    async fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
         Ok(())
     }
 
@@ -1458,6 +1479,7 @@ impl CrossExchangeArb {
     }
 }
 
+#[async_trait]
 impl Strategy for CrossExchangeArb {
     fn name(&self) -> &str {
         "cross-exchange-arb"
@@ -1485,11 +1507,11 @@ impl Strategy for CrossExchangeArb {
         Ok(())
     }
 
-    fn on_tick(&mut self, _ctx: &StrategyContext, _tick: &Tick) -> StrategyResult<()> {
+    async fn on_tick(&mut self, _ctx: &StrategyContext, _tick: &Tick) -> StrategyResult<()> {
         Ok(())
     }
 
-    fn on_candle(&mut self, _ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
+    async fn on_candle(&mut self, _ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
         if candle.symbol == self.cfg.symbol_a {
             self.last_price_a = Some(candle.close);
             if let Some(cloud) = self.ichimoku.next(candle.clone()) {
@@ -1530,11 +1552,15 @@ impl Strategy for CrossExchangeArb {
         Ok(())
     }
 
-    fn on_order_book(&mut self, _ctx: &StrategyContext, _book: &OrderBook) -> StrategyResult<()> {
+    async fn on_order_book(
+        &mut self,
+        _ctx: &StrategyContext,
+        _book: &OrderBook,
+    ) -> StrategyResult<()> {
         Ok(())
     }
 
-    fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
+    async fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
         Ok(())
     }
 
@@ -1594,6 +1620,7 @@ impl VolatilitySkew {
     }
 }
 
+#[async_trait]
 impl Strategy for VolatilitySkew {
     fn name(&self) -> &str {
         "volatility-skew"
@@ -1617,11 +1644,11 @@ impl Strategy for VolatilitySkew {
         Ok(())
     }
 
-    fn on_tick(&mut self, _ctx: &StrategyContext, _tick: &Tick) -> StrategyResult<()> {
+    async fn on_tick(&mut self, _ctx: &StrategyContext, _tick: &Tick) -> StrategyResult<()> {
         Ok(())
     }
 
-    fn on_candle(&mut self, _ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
+    async fn on_candle(&mut self, _ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
         if candle.symbol == self.cfg.vol_symbol {
             self.last_implied_vol = Some(candle.close.max(Decimal::ZERO));
             return Ok(());
@@ -1663,11 +1690,15 @@ impl Strategy for VolatilitySkew {
         Ok(())
     }
 
-    fn on_order_book(&mut self, _ctx: &StrategyContext, _book: &OrderBook) -> StrategyResult<()> {
+    async fn on_order_book(
+        &mut self,
+        _ctx: &StrategyContext,
+        _book: &OrderBook,
+    ) -> StrategyResult<()> {
         Ok(())
     }
 
-    fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
+    async fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
         Ok(())
     }
 

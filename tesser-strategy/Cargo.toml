@@ -13,6 +13,7 @@ serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 tracing.workspace = true
+async-trait.workspace = true
 tesser-core = { version = "0.2.3", path = "../tesser-core" }
 tesser-indicators = { version = "0.2.3", path = "../tesser-indicators" }
 rust_decimal.workspace = true
