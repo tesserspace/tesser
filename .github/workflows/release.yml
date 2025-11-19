@@ -251,19 +251,37 @@ jobs:
             echo "::error::CRATES_IO_TOKEN secret is not configured."
             exit 1
           fi
+          MAX_ATTEMPTS=5
+          INITIAL_DELAY=10
           while IFS= read -r crate; do
             [ -z "$crate" ] && continue
             echo "::group::Publishing $crate"
             version=$(cargo pkgid -p "$crate" | sed 's/.*://')
-            if ! cargo publish -p "$crate"; then
+            attempt=1
+            delay=$INITIAL_DELAY
+            published=false
+            while [ $attempt -le $MAX_ATTEMPTS ]; do
+              if cargo publish -p "$crate"; then
+                published=true
+                break
+              fi
               if curl -sSf "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null; then
                 echo "::warning::${crate} v${version} already published, skipping"
-              else
-                echo "::error::Failed to publish ${crate} v${version}"
+                published=true
+                break
+              fi
+              if [ $attempt -eq $MAX_ATTEMPTS ]; then
+                echo "::error::Failed to publish ${crate} v${version} after ${MAX_ATTEMPTS} attempts"
                 exit 1
               fi
-            fi
+              echo "::warning::Publish attempt ${attempt} for ${crate} failed, retrying in ${delay}s..."
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
             echo "::endgroup::"
-            echo "Sleeping 2 minutes to satisfy crates.io rate limits..."
-            sleep 120
+            if [ "$published" != true ]; then
+              echo "::error::Failed to publish ${crate} v${version}"
+              exit 1
+            fi
           done <<< "${{ steps.publish_order.outputs.crates }}"
