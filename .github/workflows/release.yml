@@ -75,23 +75,24 @@ jobs:
           git config user.email "${{ github.actor }}@users.noreply.github.com"
 
       - name: Bump version and commit
-        # --execute applies changes locally.
-        # --no-publish skips crates.io (we do that last).
-        # --no-push skips git push (we do that explicitly later).
-        run: cargo release ${{ github.event.inputs.version }} --execute --no-publish --no-push --no-confirm
+        run: cargo release ${{ github.event.inputs.version }} --execute --no-publish --no-push --no-tag --no-confirm
 
-      - name: Determine tag name
+      - name: Create Single Tag
         id: tag
         run: |
-          TAG=$(git describe --tags --exact-match)
+          VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r ".packages[] | select(.name == \"${{ env.PACKAGE_NAME }}\") | .version")
           
-          if [ -z "$TAG" ]; then
-             echo "::error::No tag was created by cargo-release!"
-             exit 1
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not determine version!"
+            exit 1
           fi
           
+          TAG="v$VERSION"
+          
+          git tag -a "$TAG" -m "Release $TAG"
+          
           echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Captured tag: $TAG"
+          echo "Created tag: $TAG"
 
       - name: Generate changelog
         id: changelog
