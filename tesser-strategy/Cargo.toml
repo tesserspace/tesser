@@ -20,3 +20,4 @@ chrono.workspace = true
 once_cell = "1.19"
 ctor = "0.2"
 tesser-strategy-macros = { version = "0.2.2", path = "../tesser-strategy-macros" }
+serde_json.workspace = true

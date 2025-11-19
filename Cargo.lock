@@ -2290,6 +2290,7 @@ dependencies = [
  "once_cell",
  "rust_decimal",
  "serde",
+ "serde_json",
  "tesser-core",
  "tesser-indicators",
  "tesser-strategy-macros",

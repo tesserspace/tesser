@@ -247,6 +247,7 @@ struct LiveRuntime {
     subscriber_handles: Vec<JoinHandle<()>>,
     connection_monitors: Vec<JoinHandle<()>>,
     order_timeout_task: JoinHandle<()>,
+    strategy: Arc<Mutex<Box<dyn Strategy>>>,
     _public_connection: Arc<AtomicBool>,
     _private_connection: Option<Arc<AtomicBool>>,
 }
@@ -255,7 +256,7 @@ impl LiveRuntime {
     #[allow(clippy::too_many_arguments)]
     async fn new(
         stream: BybitMarketStream,
-        strategy: Box<dyn Strategy>,
+        mut strategy: Box<dyn Strategy>,
         symbols: Vec<String>,
         orchestrator: OrderOrchestrator,
         settings: LiveSessionSettings,
@@ -325,6 +326,13 @@ impl LiveRuntime {
             Portfolio::new(portfolio_cfg.clone(), market_registry.clone())
         };
         strategy_ctx.update_positions(portfolio.positions());
+        // Restore strategy state if found in persistence
+        if let Some(state) = persisted.strategy_state.take() {
+            info!("restoring strategy state from persistence");
+            strategy
+                .restore(state)
+                .context("failed to restore strategy state")?;
+        }
         persisted.portfolio = Some(portfolio.snapshot());
 
         let mut market = HashMap::new();
@@ -603,6 +611,7 @@ impl LiveRuntime {
             subscriber_handles,
             connection_monitors,
             order_timeout_task,
+            strategy,
             _public_connection: public_connection,
             _private_connection: private_connection,
         })
@@ -700,7 +709,12 @@ impl LiveRuntime {
     }
 
     async fn save_state(&self) -> Result<()> {
-        persist_state(self.state_repo.clone(), self.persisted.clone()).await
+        persist_state(
+            self.state_repo.clone(),
+            self.persisted.clone(),
+            Some(self.strategy.clone()),
+        )
+        .await
     }
 }
 
@@ -885,7 +899,9 @@ async fn enforce_liquidate_only(ctx: &ReconciliationContext) {
         let mut state = ctx.persisted.lock().await;
         state.portfolio = Some(snapshot);
     }
-    if let Err(err) = persist_state(ctx.state_repo.clone(), ctx.persisted.clone()).await {
+    if let Err(err) =
+        persist_state(ctx.state_repo.clone(), ctx.persisted.clone(), None).await
+    {
         warn!(error = %err, "failed to persist liquidate-only transition");
     }
 }
@@ -1145,6 +1161,8 @@ fn spawn_event_subscribers(
     let order_persisted = persisted.clone();
     let order_alerts = alerts.clone();
     let order_orchestrator = orchestrator.clone();
+    // Note: We don't pass strategy to order update handler to avoid lock contention
+    // on high-frequency updates. Strategy state is snapshotted on candles/fills.
     handles.push(tokio::spawn(async move {
         let orchestrator = order_orchestrator.clone();
         let persisted = order_persisted.clone();
@@ -1232,7 +1250,12 @@ async fn process_tick_event(
         }
     }
     if drawdown_triggered {
-        persist_state(state_repo.clone(), persisted.clone()).await?;
+        persist_state(
+            state_repo.clone(),
+            persisted.clone(),
+            Some(strategy.clone()),
+        )
+        .await?;
         alert_liquidate_only(alerts.clone()).await;
     }
     {
@@ -1323,7 +1346,12 @@ async fn process_candle_event(
             .last_prices
             .insert(candle.symbol.clone(), candle.close);
     }
-    persist_state(state_repo.clone(), persisted.clone()).await?;
+    persist_state(
+        state_repo.clone(),
+        persisted.clone(),
+        Some(strategy.clone()),
+    )
+    .await?;
     let ctx = shared_risk_context(&candle.symbol, &portfolio, &market, &persisted).await;
     orchestrator.update_risk_context(candle.symbol.clone(), ctx);
     emit_signals(strategy.clone(), bus.clone(), metrics.clone()).await;
@@ -1446,7 +1474,12 @@ async fn process_fill_event(
     if drawdown_triggered {
         alert_liquidate_only(alerts.clone()).await;
     }
-    persist_state(state_repo.clone(), persisted.clone()).await?;
+    persist_state(
+        state_repo.clone(),
+        persisted.clone(),
+        Some(strategy.clone()),
+    )
+    .await?;
     Ok(())
 }
 
@@ -1495,7 +1528,7 @@ async fn process_order_update_event(
             snapshot.open_orders.retain(|o| o.id != order.id);
         }
     }
-    persist_state(state_repo, persisted).await?;
+    persist_state(state_repo, persisted, None).await?;
     Ok(())
 }
 
@@ -1520,7 +1553,19 @@ async fn emit_signals(
 async fn persist_state(
     repo: Arc<dyn StateRepository>,
     persisted: Arc<Mutex<LiveState>>,
+    strategy: Option<Arc<Mutex<Box<dyn Strategy>>>>,
 ) -> Result<()> {
+    if let Some(strat_lock) = strategy {
+        // Snapshot strategy state before cloning the full state for persistence
+        let strat = strat_lock.lock().await;
+        if let Ok(json_state) = strat.snapshot() {
+            let mut guard = persisted.lock().await;
+            guard.strategy_state = Some(json_state);
+        } else {
+            warn!("failed to snapshot strategy state");
+        }
+    }
+
     let snapshot = {
         let guard = persisted.lock().await;
         guard.clone()

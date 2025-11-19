@@ -547,6 +547,7 @@ pub struct LiveState {
     pub open_orders: Vec<Order>,
     pub last_prices: HashMap<String, Price>,
     pub last_candle_ts: Option<DateTime<Utc>>,
+    pub strategy_state: Option<serde_json::Value>,
 }
 
 /// Abstraction over state persistence backends.

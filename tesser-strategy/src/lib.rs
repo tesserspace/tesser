@@ -171,6 +171,16 @@ pub trait Strategy: Send + Sync {
 
     /// Allows the strategy to emit one or more signals after processing events.
     fn drain_signals(&mut self) -> Vec<Signal>;
+
+    /// Returns a JSON snapshot of the strategy's internal state for persistence.
+    fn snapshot(&self) -> StrategyResult<serde_json::Value> {
+        Ok(serde_json::Value::Null)
+    }
+
+    /// Restores the strategy's internal state from a JSON snapshot.
+    fn restore(&mut self, _state: serde_json::Value) -> StrategyResult<()> {
+        Ok(())
+    }
 }
 
 // -------------------------------------------------------------------------------------------------
