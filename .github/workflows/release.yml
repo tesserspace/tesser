@@ -41,6 +41,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           version: '27.1'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install cargo-release
         uses: taiki-e/install-action@v2
@@ -79,6 +80,7 @@ jobs:
         uses: arduino/setup-protoc@v2
         with:
           version: '27.1'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install tools
         uses: taiki-e/install-action@v2
@@ -176,6 +178,7 @@ jobs:
         uses: arduino/setup-protoc@v2
         with:
           version: '27.1'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build binary
         run: cargo build --package ${{ env.PACKAGE_NAME }} --release --target ${{ matrix.target }}
