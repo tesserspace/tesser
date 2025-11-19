@@ -22,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag_name: ${{ steps.tag.outputs.tag_name }}
+      checkout_ref: ${{ steps.tag.outputs.checkout_ref }}
       changelog: ${{ steps.changelog.outputs.body }}
     steps:
       - name: Checkout repository
@@ -49,7 +50,13 @@ jobs:
         id: tag
         run: |
           TAG=$(bash .github/scripts/get_release_tag.sh)
+          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            CHECKOUT_REF="$TAG"
+          else
+            CHECKOUT_REF=$(git rev-parse HEAD)
+          fi
           echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+          echo "checkout_ref=$CHECKOUT_REF" >> "$GITHUB_OUTPUT"
 
       - name: Generate release notes
         id: changelog
@@ -112,7 +119,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare-release.outputs.tag_name }}
+          ref: ${{ needs.prepare-release.outputs.checkout_ref }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -164,7 +171,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare-release.outputs.tag_name }}
+          ref: ${{ needs.prepare-release.outputs.checkout_ref }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
