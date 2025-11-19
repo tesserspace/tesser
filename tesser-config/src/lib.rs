@@ -8,6 +8,8 @@ use config::{Config, ConfigError, Environment, File};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
+mod deserializer;
+
 /// Root application configuration deserialized from layered sources.
 #[derive(Debug, Deserialize)]
 pub struct AppConfig {
@@ -27,7 +29,10 @@ pub struct AppConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct BacktestConfig {
-    #[serde(default = "default_initial_balances")]
+    #[serde(
+        default = "default_initial_balances",
+        with = "deserializer::uppercase_key"
+    )]
     pub initial_balances: HashMap<String, Decimal>,
     #[serde(default = "default_reporting_currency")]
     pub reporting_currency: String,
@@ -202,9 +207,9 @@ fn default_risk_drawdown_limit() -> Decimal {
 /// 4. Environment variables prefixed with `TESSER_`
 pub fn load_config(env: Option<&str>) -> Result<AppConfig> {
     let base_path = Path::new("config");
+
     let mut builder =
         Config::builder().add_source(File::from(base_path.join("default.toml")).required(true));
-
     if let Some(env_name) = env {
         builder = builder
             .add_source(File::from(base_path.join(format!("{env_name}.toml"))).required(false));
