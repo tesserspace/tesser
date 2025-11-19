@@ -256,5 +256,6 @@ jobs:
             echo "::group::Publishing $crate"
             cargo publish -p "$crate"
             echo "::endgroup::"
-            sleep 30
+            echo "Sleeping 2 minutes to satisfy crates.io rate limits..."
+            sleep 120
           done <<< "${{ steps.publish_order.outputs.crates }}"
