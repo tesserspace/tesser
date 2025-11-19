@@ -15,7 +15,7 @@ from .conversions import (
     signal_to_proto,
     tick_from_proto,
 )
-from .models import Signal, StrategyContext
+from .models import StrategyContext
 from .protos import tesser_pb2 as proto
 from .protos import tesser_pb2_grpc
 from .strategy import Strategy

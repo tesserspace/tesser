@@ -36,3 +36,11 @@ dev = [
 pythonpath = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py39"
+src = ["src", "tests"]
+exclude = [
+  "src/tesser/protos/tesser_pb2.py",
+  "src/tesser/protos/tesser_pb2_grpc.py",
+]

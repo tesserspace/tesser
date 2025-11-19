@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from decimal import Decimal
 from typing import Iterable, List
 
 from .models import (
@@ -17,7 +16,7 @@ from .models import (
     StrategyInitResult,
     Tick,
 )
-from .utils.decimal import from_decimal, from_timestamp, to_decimal, to_timestamp
+from .utils.decimal import from_decimal, from_timestamp, to_decimal
 from .protos import tesser_pb2 as proto
 
 
