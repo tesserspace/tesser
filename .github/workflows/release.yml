@@ -80,22 +80,18 @@ jobs:
         # --no-push skips git push (we do that explicitly later).
         run: cargo release ${{ github.event.inputs.version }} --execute --no-publish --no-push
 
-      - name: Determine tag name (Robust)
+      - name: Determine tag name
         id: tag
-        shell: bash
         run: |
-          # Use cargo metadata as the source of truth, avoiding git describe errors on new repos.
-          VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r ".packages[] | select(.name == \"${{ env.PACKAGE_NAME }}\") | .version")
+          TAG=$(git describe --tags --exact-match)
           
-          if [ -z "$VERSION" ]; then
-            echo "::error::Could not determine version for package ${{ env.PACKAGE_NAME }}"
-            exit 1
+          if [ -z "$TAG" ]; then
+             echo "::error::No tag was created by cargo-release!"
+             exit 1
           fi
           
-          TAG="v$VERSION"
           echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Detected version: $VERSION"
-          echo "Generated tag: $TAG"
+          echo "Captured tag: $TAG"
 
       - name: Generate changelog
         id: changelog
@@ -108,8 +104,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Push changes
-        # explicitly push the commit AND the new tag
-        run: git push origin HEAD --follow-tags
+        run: git push origin HEAD:refs/heads/main --tags
 
   # 3. Build Phase
   # Compile binaries for all targets. If this fails, Crates.io is not polluted.
