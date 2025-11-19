@@ -25,6 +25,11 @@ jobs:
     defaults:
       run:
         working-directory: sdk/tesser-py
+    environment:
+      name: pypi
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
