@@ -190,7 +190,7 @@ jobs:
             archive: zip
             artifact_suffix: x86_64-pc-windows-msvc
             use_cross: false
-            setup_cmd: choco install openssl --no-progress -y
+            setup_cmd: ''
             cli_features: ''
     steps:
       - name: Checkout repository
@@ -208,65 +208,16 @@ jobs:
       - name: Apply release bump
         run: git apply patch/release.patch
 
-      - name: Install system dependencies
-        if: matrix.setup_cmd != ''
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux' && matrix.setup_cmd != ''
         run: ${{ matrix.setup_cmd }}
 
-      - name: Configure OpenSSL on Windows
+      - name: Install OpenSSL via vcpkg (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $candidates = @(
-            'C:\Program Files\OpenSSL-Win64',
-            'C:\Program Files\OpenSSL',
-            'C:\Program Files (x86)\OpenSSL-Win32'
-          )
-
-          $opensslRoot = $null
-          $includeDir = $null
-          $libDir = $null
-
-          foreach ($path in $candidates) {
-            if (-not (Test-Path $path)) { continue }
-
-            $includeCandidate = Join-Path $path 'include'
-            $sslHeader = Join-Path $includeCandidate 'openssl\ssl.h'
-            if (-not (Test-Path $sslHeader)) { continue }
-
-            $libSubdirs = @('lib\VC\static', 'lib\VC\x64\MD', 'lib\VC', 'lib64', 'lib')
-            $libPick = $null
-            foreach ($sub in $libSubdirs) {
-              $candidate = Join-Path $path $sub
-              if (Test-Path (Join-Path $candidate 'libcrypto.lib')) {
-                $libPick = $candidate
-                break
-              }
-            }
-            if (-not $libPick) { continue }
-
-            $opensslRoot = $path
-            $includeDir = $includeCandidate
-            $libDir = $libPick
-            break
-          }
-
-          if (-not $opensslRoot -or -not $libDir -or -not $includeDir) {
-            throw "OpenSSL installation with headers and libs not found in expected locations."
-          }
-
-          $certDir = Join-Path $opensslRoot 'ca'
-          if (-not (Test-Path $certDir)) {
-            New-Item -ItemType Directory -Path $certDir | Out-Null
-          }
-          $certPath = Join-Path $certDir 'cacert.pem'
-          if (-not (Test-Path $certPath)) {
-            Invoke-WebRequest -Uri 'https://curl.se/ca/cacert.pem' -OutFile $certPath
-          }
-
-          Add-Content -Path $env:GITHUB_ENV -Value "OPENSSL_DIR=$opensslRoot"
-          Add-Content -Path $env:GITHUB_ENV -Value "OPENSSL_LIB_DIR=$libDir"
-          Add-Content -Path $env:GITHUB_ENV -Value "OPENSSL_INCLUDE_DIR=$includeDir"
-          Add-Content -Path $env:GITHUB_ENV -Value "SSL_CERT_FILE=$certPath"
+          vcpkg install openssl:x64-windows-static-md
+          Add-Content -Path $env:GITHUB_ENV -Value "OPENSSL_NO_VENDOR=1"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
