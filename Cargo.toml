@@ -44,7 +44,7 @@ hmac = "0.12"
 hyper = { version = "0.14", features = ["http1", "tcp", "server"] }
 http = "0.2"
 num-traits = "0.2"
-ndarray = { version = "0.15", features = ["std"] }
+ndarray = { version = "0.16", features = ["std"] }
 prometheus = { version = "0.13", default-features = false, features = ["process"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
 rust_decimal = { version = "1.35", features = ["serde", "maths"] }

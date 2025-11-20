@@ -2,7 +2,7 @@ use crate::{
     buffer::FeatureBuffer,
     config::{CortexConfig, CortexDevice},
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use ort::{
     session::{builder::GraphOptimizationLevel, Session},
     value::TensorRef,
@@ -80,11 +80,20 @@ impl CortexEngine {
             }
         }
 
-        let session = builder
+        let mut session = builder
             .commit_from_file(&config.model_path)
             .with_context(|| {
                 format!("failed to load model from {}", config.model_path.display())
             })?;
+
+        info!(target: "tesser.cortex", "warming up inference engine");
+        if let Err(err) = warmup_session(
+            &mut session,
+            config.input_name.as_str(),
+            &config.input_shape,
+        ) {
+            warn!(target: "tesser.cortex", "warmup failed: {err}");
+        }
 
         Ok(Self {
             session,
@@ -123,4 +132,22 @@ fn map_optimization_level(level: u32) -> GraphOptimizationLevel {
         2 => GraphOptimizationLevel::Level2,
         _ => GraphOptimizationLevel::Level3,
     }
+}
+
+fn warmup_session(session: &mut Session, input_name: &str, shape: &[usize]) -> Result<()> {
+    ensure!(
+        !shape.is_empty(),
+        "input shape must have at least one dimension for warmup"
+    );
+    let total: usize = shape.iter().copied().product();
+    ensure!(
+        total > 0,
+        "input shape cannot contain zero-sized dimensions"
+    );
+    let zeros = vec![0.0f32; total];
+    let tensor = TensorRef::from_array_view((shape.to_vec(), zeros.as_slice()))?;
+    let _ = session.run(ort::inputs! {
+        input_name => tensor
+    })?;
+    Ok(())
 }
