@@ -1,0 +1,24 @@
+[package]
+name = "tesser-binance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Binance exchange connector for the Tesser framework"
+readme = "README.md"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+futures.workspace = true
+rust_decimal.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+binance-sdk = { version = "31", features = ["derivatives_trading_usds_futures"] }
+uuid.workspace = true
+tesser-broker = { version = "0.4.1", path = "../../tesser-broker" }
+tesser-core = { version = "0.4.1", path = "../../tesser-core" }

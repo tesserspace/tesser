@@ -48,6 +48,16 @@ pub struct ExchangeConfig {
     pub api_key: String,
     #[serde(default)]
     pub api_secret: String,
+    #[serde(default = "default_exchange_driver")]
+    pub driver: ExchangeDriver,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ExchangeDriver {
+    #[default]
+    Bybit,
+    Binance,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -152,6 +162,10 @@ fn default_initial_balances() -> HashMap<String, Decimal> {
     let mut balances = HashMap::new();
     balances.insert(default_reporting_currency(), default_equity());
     balances
+}
+
+fn default_exchange_driver() -> ExchangeDriver {
+    ExchangeDriver::Bybit
 }
 
 fn default_state_path() -> PathBuf {

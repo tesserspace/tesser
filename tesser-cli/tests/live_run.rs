@@ -26,7 +26,7 @@ use tesser_bybit::PublicChannel;
 use tesser_cli::live::{
     run_live_with_shutdown, ExecutionBackend, LiveSessionSettings, ShutdownSignal,
 };
-use tesser_config::{AlertingConfig, ExchangeConfig, RiskManagementConfig};
+use tesser_config::{AlertingConfig, ExchangeConfig, ExchangeDriver, RiskManagementConfig};
 use tesser_core::{AccountBalance, Candle, Interval, Position, Side, Signal, SignalKind, Tick};
 use tesser_portfolio::{SqliteStateRepository, StateRepository};
 use tesser_strategy::{Strategy, StrategyContext, StrategyResult};
@@ -161,12 +161,14 @@ async fn live_run_executes_round_trip() -> Result<()> {
         risk: RiskManagementConfig::default(),
         reconciliation_interval: Duration::from_secs(1),
         reconciliation_threshold: Decimal::new(1, 3),
+        driver: ExchangeDriver::Bybit,
     };
     let exchange_cfg = ExchangeConfig {
         rest_url: exchange.rest_url(),
         ws_url: exchange.ws_url(),
         api_key: "test-key".into(),
         api_secret: "test-secret".into(),
+        driver: ExchangeDriver::Bybit,
     };
     let (strategy, monitor) = ScriptedStrategy::new(SYMBOL);
     let shutdown = ShutdownSignal::new();
@@ -282,12 +284,14 @@ async fn reconciliation_enters_liquidate_only_on_divergence() -> Result<()> {
         risk: RiskManagementConfig::default(),
         reconciliation_interval: Duration::from_millis(200),
         reconciliation_threshold: Decimal::new(1, 4),
+        driver: ExchangeDriver::Bybit,
     };
     let exchange_cfg = ExchangeConfig {
         rest_url: exchange.rest_url(),
         ws_url: exchange.ws_url(),
         api_key: "test-key".into(),
         api_secret: "test-secret".into(),
+        driver: ExchangeDriver::Bybit,
     };
     let strategy: Box<dyn Strategy> = Box::new(PassiveStrategy::new(SYMBOL));
     let shutdown = ShutdownSignal::new();
@@ -423,12 +427,14 @@ async fn alerts_on_rejected_order() -> Result<()> {
         risk: RiskManagementConfig::default(),
         reconciliation_interval: Duration::from_secs(1),
         reconciliation_threshold: Decimal::new(1, 3),
+        driver: ExchangeDriver::Bybit,
     };
     let exchange_cfg = ExchangeConfig {
         rest_url: exchange.rest_url(),
         ws_url: exchange.ws_url(),
         api_key: "test-key".into(),
         api_secret: "test-secret".into(),
+        driver: ExchangeDriver::Bybit,
     };
     let (strategy, monitor) = ScriptedStrategy::new(SYMBOL);
     let shutdown = ShutdownSignal::new();
