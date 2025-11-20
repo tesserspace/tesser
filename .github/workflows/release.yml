@@ -251,9 +251,19 @@ jobs:
             throw "OpenSSL libraries (libcrypto/libssl) not found under $opensslRoot"
           }
 
+          $certDir = Join-Path $opensslRoot 'ca'
+          if (-not (Test-Path $certDir)) {
+            New-Item -ItemType Directory -Path $certDir | Out-Null
+          }
+          $certPath = Join-Path $certDir 'cacert.pem'
+          if (-not (Test-Path $certPath)) {
+            Invoke-WebRequest -Uri 'https://curl.se/ca/cacert.pem' -OutFile $certPath
+          }
+
           Add-Content -Path $env:GITHUB_ENV -Value "OPENSSL_DIR=$opensslRoot"
           Add-Content -Path $env:GITHUB_ENV -Value "OPENSSL_LIB_DIR=$libDir"
           Add-Content -Path $env:GITHUB_ENV -Value "OPENSSL_INCLUDE_DIR=$includeDir"
+          Add-Content -Path $env:GITHUB_ENV -Value "SSL_CERT_FILE=$certPath"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
