@@ -11,6 +11,9 @@ dependencies = [
     "polars",
     "pyarrow",
     "scikit-learn",
+    "torch",
+    "onnx",
+    "onnxscript",
     "toml",
 ]
 

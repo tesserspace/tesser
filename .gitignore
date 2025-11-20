@@ -147,3 +147,4 @@ nosetests.xml
 coverage.xml
 __pycache__
 sdk/tesser-py/src/tesser/protos
+research/models/

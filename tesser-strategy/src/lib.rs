@@ -16,10 +16,12 @@ use rust_decimal::{
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tesser_core::{
     Candle, ExecutionHint, Fill, OrderBook, Position, Signal, SignalKind, Symbol, Tick,
 };
+use tesser_cortex::{CortexConfig, CortexDevice, CortexEngine, FeatureBuffer};
 use tesser_indicators::{
     indicators::{Atr, BollingerBands, Ichimoku, IchimokuOutput, Macd, Rsi, Sma},
     Indicator,
@@ -956,6 +958,179 @@ impl Strategy for MlClassifier {
 }
 
 register_strategy!(MlClassifier, "MlClassifier");
+
+// -------------------------------------------------------------------------------------------------
+// Cortex-powered ML strategy
+// -------------------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LstmCortexConfig {
+    pub symbol: Symbol,
+    pub model_path: String,
+    pub input_name: String,
+    pub window: usize,
+    pub feature_dim: usize,
+    pub device: CortexDevice,
+}
+
+impl Default for LstmCortexConfig {
+    fn default() -> Self {
+        Self {
+            symbol: "BTCUSDT".to_string(),
+            model_path: "research/models/lstm_v1.onnx".to_string(),
+            input_name: "input".to_string(),
+            window: 10,
+            feature_dim: 5,
+            device: CortexDevice::default(),
+        }
+    }
+}
+
+impl LstmCortexConfig {
+    fn to_cortex_config(&self) -> CortexConfig {
+        CortexConfig {
+            model_path: PathBuf::from(&self.model_path),
+            device: self.device.clone(),
+            input_shape: vec![1, self.window, self.feature_dim],
+            input_name: self.input_name.clone(),
+        }
+    }
+}
+
+pub struct LstmCortex {
+    cfg: LstmCortexConfig,
+    engine: Option<CortexEngine>,
+    features: FeatureBuffer,
+    signals: Vec<Signal>,
+}
+
+impl Default for LstmCortex {
+    fn default() -> Self {
+        Self::new(LstmCortexConfig::default())
+    }
+}
+
+impl LstmCortex {
+    pub fn new(cfg: LstmCortexConfig) -> Self {
+        Self {
+            features: FeatureBuffer::new(cfg.window, cfg.feature_dim),
+            cfg,
+            engine: None,
+            signals: Vec::new(),
+        }
+    }
+
+    fn ensure_engine(&mut self) -> StrategyResult<()> {
+        if self.engine.is_none() {
+            let cortex_cfg = self.cfg.to_cortex_config();
+            let engine = CortexEngine::new(cortex_cfg).map_err(|err| {
+                StrategyError::InvalidConfig(format!("failed to initialize cortex engine: {err}"))
+            })?;
+            self.engine = Some(engine);
+        }
+        Ok(())
+    }
+
+    fn push_features(&mut self, features: &[f32]) -> StrategyResult<()> {
+        self.features
+            .push(features)
+            .map_err(|err| StrategyError::Internal(err.to_string()))
+    }
+
+    fn extract_features(&self, candle: &Candle) -> Vec<f32> {
+        let mut feats = vec![0.0; self.cfg.feature_dim];
+        if self.cfg.feature_dim >= 5 {
+            feats[0] = candle.open.to_f32().unwrap_or_default();
+            feats[1] = candle.high.to_f32().unwrap_or_default();
+            feats[2] = candle.low.to_f32().unwrap_or_default();
+            feats[3] = candle.close.to_f32().unwrap_or_default();
+            feats[4] = candle.volume.to_f32().unwrap_or_default();
+        }
+        feats
+    }
+}
+
+#[async_trait]
+impl Strategy for LstmCortex {
+    fn name(&self) -> &str {
+        "lstm-cortex"
+    }
+
+    fn symbol(&self) -> &str {
+        &self.cfg.symbol
+    }
+
+    fn configure(&mut self, params: toml::Value) -> StrategyResult<()> {
+        let cfg: LstmCortexConfig = params.try_into().map_err(|err: toml::de::Error| {
+            StrategyError::InvalidConfig(format!("failed to parse LstmCortex config: {err}"))
+        })?;
+        if cfg.window == 0 || cfg.feature_dim < 5 {
+            return Err(StrategyError::InvalidConfig(
+                "window must be positive and feature_dim >= 5".into(),
+            ));
+        }
+        self.features = FeatureBuffer::new(cfg.window, cfg.feature_dim);
+        self.engine = None;
+        self.cfg = cfg;
+        self.ensure_engine()
+    }
+
+    async fn on_tick(&mut self, _ctx: &StrategyContext, _tick: &Tick) -> StrategyResult<()> {
+        Ok(())
+    }
+
+    async fn on_candle(&mut self, _ctx: &StrategyContext, candle: &Candle) -> StrategyResult<()> {
+        if candle.symbol != self.cfg.symbol {
+            return Ok(());
+        }
+        self.ensure_engine()?;
+        let features = self.extract_features(candle);
+        self.push_features(&features)?;
+        if let Some(engine) = &mut self.engine {
+            match engine.predict(&self.features) {
+                Ok(Some(probs)) => {
+                    if let Some((idx, probability)) = probs
+                        .iter()
+                        .enumerate()
+                        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    {
+                        if *probability >= 0.6 {
+                            match idx {
+                                0 => self.signals.push(Signal::new(
+                                    self.cfg.symbol.clone(),
+                                    SignalKind::EnterLong,
+                                    f64::from(*probability),
+                                )),
+                                1 => self.signals.push(Signal::new(
+                                    self.cfg.symbol.clone(),
+                                    SignalKind::EnterShort,
+                                    f64::from(*probability),
+                                )),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::error!("lstm cortex inference error: {err}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn on_fill(&mut self, _ctx: &StrategyContext, _fill: &Fill) -> StrategyResult<()> {
+        Ok(())
+    }
+
+    fn drain_signals(&mut self) -> Vec<Signal> {
+        std::mem::take(&mut self.signals)
+    }
+}
+
+register_strategy!(LstmCortex, "LstmCortex");
 
 /// Statistical arbitrage pairs-trading strategy.
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -20,3 +20,10 @@ default = []
 cuda = ["ort/cuda"]
 tensorrt = ["ort/tensorrt"]
 coreml = ["ort/coreml"]
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "inference_benchmark"
+harness = false
