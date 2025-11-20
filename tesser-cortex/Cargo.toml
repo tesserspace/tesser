@@ -1,0 +1,29 @@
+[package]
+name = "tesser-cortex"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "High-performance, hardware-agnostic AI inference engine for Tesser"
+readme.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ndarray.workspace = true
+ort = { workspace = true, features = ["ndarray"] }
+serde.workspace = true
+tracing.workspace = true
+
+[features]
+default = []
+cuda = ["ort/cuda"]
+tensorrt = ["ort/tensorrt"]
+coreml = ["ort/coreml"]
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "inference_benchmark"
+harness = false

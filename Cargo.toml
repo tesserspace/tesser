@@ -19,6 +19,7 @@ members = [
     "tesser-markets",
     "tesser-rpc",
     "tesser",
+    "tesser-cortex",
 ]
 
 [workspace.package]
@@ -43,6 +44,7 @@ hmac = "0.12"
 hyper = { version = "0.14", features = ["http1", "tcp", "server"] }
 http = "0.2"
 num-traits = "0.2"
+ndarray = { version = "0.16", features = ["std"] }
 prometheus = { version = "0.13", default-features = false, features = ["process"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
 rust_decimal = { version = "1.35", features = ["serde", "maths"] }
@@ -58,6 +60,7 @@ toml = "0.8"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
+ort = "2.0.0-rc.10"
 tesser-backtester = { version = "0.3.1", path = "tesser-backtester" }
 tesser-broker = { version = "0.3.1", path = "tesser-broker" }
 tesser-cli = { version = "0.3.1", path = "tesser-cli" }
