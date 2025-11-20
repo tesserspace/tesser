@@ -7,14 +7,7 @@ fn model_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../research/models/lstm_v1.onnx")
 }
 
-fn build_engine() -> CortexEngine {
-    let path = model_path();
-    if !path.exists() {
-        panic!(
-            "Model not found at {}. Run `uv run scripts/export_dummy_model.py` from the research directory first.",
-            path.display()
-        );
-    }
+fn build_engine(path: PathBuf) -> CortexEngine {
     let config = CortexConfig {
         model_path: path,
         device: CortexDevice::Cpu {
@@ -36,7 +29,16 @@ fn prime_buffer() -> FeatureBuffer {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let mut engine = build_engine();
+    let path = model_path();
+    if !path.exists() {
+        eprintln!(
+            "Skipping benchmark: model not found at {}. Run `uv run scripts/export_dummy_model.py` from the research directory first.",
+            path.display()
+        );
+        return;
+    }
+
+    let mut engine = build_engine(path);
     let mut buffer = prime_buffer();
 
     c.bench_function("cpu_inference_avx512", |b| {

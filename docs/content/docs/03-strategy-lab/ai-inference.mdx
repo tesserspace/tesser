@@ -1,0 +1,87 @@
+---
+title: AI Inference (Cortex)
+description: Deploy deep learning models with microsecond latency using Tesser Cortex.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+**Tesser Cortex** is the framework's dedicated AI inference subsystem. It lets you train models in Python (PyTorch/TensorFlow/JAX) and execute them in Rust with bare-metal performance.
+
+## The Latency Gap
+
+In high-frequency trading, Python alone is too slow.
+
+- **Python overhead**: The GIL and dynamic typing introduce jitter (500 μs+).
+- **PCIe bottleneck**: Shipping tiny tick batches to a GPU often costs 1–3 ms.
+
+<Callout title="The Cortex Advantage" type="info">
+  Tesser Cortex keeps data on the CPU, utilizing AVX-512 vector instructions and L3 cache optimization. For LSTM/MLP models, this drives inference to <25 μs—roughly 100× faster than a GPU round-trip.
+</Callout>
+
+## Workflow: Research to Production
+
+Cortex decouples research from execution using the ONNX standard.
+
+### 1. Research (Python)
+Train your model with the usual stack, then export to ONNX.
+
+```python
+# research/scripts/export_model.py
+import torch
+
+model = QuantLstm(...)
+model.eval()
+
+dummy = torch.randn(1, 10, 5)
+torch.onnx.export(
+    model,
+    dummy,
+    "../models/alpha_v1.onnx",
+    input_names=["market_features"],
+    output_names=["signal_probs"],
+)
+```
+
+### 2. Configuration (TOML)
+No C++ rewrite required—point Cortex to the artifact.
+
+```toml
+# strategies/ai_alpha.toml
+strategy_name = "LstmCortex"
+
+[params]
+symbol = "BTCUSDT"
+model_path = "models/alpha_v1.onnx"
+
+[params.cortex]
+type = "Cpu"            # Use "Cuda" or "TensorRT" for heavy models
+intra_op_threads = 1
+optimization_level = 3
+```
+
+### 3. Execution (Rust)
+`FeatureBuffer` maps market data straight into ONNX Runtime memory.
+
+```rust
+async fn on_tick(&mut self, _ctx: &StrategyContext, tick: &Tick) -> StrategyResult<()> {
+    self.features.push(&[tick.price, tick.volume])?;
+    if let Some(probs) = self.engine.predict(&self.features)? {
+        if probs[0] > 0.8 {
+            self.signals.push(Signal::new(self.cfg.symbol.clone(), SignalKind::EnterLong, 0.9));
+        }
+    }
+    Ok(())
+}
+```
+
+## Hardware Abstraction
+
+Tesser Cortex is hardware agnostic. CPU mode is ideal for latency-sensitive flows, while CUDA/TensorRT enable throughput workloads (NLP, transformers) with a single config change.
+
+| Mode | Best for | Hardware |
+| --- | --- | --- |
+| **CPU (Default)** | HFT, market making, arbitrage | Standard servers (AWS c6i, bare metal) |
+| **CUDA** | Transformer regimes, news NLP | NVIDIA A100/H100 |
+| **TensorRT** | Massive ensembles, edge deployments | NVIDIA Jetson / DGX |
+
+For detailed API docs, see the `tesser-cortex` crate.

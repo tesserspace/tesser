@@ -74,6 +74,11 @@ tesser/
 *   **Contents**: Implementations of a `Strategy` trait. This is where you calculate indicators (e.g., RSI, Moving Averages) and generate `Signal` events (e.g., "go long", "exit position").
 *   **Rule**: Strategy code must be pure and self-contained. It should only depend on `tesser-core` for data types and operate on the data it is given, without any knowledge of where the data comes from (live feed or backtest).
 
+#### `tesser-cortex`
+**Responsibility**: AI inference engine (ONNX Runtime wrapper) used by strategies.
+*   **Contents**: `CortexEngine`, `FeatureBuffer`, and configuration types that manage zero-copy dataflow into ONNX Runtime.
+*   **Highlights**: Hardware-agnostic design supporting AVX-512 CPU mode for microsecond latency and CUDA/TensorRT toggles via configuration.
+
 #### `tesser-indicators`
 **Responsibility**: Houses all reusable technical indicators and signal building blocks.
 *   **Contents**: Decimal-native implementations of SMA, EMA, RSI, Bollinger Bands, and the plumbing required to compose them through zero-cost `pipe()` adapters.

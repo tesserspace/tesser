@@ -2,6 +2,7 @@
   "title": "Strategy Lab",
   "pages": [
     "writing-strategies",
+    "ai-inference",
     "using-indicators",
     "signal-lifecycle",
     "rpc-strategies"
