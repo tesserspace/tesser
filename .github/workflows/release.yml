@@ -163,30 +163,35 @@ jobs:
             artifact_suffix: linux-gnu
             use_cross: false
             setup_cmd: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+            cli_features: ''
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             archive: tar.gz
             artifact_suffix: linux-musl
             use_cross: false
             setup_cmd: sudo apt-get update && sudo apt-get install -y musl-tools
+            cli_features: '--no-default-features --features bybit'
           - os: macos-latest
             target: x86_64-apple-darwin
             archive: tar.gz
             artifact_suffix: x86_64-apple-darwin
             use_cross: false
             setup_cmd: ''
+            cli_features: ''
           - os: macos-latest
             target: aarch64-apple-darwin
             archive: tar.gz
             artifact_suffix: aarch64-apple-darwin
             use_cross: false
             setup_cmd: ''
+            cli_features: ''
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
             artifact_suffix: x86_64-pc-windows-msvc
             use_cross: false
             setup_cmd: ''
+            cli_features: ''
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -224,11 +229,11 @@ jobs:
 
       - name: Build binary (cross)
         if: matrix.use_cross == 'true'
-        run: cross build --package ${{ env.PACKAGE_NAME }} --release --target ${{ matrix.target }}
+        run: cross build --package ${{ env.PACKAGE_NAME }} --release --target ${{ matrix.target }} ${{ matrix.cli_features }}
 
       - name: Build binary
         if: matrix.use_cross != 'true'
-        run: cargo build --package ${{ env.PACKAGE_NAME }} --release --target ${{ matrix.target }}
+        run: cargo build --package ${{ env.PACKAGE_NAME }} --release --target ${{ matrix.target }} ${{ matrix.cli_features }}
 
       - name: Package binary
         shell: bash
