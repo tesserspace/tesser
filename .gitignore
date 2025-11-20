@@ -148,3 +148,9 @@ coverage.xml
 __pycache__
 sdk/tesser-py/src/tesser/protos
 research/models/
+
+# Ignore everything inside config/
+config/*
+# But keep these two files
+!config/default.toml
+!config/markets.toml
