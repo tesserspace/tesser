@@ -147,27 +147,45 @@ jobs:
       fail-fast: true
       matrix:
         include:
+          - os: ubuntu-20.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            artifact_suffix: linux-gnu
+            use_cross: false
+            setup_cmd: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             archive: tar.gz
+            artifact_suffix: linux-musl
+            use_cross: true
+            setup_cmd: ''
           - os: macos-latest
             target: x86_64-apple-darwin
             archive: tar.gz
+            artifact_suffix: x86_64-apple-darwin
+            use_cross: false
+            setup_cmd: ''
           - os: macos-latest
             target: aarch64-apple-darwin
             archive: tar.gz
+            artifact_suffix: aarch64-apple-darwin
+            use_cross: false
+            setup_cmd: ''
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
+            artifact_suffix: x86_64-pc-windows-msvc
+            use_cross: false
+            setup_cmd: ''
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.tag-and-push.outputs.tag_name }}
 
-      - name: Install musl-tools
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install system dependencies
+        if: matrix.setup_cmd != ''
+        run: ${{ matrix.setup_cmd }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -180,7 +198,16 @@ jobs:
           version: '27.1'
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install cross
+        if: matrix.use_cross == 'true'
+        run: cargo install --locked cross
+
+      - name: Build binary (cross)
+        if: matrix.use_cross == 'true'
+        run: cross build --package ${{ env.PACKAGE_NAME }} --release --target ${{ matrix.target }}
+
       - name: Build binary
+        if: matrix.use_cross != 'true'
         run: cargo build --package ${{ env.PACKAGE_NAME }} --release --target ${{ matrix.target }}
 
       - name: Package binary
@@ -193,7 +220,7 @@ jobs:
             CLI_NAME="${{ env.PACKAGE_NAME }}.exe"
           fi
           
-          ARTIFACT_NAME="${{ env.PACKAGE_NAME }}-${{ needs.tag-and-push.outputs.tag_name }}-${{ matrix.target }}"
+          ARTIFACT_NAME="${{ env.PACKAGE_NAME }}-${{ needs.tag-and-push.outputs.tag_name }}-${{ matrix.artifact_suffix }}"
           mkdir -p "$ARTIFACT_NAME"
           
           cp "target/${{ matrix.target }}/release/${CLI_NAME}" "$ARTIFACT_NAME/"
