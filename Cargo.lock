@@ -3164,6 +3164,7 @@ name = "tesser-broker"
 version = "0.4.1"
 dependencies = [
  "async-trait",
+ "once_cell",
  "serde",
  "serde_json",
  "tesser-core",
