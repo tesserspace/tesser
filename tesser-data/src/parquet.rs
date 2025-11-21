@@ -137,10 +137,7 @@ impl MarketStream for ParquetMarketStream {
 
         if let Some(cursor) = self.depth_updates.as_mut() {
             while let Some(update) = cursor.next().await.map_err(map_err)? {
-                let state = self
-                    .book_state
-                    .entry(update.symbol.clone())
-                    .or_insert_with(LocalOrderBook::new);
+                let state = self.book_state.entry(update.symbol.clone()).or_default();
                 apply_depth_delta(state, &update);
                 if let Some(book) = snapshot_from_state(&update.symbol, state, update.timestamp) {
                     return Ok(Some(book));
@@ -795,8 +792,10 @@ mod tests {
     }
 
     fn decimal_builder() -> Decimal128Builder {
-        Decimal128Builder::new()
-            .with_data_type(DataType::Decimal128(TEST_DECIMAL_PRECISION, TEST_DECIMAL_SCALE as i8))
+        Decimal128Builder::new().with_data_type(DataType::Decimal128(
+            TEST_DECIMAL_PRECISION,
+            TEST_DECIMAL_SCALE as i8,
+        ))
     }
 
     fn sample_candles() -> Vec<Candle> {
