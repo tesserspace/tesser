@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicI64, Ordering},
     Arc, Once,
 };
 use std::time::{Duration, Instant};
@@ -66,6 +66,7 @@ use tesser_portfolio::{
 use tesser_strategy::{Strategy, StrategyContext};
 
 use crate::alerts::{AlertDispatcher, AlertManager};
+use crate::control;
 use crate::telemetry::{spawn_metrics_server, LiveMetrics};
 use crate::PublicChannel;
 
@@ -149,6 +150,7 @@ pub struct LiveSessionSettings {
     pub driver: String,
     pub orderbook_depth: usize,
     pub record_path: Option<PathBuf>,
+    pub control_addr: SocketAddr,
 }
 
 impl LiveSessionSettings {
@@ -292,6 +294,7 @@ struct LiveRuntime {
     persisted: Arc<Mutex<LiveState>>,
     event_bus: Arc<EventBus>,
     recorder: Option<ParquetRecorder>,
+    control_task: Option<JoinHandle<()>>,
     shutdown: ShutdownSignal,
     metrics_task: JoinHandle<()>,
     alert_task: Option<JoinHandle<()>>,
@@ -522,6 +525,15 @@ impl LiveRuntime {
         let persisted = Arc::new(Mutex::new(persisted));
         let orchestrator = Arc::new(orchestrator);
         let event_bus = Arc::new(EventBus::new(2048));
+        let last_data_timestamp = Arc::new(AtomicI64::new(0));
+        let control_task = control::spawn_control_plane(
+            settings.control_addr,
+            portfolio.clone(),
+            orchestrator.clone(),
+            persisted.clone(),
+            last_data_timestamp.clone(),
+            shutdown.clone(),
+        );
         let reconciliation_ctx = (!settings.exec_backend.is_paper()).then(|| {
             Arc::new(ReconciliationContext::new(ReconciliationContextConfig {
                 client: orchestrator.execution_engine().client(),
@@ -554,6 +566,7 @@ impl LiveRuntime {
             persisted.clone(),
             settings.exec_backend,
             recorder_handle.clone(),
+            last_data_timestamp.clone(),
         );
         let order_timeout_task = spawn_order_timeout_monitor(
             orchestrator.clone(),
@@ -583,6 +596,7 @@ impl LiveRuntime {
             persisted,
             event_bus,
             recorder,
+            control_task: Some(control_task),
             shutdown,
             metrics_task,
             alert_task,
@@ -692,6 +706,11 @@ impl LiveRuntime {
         .await
         {
             warn!(error = %err, "failed to persist shutdown state");
+        }
+        if let Some(task) = self.control_task.take() {
+            if let Err(err) = task.await {
+                warn!(error = %err, "control plane server task aborted");
+            }
         }
         if let Some(recorder) = self.recorder.take() {
             if let Err(err) = recorder.shutdown().await {
@@ -952,7 +971,6 @@ impl MarketSnapshot {
     }
 }
 
-#[derive(Clone)]
 pub struct ShutdownSignal {
     flag: Arc<AtomicBool>,
     notify: Arc<Notify>,
@@ -978,12 +996,11 @@ impl ShutdownSignal {
         self.notify.notify_waiters();
     }
 
-    fn triggered(&self) -> bool {
+    pub fn triggered(&self) -> bool {
         self.flag.load(Ordering::SeqCst)
     }
 
-    #[cfg_attr(not(feature = "binance"), allow(dead_code))]
-    async fn wait(&self) {
+    pub async fn wait(&self) {
         if self.triggered() {
             return;
         }
@@ -1004,6 +1021,15 @@ impl Default for ShutdownSignal {
     }
 }
 
+impl Clone for ShutdownSignal {
+    fn clone(&self) -> Self {
+        Self {
+            flag: self.flag.clone(),
+            notify: self.notify.clone(),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spawn_event_subscribers(
     bus: Arc<EventBus>,
@@ -1018,6 +1044,7 @@ fn spawn_event_subscribers(
     persisted: Arc<Mutex<LiveState>>,
     exec_backend: ExecutionBackend,
     recorder: Option<RecorderHandle>,
+    last_data_timestamp: Arc<AtomicI64>,
 ) -> Vec<JoinHandle<()>> {
     let mut handles = Vec::new();
     let market_recorder = recorder.clone();
@@ -1032,6 +1059,7 @@ fn spawn_event_subscribers(
     let market_portfolio = portfolio.clone();
     let market_snapshot = market.clone();
     let orchestrator_clone = orchestrator.clone();
+    let market_data_tracker = last_data_timestamp.clone();
     handles.push(tokio::spawn(async move {
         let recorder = market_recorder;
         let mut stream = market_bus.subscribe();
@@ -1052,6 +1080,7 @@ fn spawn_event_subscribers(
                         market_state.clone(),
                         market_persisted.clone(),
                         market_bus.clone(),
+                        market_data_tracker.clone(),
                     )
                     .await
                     {
@@ -1075,6 +1104,7 @@ fn spawn_event_subscribers(
                         market_state.clone(),
                         market_persisted.clone(),
                         market_bus.clone(),
+                        market_data_tracker.clone(),
                     )
                     .await
                     {
@@ -1090,6 +1120,7 @@ fn spawn_event_subscribers(
                         market_alerts.clone(),
                         market_snapshot.clone(),
                         market_bus.clone(),
+                        market_data_tracker.clone(),
                     )
                     .await
                     {
@@ -1241,10 +1272,12 @@ async fn process_tick_event(
     state_repo: Arc<dyn StateRepository>,
     persisted: Arc<Mutex<LiveState>>,
     bus: Arc<EventBus>,
+    last_data_timestamp: Arc<AtomicI64>,
 ) -> Result<()> {
     metrics.inc_tick();
     metrics.update_staleness(0.0);
     metrics.update_last_data_timestamp(Utc::now().timestamp() as f64);
+    last_data_timestamp.store(tick.exchange_timestamp.timestamp(), Ordering::SeqCst);
     alerts.heartbeat().await;
     {
         let mut guard = market.lock().await;
@@ -1323,10 +1356,12 @@ async fn process_candle_event(
     state_repo: Arc<dyn StateRepository>,
     persisted: Arc<Mutex<LiveState>>,
     bus: Arc<EventBus>,
+    last_data_timestamp: Arc<AtomicI64>,
 ) -> Result<()> {
     metrics.inc_candle();
     metrics.update_staleness(0.0);
     metrics.update_last_data_timestamp(Utc::now().timestamp() as f64);
+    last_data_timestamp.store(candle.timestamp.timestamp(), Ordering::SeqCst);
     alerts.heartbeat().await;
     metrics.update_price(&candle.symbol, candle.close.to_f64().unwrap_or(0.0));
     {
@@ -1402,6 +1437,7 @@ async fn process_candle_event(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_order_book_event(
     book: OrderBook,
     strategy: Arc<Mutex<Box<dyn Strategy>>>,
@@ -1410,9 +1446,11 @@ async fn process_order_book_event(
     alerts: Arc<AlertManager>,
     _market: Arc<Mutex<HashMap<String, MarketSnapshot>>>,
     bus: Arc<EventBus>,
+    last_data_timestamp: Arc<AtomicI64>,
 ) -> Result<()> {
     metrics.update_staleness(0.0);
     alerts.heartbeat().await;
+    last_data_timestamp.store(book.timestamp.timestamp(), Ordering::SeqCst);
     {
         let mut ctx = strategy_ctx.lock().await;
         ctx.push_order_book(book.clone());

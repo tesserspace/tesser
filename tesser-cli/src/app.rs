@@ -492,6 +492,9 @@ pub struct LiveRunArgs {
         default_value = "data/flight_recorder"
     )]
     record_data: PathBuf,
+    /// Control plane gRPC bind address (overrides config.live.control_addr)
+    #[arg(long)]
+    control_addr: Option<String>,
     #[arg(long)]
     initial_equity: Option<Decimal>,
     #[arg(long)]
@@ -550,6 +553,15 @@ impl LiveRunArgs {
             .unwrap_or_else(|| config.live.metrics_addr.clone());
         addr.parse()
             .with_context(|| format!("invalid metrics address '{addr}'"))
+    }
+
+    fn resolved_control_addr(&self, config: &AppConfig) -> Result<SocketAddr> {
+        let addr = self
+            .control_addr
+            .clone()
+            .unwrap_or_else(|| config.live.control_addr.clone());
+        addr.parse()
+            .with_context(|| format!("invalid control address '{addr}'"))
     }
 
     fn reconciliation_interval(&self, config: &AppConfig) -> StdDuration {
@@ -910,6 +922,7 @@ impl LiveRunArgs {
         let category =
             PublicChannel::from_str(&self.category).map_err(|err| anyhow!(err.to_string()))?;
         let metrics_addr = self.resolved_metrics_addr(config)?;
+        let control_addr = self.resolved_control_addr(config)?;
         let state_path = self.resolved_state_path(config);
         let alerting = self.build_alerting(config);
         let history = self.history.max(32);
@@ -939,6 +952,7 @@ impl LiveRunArgs {
             driver,
             orderbook_depth,
             record_path: Some(self.record_data.clone()),
+            control_addr,
         };
 
         info!(
@@ -948,6 +962,7 @@ impl LiveRunArgs {
             interval = %self.interval,
             driver = ?settings.driver,
             exec = ?self.exec,
+            control_addr = %settings.control_addr,
             "starting live session"
         );
 

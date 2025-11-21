@@ -1,6 +1,6 @@
 #![cfg(feature = "bybit")]
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -21,6 +21,7 @@ use tempfile::tempdir;
 use tokio::sync::Notify;
 use tokio::time::{sleep, timeout};
 use tokio::{sync::mpsc, task::JoinHandle};
+use tonic::transport::Channel;
 
 use async_trait::async_trait;
 use tesser_cli::live::{
@@ -30,6 +31,10 @@ use tesser_cli::PublicChannel;
 use tesser_config::{AlertingConfig, ExchangeConfig, RiskManagementConfig};
 use tesser_core::{AccountBalance, Candle, Interval, Position, Side, Signal, SignalKind, Tick};
 use tesser_portfolio::{SqliteStateRepository, StateRepository};
+use tesser_rpc::proto::control_service_client::ControlServiceClient;
+use tesser_rpc::proto::{
+    CancelAllRequest, GetOpenOrdersRequest, GetPortfolioRequest, GetStatusRequest,
+};
 use tesser_strategy::{Strategy, StrategyContext, StrategyResult};
 use tesser_test_utils::{
     AccountConfig, MockExchange, MockExchangeConfig, OrderFillStep, Scenario, ScenarioAction,
@@ -37,6 +42,30 @@ use tesser_test_utils::{
 };
 
 const SYMBOL: &str = "BTCUSDT";
+
+fn next_control_addr() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind port");
+    let addr = listener.local_addr().expect("local addr");
+    drop(listener);
+    addr
+}
+
+async fn connect_control_client(addr: SocketAddr) -> Result<ControlServiceClient<Channel>> {
+    let endpoint = format!("http://{addr}");
+    const MAX_ATTEMPTS: usize = 50;
+    for attempt in 0..MAX_ATTEMPTS {
+        match ControlServiceClient::connect(endpoint.clone()).await {
+            Ok(client) => return Ok(client),
+            Err(err) => {
+                if attempt + 1 == MAX_ATTEMPTS {
+                    return Err(anyhow!("failed to connect to control plane: {err}"));
+                }
+                sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+    unreachable!()
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mock_exchange_starts() -> Result<()> {
@@ -165,6 +194,7 @@ async fn live_run_executes_round_trip() -> Result<()> {
         driver: "bybit".into(),
         orderbook_depth: 50,
         record_path: None,
+        control_addr: "127.0.0.1:0".parse().unwrap(),
     };
     let exchange_cfg = ExchangeConfig {
         rest_url: exchange.rest_url(),
@@ -221,6 +251,109 @@ async fn live_run_executes_round_trip() -> Result<()> {
     let usdt = balances.iter().find(|b| b.currency == "USDT").unwrap();
     assert_eq!(usdt.available, Decimal::new(10_001, 0));
 
+    exchange.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn control_plane_reports_status() -> Result<()> {
+    let account = AccountConfig::new("test-key", "test-secret").with_balance(AccountBalance {
+        currency: "USDT".into(),
+        total: Decimal::new(10_000, 0),
+        available: Decimal::new(10_000, 0),
+        updated_at: Utc::now(),
+    });
+    let candles = vec![Candle {
+        symbol: SYMBOL.into(),
+        interval: Interval::OneMinute,
+        open: Decimal::new(1_000, 0),
+        high: Decimal::new(1_010, 0),
+        low: Decimal::new(995, 0),
+        close: Decimal::new(1_005, 0),
+        volume: Decimal::ONE,
+        timestamp: Utc::now(),
+    }];
+    let ticks = vec![Tick {
+        symbol: SYMBOL.into(),
+        price: Decimal::new(1_005, 0),
+        size: Decimal::ONE,
+        side: Side::Buy,
+        exchange_timestamp: Utc::now(),
+        received_at: Utc::now(),
+    }];
+    let config = MockExchangeConfig::new()
+        .with_account(account)
+        .with_candles(candles)
+        .with_ticks(ticks);
+    let mut exchange = MockExchange::start(config).await?;
+
+    let control_addr = next_control_addr();
+    let temp = tempdir()?;
+    let markets_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/markets.toml");
+    let settings = LiveSessionSettings {
+        category: PublicChannel::Linear,
+        interval: Interval::OneMinute,
+        quantity: Decimal::ONE,
+        slippage_bps: Decimal::ZERO,
+        fee_bps: Decimal::ZERO,
+        history: 8,
+        metrics_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+        state_path: temp.path().join("live_state.db"),
+        initial_balances: HashMap::from([(String::from("USDT"), Decimal::new(10_000, 0))]),
+        reporting_currency: "USDT".into(),
+        markets_file: Some(markets_file),
+        alerting: AlertingConfig::default(),
+        exec_backend: ExecutionBackend::Live,
+        risk: RiskManagementConfig::default(),
+        reconciliation_interval: Duration::from_secs(1),
+        reconciliation_threshold: Decimal::new(1, 3),
+        driver: "bybit".into(),
+        orderbook_depth: 50,
+        record_path: None,
+        control_addr,
+    };
+    let exchange_cfg = ExchangeConfig {
+        rest_url: exchange.rest_url(),
+        ws_url: exchange.ws_url(),
+        api_key: "test-key".into(),
+        api_secret: "test-secret".into(),
+        driver: "bybit".into(),
+        params: JsonValue::Null,
+    };
+    let strategy: Box<dyn Strategy> = Box::new(PassiveStrategy::new(SYMBOL));
+    let shutdown = ShutdownSignal::new();
+    let run_handle = tokio::spawn(run_live_with_shutdown(
+        strategy,
+        vec![SYMBOL.to_string()],
+        exchange_cfg,
+        settings,
+        shutdown.clone(),
+    ));
+
+    let mut client = connect_control_client(control_addr).await?;
+    let status = client.get_status(GetStatusRequest {}).await?.into_inner();
+    assert!(!status.shutdown);
+    assert_eq!(status.active_algorithms, 0);
+
+    let portfolio = client
+        .get_portfolio(GetPortfolioRequest {})
+        .await?
+        .into_inner();
+    let snapshot = portfolio.portfolio.expect("snapshot");
+    assert_eq!(snapshot.reporting_currency, "USDT");
+    assert!(!snapshot.liquidate_only);
+
+    let open_orders = client
+        .get_open_orders(GetOpenOrdersRequest {})
+        .await?
+        .into_inner();
+    assert!(open_orders.orders.is_empty());
+
+    let cancel_resp = client.cancel_all(CancelAllRequest {}).await?.into_inner();
+    assert_eq!(cancel_resp.cancelled_orders, 0);
+
+    shutdown.trigger();
+    run_handle.await??;
     exchange.shutdown().await;
     Ok(())
 }
@@ -291,6 +424,7 @@ async fn reconciliation_enters_liquidate_only_on_divergence() -> Result<()> {
         driver: "bybit".into(),
         orderbook_depth: 50,
         record_path: None,
+        control_addr: "127.0.0.1:0".parse().unwrap(),
     };
     let exchange_cfg = ExchangeConfig {
         rest_url: exchange.rest_url(),
@@ -437,6 +571,7 @@ async fn alerts_on_rejected_order() -> Result<()> {
         driver: "bybit".into(),
         orderbook_depth: 50,
         record_path: None,
+        control_addr: "127.0.0.1:0".parse().unwrap(),
     };
     let exchange_cfg = ExchangeConfig {
         rest_url: exchange.rest_url(),

@@ -61,6 +61,8 @@ pub struct LiveRuntimeConfig {
     pub state_path: PathBuf,
     #[serde(default = "default_metrics_addr")]
     pub metrics_addr: String,
+    #[serde(default = "default_control_addr")]
+    pub control_addr: String,
     #[serde(default = "default_live_log_path")]
     pub log_path: PathBuf,
     #[serde(default = "default_reconciliation_interval_secs")]
@@ -108,6 +110,7 @@ impl Default for LiveRuntimeConfig {
         Self {
             state_path: default_state_path(),
             metrics_addr: default_metrics_addr(),
+            control_addr: default_control_addr(),
             log_path: default_live_log_path(),
             reconciliation_interval_secs: default_reconciliation_interval_secs(),
             reconciliation_threshold: default_reconciliation_threshold(),
@@ -169,6 +172,10 @@ fn default_state_path() -> PathBuf {
 
 fn default_metrics_addr() -> String {
     "127.0.0.1:9100".into()
+}
+
+fn default_control_addr() -> String {
+    "127.0.0.1:50052".into()
 }
 
 fn default_live_log_path() -> PathBuf {

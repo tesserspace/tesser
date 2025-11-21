@@ -3,8 +3,10 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use std::str::FromStr;
 use tesser_core::{
-    Candle, Fill, Interval, OrderBook, OrderBookLevel, Position, Side, Signal, SignalKind, Tick,
+    Candle, Cash, Fill, Interval, Order, OrderBook, OrderBookLevel, OrderStatus, OrderType,
+    Position, Side, Signal, SignalKind, Tick,
 };
+use tesser_portfolio::{Portfolio, PortfolioState};
 use tesser_strategy::StrategyContext;
 
 // --- Helpers ---
@@ -44,6 +46,25 @@ fn interval_to_proto(i: Interval) -> proto::Interval {
         Interval::OneHour => proto::Interval::Interval1h,
         Interval::FourHours => proto::Interval::Interval4h,
         Interval::OneDay => proto::Interval::Interval1d,
+    }
+}
+
+fn order_type_to_proto(order_type: OrderType) -> proto::OrderType {
+    match order_type {
+        OrderType::Market => proto::OrderType::Market,
+        OrderType::Limit => proto::OrderType::Limit,
+        OrderType::StopMarket => proto::OrderType::StopMarket,
+    }
+}
+
+fn order_status_to_proto(status: OrderStatus) -> proto::OrderStatus {
+    match status {
+        OrderStatus::PendingNew => proto::OrderStatus::PendingNew,
+        OrderStatus::Accepted => proto::OrderStatus::Accepted,
+        OrderStatus::PartiallyFilled => proto::OrderStatus::PartiallyFilled,
+        OrderStatus::Filled => proto::OrderStatus::Filled,
+        OrderStatus::Canceled => proto::OrderStatus::Canceled,
+        OrderStatus::Rejected => proto::OrderStatus::Rejected,
     }
 }
 
@@ -112,6 +133,82 @@ impl From<Fill> for proto::Fill {
             ),
             timestamp: Some(to_timestamp_proto(f.timestamp)),
         }
+    }
+}
+
+impl From<&Order> for proto::OrderSnapshot {
+    fn from(order: &Order) -> Self {
+        Self {
+            id: order.id.clone(),
+            symbol: order.request.symbol.clone(),
+            side: side_to_proto(order.request.side) as i32,
+            order_type: order_type_to_proto(order.request.order_type) as i32,
+            quantity: Some(to_decimal_proto(order.request.quantity)),
+            filled_quantity: Some(to_decimal_proto(order.filled_quantity)),
+            avg_fill_price: order.avg_fill_price.map(to_decimal_proto),
+            status: order_status_to_proto(order.status) as i32,
+            created_at: Some(to_timestamp_proto(order.created_at)),
+            updated_at: Some(to_timestamp_proto(order.updated_at)),
+        }
+    }
+}
+
+impl From<Order> for proto::OrderSnapshot {
+    fn from(order: Order) -> Self {
+        (&order).into()
+    }
+}
+
+impl From<&Portfolio> for proto::PortfolioSnapshot {
+    fn from(portfolio: &Portfolio) -> Self {
+        let snapshot = portfolio.snapshot();
+        let equity = portfolio.equity();
+        let realized = portfolio.realized_pnl();
+        let mut proto: proto::PortfolioSnapshot = snapshot.into();
+        proto.equity = Some(to_decimal_proto(equity));
+        proto.realized_pnl = Some(to_decimal_proto(realized));
+        proto
+    }
+}
+
+impl From<PortfolioState> for proto::PortfolioSnapshot {
+    fn from(state: PortfolioState) -> Self {
+        portfolio_state_to_proto(&state)
+    }
+}
+
+impl From<&PortfolioState> for proto::PortfolioSnapshot {
+    fn from(state: &PortfolioState) -> Self {
+        portfolio_state_to_proto(state)
+    }
+}
+
+fn portfolio_state_to_proto(state: &PortfolioState) -> proto::PortfolioSnapshot {
+    let unrealized: Decimal = state.positions.values().map(|pos| pos.unrealized_pnl).sum();
+    let cash_value = state.balances.total_value();
+    let equity = cash_value + unrealized;
+    let realized = equity - state.initial_equity - unrealized;
+
+    proto::PortfolioSnapshot {
+        balances: state
+            .balances
+            .iter()
+            .map(|(currency, cash)| cash_to_proto(currency, cash))
+            .collect(),
+        positions: state.positions.values().cloned().map(Into::into).collect(),
+        equity: Some(to_decimal_proto(equity)),
+        initial_equity: Some(to_decimal_proto(state.initial_equity)),
+        realized_pnl: Some(to_decimal_proto(realized)),
+        reporting_currency: state.reporting_currency.clone(),
+        liquidate_only: state.liquidate_only,
+    }
+}
+
+fn cash_to_proto(currency: &str, cash: &Cash) -> proto::CashBalance {
+    proto::CashBalance {
+        currency: currency.to_string(),
+        quantity: Some(to_decimal_proto(cash.quantity)),
+        conversion_rate: Some(to_decimal_proto(cash.conversion_rate)),
     }
 }
 

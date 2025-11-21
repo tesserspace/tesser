@@ -18,6 +18,7 @@ serde_json.workspace = true
 tesser-core = { version = "0.6.0", path = "../tesser-core" }
 tesser-strategy = { version = "0.6.0", path = "../tesser-strategy" }
 tesser-strategy-macros = { version = "0.6.0", path = "../tesser-strategy-macros" }
+tesser-portfolio = { version = "0.6.0", path = "../tesser-portfolio" }
 thiserror.workspace = true
 tokio.workspace = true
 tonic = "0.11"

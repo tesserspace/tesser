@@ -22,6 +22,16 @@ enum OrderType {
   ORDER_TYPE_STOP_MARKET = 3;
 }
 
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;
+  ORDER_STATUS_PENDING_NEW = 1;
+  ORDER_STATUS_ACCEPTED = 2;
+  ORDER_STATUS_PARTIALLY_FILLED = 3;
+  ORDER_STATUS_FILLED = 4;
+  ORDER_STATUS_CANCELED = 5;
+  ORDER_STATUS_REJECTED = 6;
+}
+
 enum Interval {
   INTERVAL_UNSPECIFIED = 0;
   INTERVAL_1S = 1;
@@ -90,6 +100,37 @@ message Fill {
   Decimal fill_quantity = 5;
   Decimal fee = 6;
   google.protobuf.Timestamp timestamp = 7;
+}
+
+// Control Plane Structures
+
+message CashBalance {
+  string currency = 1;
+  Decimal quantity = 2;
+  Decimal conversion_rate = 3;
+}
+
+message PortfolioSnapshot {
+  repeated CashBalance balances = 1;
+  repeated Position positions = 2;
+  Decimal equity = 3;
+  Decimal initial_equity = 4;
+  Decimal realized_pnl = 5;
+  string reporting_currency = 6;
+  bool liquidate_only = 7;
+}
+
+message OrderSnapshot {
+  string id = 1;
+  string symbol = 2;
+  Side side = 3;
+  OrderType order_type = 4;
+  Decimal quantity = 5;
+  Decimal filled_quantity = 6;
+  Decimal avg_fill_price = 7;
+  OrderStatus status = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
 }
 
 // Execution Hints
@@ -175,6 +216,35 @@ message HeartbeatResponse {
   string status_msg = 2;
 }
 
+message GetPortfolioRequest {}
+
+message GetPortfolioResponse {
+  PortfolioSnapshot portfolio = 1;
+}
+
+message GetOpenOrdersRequest {}
+
+message GetOpenOrdersResponse {
+  repeated OrderSnapshot orders = 1;
+}
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  bool shutdown = 1;
+  bool liquidate_only = 2;
+  uint32 active_algorithms = 3;
+  google.protobuf.Timestamp last_data_timestamp = 4;
+  Decimal equity = 5;
+}
+
+message CancelAllRequest {}
+
+message CancelAllResponse {
+  uint32 cancelled_orders = 1;
+  uint32 cancelled_algorithms = 2;
+}
+
 service StrategyService {
   rpc Initialize (InitRequest) returns (InitResponse);
   rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
@@ -182,4 +252,11 @@ service StrategyService {
   rpc OnCandle (CandleRequest) returns (SignalList);
   rpc OnOrderBook (OrderBookRequest) returns (SignalList);
   rpc OnFill (FillRequest) returns (SignalList);
+}
+
+service ControlService {
+  rpc GetPortfolio (GetPortfolioRequest) returns (GetPortfolioResponse);
+  rpc GetOpenOrders (GetOpenOrdersRequest) returns (GetOpenOrdersResponse);
+  rpc GetStatus (GetStatusRequest) returns (GetStatusResponse);
+  rpc CancelAll (CancelAllRequest) returns (CancelAllResponse);
 }
