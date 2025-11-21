@@ -175,8 +175,8 @@ impl StatsAggregator {
         let totals = self.totals.into_stats();
         let groups = self
             .groups
-            .into_iter()
-            .map(|(_, acc)| acc.into_stats())
+            .into_values()
+            .map(|acc| acc.into_stats())
             .collect();
         (totals, groups)
     }
@@ -368,6 +368,281 @@ fn side_sign(side: Side) -> Decimal {
     }
 }
 
+fn collect_parquet_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut stack = vec![dir.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(path) = stack.pop() {
+        let metadata = fs::metadata(&path)
+            .with_context(|| format!("failed to inspect {}", path.to_string_lossy()))?;
+        if metadata.is_dir() {
+            for entry in fs::read_dir(&path)
+                .with_context(|| format!("failed to list {}", path.to_string_lossy()))?
+            {
+                let entry = entry?;
+                stack.push(entry.path());
+            }
+        } else if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("parquet"))
+            .unwrap_or(false)
+        {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn load_orders(paths: &[PathBuf], range: &TimeRange) -> Result<Vec<OrderRow>> {
+    let mut rows = Vec::new();
+    for path in paths {
+        let file =
+            File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)?
+            .with_batch_size(4096)
+            .build()?;
+        let mut columns: Option<OrderColumns> = None;
+        for batch in reader {
+            let batch = batch?;
+            if columns.is_none() {
+                columns = Some(OrderColumns::from_schema(&batch.schema())?);
+            }
+            let columns = columns.as_ref().expect("order columns should be set");
+            for row in 0..batch.num_rows() {
+                let created_at = timestamp_value(&batch, columns.created_at, row)?;
+                if !range.contains(created_at) {
+                    continue;
+                }
+                let id = string_value(&batch, columns.id, row)?;
+                let symbol = string_value(&batch, columns.symbol, row)?;
+                let side = side_value(&batch, columns.side, row)?;
+                let client_order_id = string_option(&batch, columns.client_order_id, row)?;
+                let algo_label = infer_algo_label(client_order_id.as_deref());
+                rows.push(OrderRow {
+                    id,
+                    symbol,
+                    side,
+                    created_at,
+                    algo_label,
+                });
+            }
+        }
+    }
+    Ok(rows)
+}
+
+fn load_fills(paths: &[PathBuf]) -> Result<Vec<FillRow>> {
+    let mut rows = Vec::new();
+    for path in paths {
+        let file =
+            File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)?
+            .with_batch_size(4096)
+            .build()?;
+        let mut columns: Option<FillColumns> = None;
+        for batch in reader {
+            let batch = batch?;
+            if columns.is_none() {
+                columns = Some(FillColumns::from_schema(&batch.schema())?);
+            }
+            let columns = columns.as_ref().expect("fill columns set");
+            for row in 0..batch.num_rows() {
+                rows.push(FillRow {
+                    order_id: string_value(&batch, columns.order_id, row)?,
+                    price: decimal_value(&batch, columns.price, row)?,
+                    quantity: decimal_value(&batch, columns.quantity, row)?,
+                    fee: decimal_option(&batch, columns.fee, row)?.unwrap_or(Decimal::ZERO),
+                });
+            }
+        }
+    }
+    Ok(rows)
+}
+
+fn load_ticks(paths: &[PathBuf]) -> Result<Vec<TickPoint>> {
+    let mut rows = Vec::new();
+    for path in paths {
+        let file =
+            File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)?
+            .with_batch_size(4096)
+            .build()?;
+        let mut columns: Option<TickColumns> = None;
+        for batch in reader {
+            let batch = batch?;
+            if columns.is_none() {
+                columns = Some(TickColumns::from_schema(&batch.schema())?);
+            }
+            let columns = columns.as_ref().expect("tick columns set");
+            for row in 0..batch.num_rows() {
+                rows.push(TickPoint {
+                    symbol: string_value(&batch, columns.symbol, row)?,
+                    price: decimal_value(&batch, columns.price, row)?,
+                    timestamp: timestamp_value(&batch, columns.exchange_ts, row)?,
+                });
+            }
+        }
+    }
+    Ok(rows)
+}
+
+fn infer_algo_label(client_order_id: Option<&str>) -> String {
+    let value = client_order_id.unwrap_or("unlabeled");
+    let normalized = value.to_ascii_lowercase();
+    if normalized.starts_with("twap") {
+        "TWAP".to_string()
+    } else if normalized.starts_with("vwap") {
+        "VWAP".to_string()
+    } else if normalized.starts_with("iceberg") {
+        "ICEBERG".to_string()
+    } else if normalized.starts_with("pegged") {
+        "PEGGED".to_string()
+    } else if normalized.starts_with("sniper") {
+        "SNIPER".to_string()
+    } else if normalized.ends_with("-sl") {
+        "STOP_LOSS".to_string()
+    } else if normalized.ends_with("-tp") {
+        "TAKE_PROFIT".to_string()
+    } else {
+        "SIGNAL".to_string()
+    }
+}
+
+struct OrderColumns {
+    id: usize,
+    symbol: usize,
+    side: usize,
+    client_order_id: usize,
+    created_at: usize,
+}
+
+impl OrderColumns {
+    fn from_schema(schema: &SchemaRef) -> Result<Self> {
+        Ok(Self {
+            id: column_index(schema, "id")?,
+            symbol: column_index(schema, "symbol")?,
+            side: column_index(schema, "side")?,
+            client_order_id: column_index(schema, "client_order_id")?,
+            created_at: column_index(schema, "created_at")?,
+        })
+    }
+}
+
+struct FillColumns {
+    order_id: usize,
+    price: usize,
+    quantity: usize,
+    fee: usize,
+}
+
+impl FillColumns {
+    fn from_schema(schema: &SchemaRef) -> Result<Self> {
+        Ok(Self {
+            order_id: column_index(schema, "order_id")?,
+            price: column_index(schema, "fill_price")?,
+            quantity: column_index(schema, "fill_quantity")?,
+            fee: column_index(schema, "fee")?,
+        })
+    }
+}
+
+struct TickColumns {
+    symbol: usize,
+    price: usize,
+    exchange_ts: usize,
+}
+
+impl TickColumns {
+    fn from_schema(schema: &SchemaRef) -> Result<Self> {
+        Ok(Self {
+            symbol: column_index(schema, "symbol")?,
+            price: column_index(schema, "price")?,
+            exchange_ts: column_index(schema, "exchange_timestamp")?,
+        })
+    }
+}
+
+fn column_index(schema: &SchemaRef, name: &str) -> Result<usize> {
+    schema
+        .column_with_name(name)
+        .map(|(idx, _)| idx)
+        .ok_or_else(|| anyhow!("column '{name}' missing from parquet schema"))
+}
+
+fn as_array<T: Array + 'static>(batch: &RecordBatch, column: usize) -> Result<&T> {
+    batch
+        .column(column)
+        .as_any()
+        .downcast_ref::<T>()
+        .ok_or_else(|| anyhow!("column {column} type mismatch"))
+}
+
+fn string_value(batch: &RecordBatch, column: usize, row: usize) -> Result<String> {
+    let array = as_array::<StringArray>(batch, column)?;
+    if array.is_null(row) {
+        return Err(anyhow!("column {column} contains null string"));
+    }
+    Ok(array.value(row).to_string())
+}
+
+fn string_option(batch: &RecordBatch, column: usize, row: usize) -> Result<Option<String>> {
+    let array = as_array::<StringArray>(batch, column)?;
+    if array.is_null(row) {
+        return Ok(None);
+    }
+    Ok(Some(array.value(row).to_string()))
+}
+
+fn decimal_value(batch: &RecordBatch, column: usize, row: usize) -> Result<Decimal> {
+    let array = as_array::<Decimal128Array>(batch, column)?;
+    if array.is_null(row) {
+        return Err(anyhow!("column {column} contains null decimal"));
+    }
+    Ok(Decimal::from_i128_with_scale(
+        array.value(row),
+        array.scale() as u32,
+    ))
+}
+
+fn decimal_option(batch: &RecordBatch, column: usize, row: usize) -> Result<Option<Decimal>> {
+    let array = as_array::<Decimal128Array>(batch, column)?;
+    if array.is_null(row) {
+        return Ok(None);
+    }
+    Ok(Some(Decimal::from_i128_with_scale(
+        array.value(row),
+        array.scale() as u32,
+    )))
+}
+
+fn timestamp_value(batch: &RecordBatch, column: usize, row: usize) -> Result<DateTime<Utc>> {
+    let array = as_array::<TimestampNanosecondArray>(batch, column)?;
+    if array.is_null(row) {
+        return Err(anyhow!("column {column} contains null timestamp"));
+    }
+    let nanos = array.value(row);
+    let secs = nanos.div_euclid(1_000_000_000);
+    let sub = nanos.rem_euclid(1_000_000_000) as u32;
+    DateTime::<Utc>::from_timestamp(secs, sub)
+        .ok_or_else(|| anyhow!("timestamp overflow for value {nanos}"))
+}
+
+fn side_value(batch: &RecordBatch, column: usize, row: usize) -> Result<Side> {
+    let array = as_array::<Int8Array>(batch, column)?;
+    if array.is_null(row) {
+        return Err(anyhow!("column {column} contains null side"));
+    }
+    Ok(if array.value(row) >= 0 {
+        Side::Buy
+    } else {
+        Side::Sell
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -533,278 +808,4 @@ mod tests {
         writer.write(batch)?;
         writer.close().map(|_| ()).map_err(Into::into)
     }
-}
-fn collect_parquet_files(dir: &Path) -> Result<Vec<PathBuf>> {
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut stack = vec![dir.to_path_buf()];
-    let mut files = Vec::new();
-    while let Some(path) = stack.pop() {
-        let metadata = fs::metadata(&path)
-            .with_context(|| format!("failed to inspect {}", path.to_string_lossy()))?;
-        if metadata.is_dir() {
-            for entry in fs::read_dir(&path)
-                .with_context(|| format!("failed to list {}", path.to_string_lossy()))?
-            {
-                let entry = entry?;
-                stack.push(entry.path());
-            }
-        } else if path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.eq_ignore_ascii_case("parquet"))
-            .unwrap_or(false)
-        {
-            files.push(path);
-        }
-    }
-    files.sort();
-    Ok(files)
-}
-
-fn load_orders(paths: &[PathBuf], range: &TimeRange) -> Result<Vec<OrderRow>> {
-    let mut rows = Vec::new();
-    for path in paths {
-        let file =
-            File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-        let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?
-            .with_batch_size(4096)
-            .build()?;
-        let mut columns: Option<OrderColumns> = None;
-        while let Some(batch) = reader.next() {
-            let batch = batch?;
-            if columns.is_none() {
-                columns = Some(OrderColumns::from_schema(&batch.schema())?);
-            }
-            let columns = columns.as_ref().expect("order columns should be set");
-            for row in 0..batch.num_rows() {
-                let created_at = timestamp_value(&batch, columns.created_at, row)?;
-                if !range.contains(created_at) {
-                    continue;
-                }
-                let id = string_value(&batch, columns.id, row)?;
-                let symbol = string_value(&batch, columns.symbol, row)?;
-                let side = side_value(&batch, columns.side, row)?;
-                let client_order_id = string_option(&batch, columns.client_order_id, row)?;
-                let algo_label = infer_algo_label(client_order_id.as_deref());
-                rows.push(OrderRow {
-                    id,
-                    symbol,
-                    side,
-                    created_at,
-                    algo_label,
-                });
-            }
-        }
-    }
-    Ok(rows)
-}
-
-fn load_fills(paths: &[PathBuf]) -> Result<Vec<FillRow>> {
-    let mut rows = Vec::new();
-    for path in paths {
-        let file =
-            File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-        let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?
-            .with_batch_size(4096)
-            .build()?;
-        let mut columns: Option<FillColumns> = None;
-        while let Some(batch) = reader.next() {
-            let batch = batch?;
-            if columns.is_none() {
-                columns = Some(FillColumns::from_schema(&batch.schema())?);
-            }
-            let columns = columns.as_ref().expect("fill columns set");
-            for row in 0..batch.num_rows() {
-                rows.push(FillRow {
-                    order_id: string_value(&batch, columns.order_id, row)?,
-                    price: decimal_value(&batch, columns.price, row)?,
-                    quantity: decimal_value(&batch, columns.quantity, row)?,
-                    fee: decimal_option(&batch, columns.fee, row)?.unwrap_or(Decimal::ZERO),
-                });
-            }
-        }
-    }
-    Ok(rows)
-}
-
-fn load_ticks(paths: &[PathBuf]) -> Result<Vec<TickPoint>> {
-    let mut rows = Vec::new();
-    for path in paths {
-        let file =
-            File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-        let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?
-            .with_batch_size(4096)
-            .build()?;
-        let mut columns: Option<TickColumns> = None;
-        while let Some(batch) = reader.next() {
-            let batch = batch?;
-            if columns.is_none() {
-                columns = Some(TickColumns::from_schema(&batch.schema())?);
-            }
-            let columns = columns.as_ref().expect("tick columns set");
-            for row in 0..batch.num_rows() {
-                rows.push(TickPoint {
-                    symbol: string_value(&batch, columns.symbol, row)?,
-                    price: decimal_value(&batch, columns.price, row)?,
-                    timestamp: timestamp_value(&batch, columns.exchange_ts, row)?,
-                });
-            }
-        }
-    }
-    Ok(rows)
-}
-
-fn infer_algo_label(client_order_id: Option<&str>) -> String {
-    let value = client_order_id.unwrap_or("unlabeled");
-    let normalized = value.to_ascii_lowercase();
-    if normalized.starts_with("twap") {
-        "TWAP".to_string()
-    } else if normalized.starts_with("vwap") {
-        "VWAP".to_string()
-    } else if normalized.starts_with("iceberg") {
-        "ICEBERG".to_string()
-    } else if normalized.starts_with("pegged") {
-        "PEGGED".to_string()
-    } else if normalized.starts_with("sniper") {
-        "SNIPER".to_string()
-    } else if normalized.ends_with("-sl") {
-        "STOP_LOSS".to_string()
-    } else if normalized.ends_with("-tp") {
-        "TAKE_PROFIT".to_string()
-    } else {
-        "SIGNAL".to_string()
-    }
-}
-
-struct OrderColumns {
-    id: usize,
-    symbol: usize,
-    side: usize,
-    client_order_id: usize,
-    created_at: usize,
-}
-
-impl OrderColumns {
-    fn from_schema(schema: &SchemaRef) -> Result<Self> {
-        Ok(Self {
-            id: column_index(schema, "id")?,
-            symbol: column_index(schema, "symbol")?,
-            side: column_index(schema, "side")?,
-            client_order_id: column_index(schema, "client_order_id")?,
-            created_at: column_index(schema, "created_at")?,
-        })
-    }
-}
-
-struct FillColumns {
-    order_id: usize,
-    price: usize,
-    quantity: usize,
-    fee: usize,
-}
-
-impl FillColumns {
-    fn from_schema(schema: &SchemaRef) -> Result<Self> {
-        Ok(Self {
-            order_id: column_index(schema, "order_id")?,
-            price: column_index(schema, "fill_price")?,
-            quantity: column_index(schema, "fill_quantity")?,
-            fee: column_index(schema, "fee")?,
-        })
-    }
-}
-
-struct TickColumns {
-    symbol: usize,
-    price: usize,
-    exchange_ts: usize,
-}
-
-impl TickColumns {
-    fn from_schema(schema: &SchemaRef) -> Result<Self> {
-        Ok(Self {
-            symbol: column_index(schema, "symbol")?,
-            price: column_index(schema, "price")?,
-            exchange_ts: column_index(schema, "exchange_timestamp")?,
-        })
-    }
-}
-
-fn column_index(schema: &SchemaRef, name: &str) -> Result<usize> {
-    schema
-        .column_with_name(name)
-        .map(|(idx, _)| idx)
-        .ok_or_else(|| anyhow!("column '{name}' missing from parquet schema"))
-}
-
-fn as_array<'a, T: Array + 'static>(batch: &'a RecordBatch, column: usize) -> Result<&'a T> {
-    batch
-        .column(column)
-        .as_any()
-        .downcast_ref::<T>()
-        .ok_or_else(|| anyhow!("column {column} type mismatch"))
-}
-
-fn string_value(batch: &RecordBatch, column: usize, row: usize) -> Result<String> {
-    let array = as_array::<StringArray>(batch, column)?;
-    if array.is_null(row) {
-        return Err(anyhow!("column {column} contains null string"));
-    }
-    Ok(array.value(row).to_string())
-}
-
-fn string_option(batch: &RecordBatch, column: usize, row: usize) -> Result<Option<String>> {
-    let array = as_array::<StringArray>(batch, column)?;
-    if array.is_null(row) {
-        return Ok(None);
-    }
-    Ok(Some(array.value(row).to_string()))
-}
-
-fn decimal_value(batch: &RecordBatch, column: usize, row: usize) -> Result<Decimal> {
-    let array = as_array::<Decimal128Array>(batch, column)?;
-    if array.is_null(row) {
-        return Err(anyhow!("column {column} contains null decimal"));
-    }
-    Ok(Decimal::from_i128_with_scale(
-        array.value(row),
-        array.scale() as u32,
-    ))
-}
-
-fn decimal_option(batch: &RecordBatch, column: usize, row: usize) -> Result<Option<Decimal>> {
-    let array = as_array::<Decimal128Array>(batch, column)?;
-    if array.is_null(row) {
-        return Ok(None);
-    }
-    Ok(Some(Decimal::from_i128_with_scale(
-        array.value(row),
-        array.scale() as u32,
-    )))
-}
-
-fn timestamp_value(batch: &RecordBatch, column: usize, row: usize) -> Result<DateTime<Utc>> {
-    let array = as_array::<TimestampNanosecondArray>(batch, column)?;
-    if array.is_null(row) {
-        return Err(anyhow!("column {column} contains null timestamp"));
-    }
-    let nanos = array.value(row);
-    let secs = nanos.div_euclid(1_000_000_000);
-    let sub = nanos.rem_euclid(1_000_000_000) as u32;
-    DateTime::<Utc>::from_timestamp(secs, sub)
-        .ok_or_else(|| anyhow!("timestamp overflow for value {nanos}"))
-}
-
-fn side_value(batch: &RecordBatch, column: usize, row: usize) -> Result<Side> {
-    let array = as_array::<Int8Array>(batch, column)?;
-    if array.is_null(row) {
-        return Err(anyhow!("column {column} contains null side"));
-    }
-    Ok(if array.value(row) >= 0 {
-        Side::Buy
-    } else {
-        Side::Sell
-    })
 }
