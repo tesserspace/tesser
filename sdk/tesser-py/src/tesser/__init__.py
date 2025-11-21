@@ -1,5 +1,7 @@
-"""Python SDK for remote Tesser strategies."""
+"""Python SDK for remote Tesser strategies and offline analytics."""
 
+from .analysis import calculate_slippage, summarize_fills
+from .data import DataStore, load_candles, load_fills, load_orders, load_ticks
 from .models import (
     Candle,
     OrderBook,
@@ -27,4 +29,11 @@ __all__ = [
     "StrategyInitResult",
     "Tick",
     "Runner",
+    "DataStore",
+    "load_candles",
+    "load_fills",
+    "load_orders",
+    "load_ticks",
+    "calculate_slippage",
+    "summarize_fills",
 ]

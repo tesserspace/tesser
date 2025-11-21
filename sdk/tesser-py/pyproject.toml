@@ -14,12 +14,13 @@ authors = [
 dependencies = [
   "grpcio>=1.60.0",
   "protobuf>=4.25.0",
+  "pandas>=2.0",
+  "pyarrow>=15.0",
 ]
 
 [project.optional-dependencies]
 data = [
-  "pandas>=2.0",
-  "numpy>=1.25",
+  "polars>=0.20",
 ]
 
 [dependency-groups]
@@ -61,5 +62,19 @@ ignore_errors = true
 module = [
   "grpc",
   "grpc.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+  "pyarrow",
+  "pyarrow.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+  "polars",
+  "polars.*",
 ]
 ignore_missing_imports = true
