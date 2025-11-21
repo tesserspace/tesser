@@ -1,4 +1,5 @@
 use crate::alerts::sanitize_webhook;
+use crate::analyze;
 use crate::data_validation::{validate_dataset, ValidationConfig, ValidationOutcome};
 use crate::live::{run_live, ExecutionBackend, LiveSessionSettings};
 use crate::state;
@@ -31,6 +32,7 @@ use tesser_backtester::{
 use tesser_broker::ExecutionClient;
 use tesser_config::{load_config, AppConfig, RiskManagementConfig};
 use tesser_core::{Candle, DepthUpdate, Interval, OrderBook, OrderBookLevel, Side, Symbol, Tick};
+use tesser_data::analytics::ExecutionAnalysisRequest;
 use tesser_data::download::{BinanceDownloader, BybitDownloader, KlineRequest};
 use tesser_data::parquet::ParquetMarketStream;
 use tesser_execution::{
@@ -80,6 +82,11 @@ pub enum Commands {
     },
     /// Strategy management helpers
     Strategies,
+    /// Analyze previously recorded trading sessions
+    Analyze {
+        #[command(subcommand)]
+        action: AnalyzeCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -112,6 +119,12 @@ pub enum LiveCommand {
 pub enum StateCommand {
     /// Inspect the SQLite state database
     Inspect(StateInspectArgs),
+}
+
+#[derive(Subcommand)]
+pub enum AnalyzeCommand {
+    /// Generate a TCA-lite execution report using flight recorder files
+    Execution(AnalyzeExecutionArgs),
 }
 
 #[derive(Args)]
@@ -154,11 +167,42 @@ pub struct StateInspectArgs {
     raw: bool,
 }
 
+#[derive(Args)]
+pub struct AnalyzeExecutionArgs {
+    /// Directory containing flight recorder parquet partitions
+    #[arg(long, value_name = "PATH", default_value = "data/flight_recorder")]
+    data_dir: PathBuf,
+    /// Inclusive start of the analysis window (RFC3339, `YYYY-mm-dd`, etc.)
+    #[arg(long)]
+    start: Option<String>,
+    /// Inclusive end of the analysis window
+    #[arg(long)]
+    end: Option<String>,
+}
+
 impl StateInspectArgs {
     fn resolved_path(&self, config: &AppConfig) -> PathBuf {
         self.path
             .clone()
             .unwrap_or_else(|| config.live.state_path.clone())
+    }
+}
+
+impl AnalyzeExecutionArgs {
+    fn build_request(&self) -> Result<ExecutionAnalysisRequest> {
+        let start = match &self.start {
+            Some(value) => Some(parse_datetime(value)?),
+            None => None,
+        };
+        let end = match &self.end {
+            Some(value) => Some(parse_datetime(value)?),
+            None => None,
+        };
+        Ok(ExecutionAnalysisRequest {
+            data_dir: self.data_dir.clone(),
+            start,
+            end,
+        })
     }
 }
 
@@ -674,6 +718,7 @@ pub async fn run() -> Result<()> {
             action: LiveCommand::Run(args),
         } => args.run(&config).await?,
         Commands::State { action } => handle_state(action, &config).await?,
+        Commands::Analyze { action } => handle_analyze(action)?,
         Commands::Strategies => list_strategies(),
     }
 
@@ -710,6 +755,12 @@ async fn handle_state(cmd: StateCommand, config: &AppConfig) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn handle_analyze(cmd: AnalyzeCommand) -> Result<()> {
+    match cmd {
+        AnalyzeCommand::Execution(args) => analyze::run_execution(args.build_request()?),
+    }
 }
 
 impl BacktestRunArgs {

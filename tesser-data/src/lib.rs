@@ -1,5 +1,6 @@
 //! Data utilities including streaming and historical downloads.
 
+pub mod analytics;
 pub mod download;
 pub mod encoding;
 pub mod parquet;

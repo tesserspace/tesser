@@ -1,4 +1,5 @@
 pub mod alerts;
+pub mod analyze;
 pub mod app;
 pub mod control;
 pub mod data_validation;
