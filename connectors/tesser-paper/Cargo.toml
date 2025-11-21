@@ -18,7 +18,7 @@ tracing.workspace = true
 csv.workspace = true
 rand = { version = "0.8", features = ["std"] }
 rand_distr = "0.4"
-tesser-broker = { version = "0.6.0", path = "../../tesser-broker" }
-tesser-core = { version = "0.6.0", path = "../../tesser-core" }
+tesser-broker = { version = "0.7.0", path = "../../tesser-broker" }
+tesser-core = { version = "0.7.0", path = "../../tesser-core" }
 uuid.workspace = true
 rust_decimal.workspace = true

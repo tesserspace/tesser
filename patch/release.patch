@@ -1,387 +1,394 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 8ec8b57..5e05427 100644
+index c803dd4..b198a95 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -3115,7 +3115,7 @@ dependencies = [
+@@ -3650,7 +3650,7 @@ checksum = "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683"
  
  [[package]]
  name = "tesser"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "anyhow",
   "tesser-backtester",
-@@ -3138,7 +3138,7 @@ dependencies = [
+@@ -3673,7 +3673,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-backtester"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "anyhow",
   "chrono",
-@@ -3159,7 +3159,7 @@ dependencies = [
+@@ -3694,7 +3694,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-binance"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "anyhow",
   "async-trait",
-@@ -3178,7 +3178,7 @@ dependencies = [
+@@ -3713,7 +3713,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-broker"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "async-trait",
   "once_cell",
-@@ -3190,7 +3190,7 @@ dependencies = [
+@@ -3725,7 +3725,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-bybit"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "anyhow",
   "async-trait",
-@@ -3213,7 +3213,7 @@ dependencies = [
+@@ -3748,7 +3748,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-cli"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "anyhow",
-  "async-trait",
-@@ -3252,7 +3252,7 @@ dependencies = [
+  "arrow",
+@@ -3793,7 +3793,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-config"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "anyhow",
   "config",
-@@ -3264,7 +3264,7 @@ dependencies = [
+@@ -3805,7 +3805,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-core"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "chrono",
   "rust_decimal",
-@@ -3274,7 +3274,7 @@ dependencies = [
+@@ -3815,7 +3815,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-cortex"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "anyhow",
   "criterion",
-@@ -3286,7 +3286,7 @@ dependencies = [
+@@ -3827,7 +3827,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-data"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "anyhow",
-  "async-trait",
-@@ -3304,7 +3304,7 @@ dependencies = [
+  "arrow",
+@@ -3849,7 +3849,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-events"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "serde",
   "tesser-core",
-@@ -3313,7 +3313,7 @@ dependencies = [
+@@ -3858,7 +3858,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-execution"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "anyhow",
   "chrono",
-@@ -3334,7 +3334,7 @@ dependencies = [
+@@ -3879,7 +3879,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-indicators"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "chrono",
   "num-traits",
-@@ -3345,7 +3345,7 @@ dependencies = [
+@@ -3890,7 +3890,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-markets"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "serde",
   "tesser-broker",
-@@ -3356,7 +3356,7 @@ dependencies = [
+@@ -3901,7 +3901,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-paper"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "async-trait",
   "chrono",
-@@ -3375,7 +3375,7 @@ dependencies = [
+@@ -3920,7 +3920,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-portfolio"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "chrono",
   "rusqlite",
-@@ -3390,7 +3390,7 @@ dependencies = [
+@@ -3935,7 +3935,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-rpc"
--version = "0.4.0"
-+version = "0.5.0"
+-version = "0.5.0"
++version = "0.6.0"
  dependencies = [
   "anyhow",
   "async-trait",
-@@ -3417,7 +3417,7 @@ dependencies = [
+@@ -3963,7 +3963,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-strategy"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "async-trait",
   "chrono",
-@@ -3437,7 +3437,7 @@ dependencies = [
+@@ -3983,7 +3983,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-strategy-macros"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "proc-macro2",
   "quote",
-@@ -3446,7 +3446,7 @@ dependencies = [
+@@ -3992,7 +3992,7 @@ dependencies = [
  
  [[package]]
  name = "tesser-test-utils"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  dependencies = [
   "anyhow",
   "chrono",
 diff --git a/Cargo.toml b/Cargo.toml
-index 4db82ee..f0b8000 100644
+index 8ce51a9..39d8b9a 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -25,7 +25,7 @@ members = [
  
  [workspace.package]
  edition = "2021"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  license = "MIT OR Apache-2.0"
  authors = ["Tesser Contributors <dev@tesser.local>"]
  repository = "https://github.com/tesserspace/tesser"
-@@ -65,25 +65,25 @@ ort = "2.0.0-rc.10"
+@@ -67,25 +67,25 @@ ort = "2.0.0-rc.10"
  native-tls = { version = "0.2", features = ["vendored"] }
  openssl = { version = "0.10", features = ["vendored"] }
  once_cell = "1.19"
--tesser-backtester = { version = "0.5.0", path = "tesser-backtester" }
--tesser-broker = { version = "0.5.0", path = "tesser-broker" }
--tesser-cli = { version = "0.5.0", path = "tesser-cli" }
--tesser-config = { version = "0.5.0", path = "tesser-config" }
--tesser-core = { version = "0.5.0", path = "tesser-core" }
--tesser-data = { version = "0.5.0", path = "tesser-data" }
--tesser-events = { version = "0.5.0", path = "tesser-events" }
--tesser-execution = { version = "0.5.0", path = "tesser-execution" }
--tesser-indicators = { version = "0.5.0", path = "tesser-indicators" }
--tesser-markets = { version = "0.5.0", path = "tesser-markets" }
--tesser-portfolio = { version = "0.5.0", path = "tesser-portfolio" }
--tesser-rpc = { version = "0.4.0", path = "tesser-rpc" }
--tesser-strategy = { version = "0.5.0", path = "tesser-strategy" }
--tesser-strategy-macros = { version = "0.5.0", path = "tesser-strategy-macros" }
--tesser-test-utils = { version = "0.5.0", path = "tesser-test-utils" }
--tesser = { version = "0.5.0", path = "tesser" }
--tesser-bybit = { version = "0.5.0", path = "connectors/tesser-bybit" }
--tesser-binance = { version = "0.5.0", path = "connectors/tesser-binance" }
--tesser-paper = { version = "0.5.0", path = "connectors/tesser-paper" }
-+tesser-backtester = { version = "0.6.0", path = "tesser-backtester" }
-+tesser-broker = { version = "0.6.0", path = "tesser-broker" }
-+tesser-cli = { version = "0.6.0", path = "tesser-cli" }
-+tesser-config = { version = "0.6.0", path = "tesser-config" }
-+tesser-core = { version = "0.6.0", path = "tesser-core" }
-+tesser-data = { version = "0.6.0", path = "tesser-data" }
-+tesser-events = { version = "0.6.0", path = "tesser-events" }
-+tesser-execution = { version = "0.6.0", path = "tesser-execution" }
-+tesser-indicators = { version = "0.6.0", path = "tesser-indicators" }
-+tesser-markets = { version = "0.6.0", path = "tesser-markets" }
-+tesser-portfolio = { version = "0.6.0", path = "tesser-portfolio" }
-+tesser-rpc = { version = "0.5.0", path = "tesser-rpc" }
-+tesser-strategy = { version = "0.6.0", path = "tesser-strategy" }
-+tesser-strategy-macros = { version = "0.6.0", path = "tesser-strategy-macros" }
-+tesser-test-utils = { version = "0.6.0", path = "tesser-test-utils" }
-+tesser = { version = "0.6.0", path = "tesser" }
-+tesser-bybit = { version = "0.6.0", path = "connectors/tesser-bybit" }
-+tesser-binance = { version = "0.6.0", path = "connectors/tesser-binance" }
-+tesser-paper = { version = "0.6.0", path = "connectors/tesser-paper" }
+-tesser-backtester = { version = "0.6.0", path = "tesser-backtester" }
+-tesser-broker = { version = "0.6.0", path = "tesser-broker" }
+-tesser-cli = { version = "0.6.0", path = "tesser-cli" }
+-tesser-config = { version = "0.6.0", path = "tesser-config" }
+-tesser-core = { version = "0.6.0", path = "tesser-core" }
+-tesser-data = { version = "0.6.0", path = "tesser-data" }
+-tesser-events = { version = "0.6.0", path = "tesser-events" }
+-tesser-execution = { version = "0.6.0", path = "tesser-execution" }
+-tesser-indicators = { version = "0.6.0", path = "tesser-indicators" }
+-tesser-markets = { version = "0.6.0", path = "tesser-markets" }
+-tesser-portfolio = { version = "0.6.0", path = "tesser-portfolio" }
+-tesser-rpc = { version = "0.5.0", path = "tesser-rpc" }
+-tesser-strategy = { version = "0.6.0", path = "tesser-strategy" }
+-tesser-strategy-macros = { version = "0.6.0", path = "tesser-strategy-macros" }
+-tesser-test-utils = { version = "0.6.0", path = "tesser-test-utils" }
+-tesser = { version = "0.6.0", path = "tesser" }
+-tesser-bybit = { version = "0.6.0", path = "connectors/tesser-bybit" }
+-tesser-binance = { version = "0.6.0", path = "connectors/tesser-binance" }
+-tesser-paper = { version = "0.6.0", path = "connectors/tesser-paper" }
++tesser-backtester = { version = "0.7.0", path = "tesser-backtester" }
++tesser-broker = { version = "0.7.0", path = "tesser-broker" }
++tesser-cli = { version = "0.7.0", path = "tesser-cli" }
++tesser-config = { version = "0.7.0", path = "tesser-config" }
++tesser-core = { version = "0.7.0", path = "tesser-core" }
++tesser-data = { version = "0.7.0", path = "tesser-data" }
++tesser-events = { version = "0.7.0", path = "tesser-events" }
++tesser-execution = { version = "0.7.0", path = "tesser-execution" }
++tesser-indicators = { version = "0.7.0", path = "tesser-indicators" }
++tesser-markets = { version = "0.7.0", path = "tesser-markets" }
++tesser-portfolio = { version = "0.7.0", path = "tesser-portfolio" }
++tesser-rpc = { version = "0.6.0", path = "tesser-rpc" }
++tesser-strategy = { version = "0.7.0", path = "tesser-strategy" }
++tesser-strategy-macros = { version = "0.7.0", path = "tesser-strategy-macros" }
++tesser-test-utils = { version = "0.7.0", path = "tesser-test-utils" }
++tesser = { version = "0.7.0", path = "tesser" }
++tesser-bybit = { version = "0.7.0", path = "connectors/tesser-bybit" }
++tesser-binance = { version = "0.7.0", path = "connectors/tesser-binance" }
++tesser-paper = { version = "0.7.0", path = "connectors/tesser-paper" }
  uuid = { version = "1.10", features = ["v4", "serde"] }
  
  [workspace.metadata.release]
 diff --git a/connectors/tesser-binance/Cargo.toml b/connectors/tesser-binance/Cargo.toml
-index c94dbc2..a49aec3 100644
+index a49aec3..276eb66 100644
 --- a/connectors/tesser-binance/Cargo.toml
 +++ b/connectors/tesser-binance/Cargo.toml
 @@ -20,5 +20,5 @@ tokio.workspace = true
  tracing.workspace = true
  binance-sdk = { version = "31", features = ["derivatives_trading_usds_futures"] }
  uuid.workspace = true
--tesser-broker = { version = "0.5.0", path = "../../tesser-broker" }
--tesser-core = { version = "0.5.0", path = "../../tesser-core" }
-+tesser-broker = { version = "0.6.0", path = "../../tesser-broker" }
-+tesser-core = { version = "0.6.0", path = "../../tesser-core" }
+-tesser-broker = { version = "0.6.0", path = "../../tesser-broker" }
+-tesser-core = { version = "0.6.0", path = "../../tesser-core" }
++tesser-broker = { version = "0.7.0", path = "../../tesser-broker" }
++tesser-core = { version = "0.7.0", path = "../../tesser-core" }
 diff --git a/connectors/tesser-bybit/Cargo.toml b/connectors/tesser-bybit/Cargo.toml
-index 81a8ded..c304b8c 100644
+index c304b8c..3363ad6 100644
 --- a/connectors/tesser-bybit/Cargo.toml
 +++ b/connectors/tesser-bybit/Cargo.toml
 @@ -18,8 +18,8 @@ serde_json.workspace = true
  serde_urlencoded.workspace = true
  tokio.workspace = true
  tracing.workspace = true
--tesser-broker = { version = "0.5.0", path = "../../tesser-broker" }
--tesser-core = { version = "0.5.0", path = "../../tesser-core" }
-+tesser-broker = { version = "0.6.0", path = "../../tesser-broker" }
-+tesser-core = { version = "0.6.0", path = "../../tesser-core" }
+-tesser-broker = { version = "0.6.0", path = "../../tesser-broker" }
+-tesser-core = { version = "0.6.0", path = "../../tesser-core" }
++tesser-broker = { version = "0.7.0", path = "../../tesser-broker" }
++tesser-core = { version = "0.7.0", path = "../../tesser-core" }
  hex.workspace = true
  hmac.workspace = true
  sha2.workspace = true
 diff --git a/connectors/tesser-paper/Cargo.toml b/connectors/tesser-paper/Cargo.toml
-index 2f878cf..5e29456 100644
+index 5e29456..e9b5668 100644
 --- a/connectors/tesser-paper/Cargo.toml
 +++ b/connectors/tesser-paper/Cargo.toml
 @@ -18,7 +18,7 @@ tracing.workspace = true
  csv.workspace = true
  rand = { version = "0.8", features = ["std"] }
  rand_distr = "0.4"
--tesser-broker = { version = "0.5.0", path = "../../tesser-broker" }
--tesser-core = { version = "0.5.0", path = "../../tesser-core" }
-+tesser-broker = { version = "0.6.0", path = "../../tesser-broker" }
-+tesser-core = { version = "0.6.0", path = "../../tesser-core" }
+-tesser-broker = { version = "0.6.0", path = "../../tesser-broker" }
+-tesser-core = { version = "0.6.0", path = "../../tesser-core" }
++tesser-broker = { version = "0.7.0", path = "../../tesser-broker" }
++tesser-core = { version = "0.7.0", path = "../../tesser-core" }
  uuid.workspace = true
  rust_decimal.workspace = true
 diff --git a/tesser-backtester/Cargo.toml b/tesser-backtester/Cargo.toml
-index 9dd0353..d751691 100644
+index d751691..377908d 100644
 --- a/tesser-backtester/Cargo.toml
 +++ b/tesser-backtester/Cargo.toml
 @@ -14,13 +14,13 @@ chrono.workspace = true
  tokio.workspace = true
  tracing.workspace = true
  tracing-subscriber.workspace = true
--tesser-broker = { version = "0.5.0", path = "../tesser-broker" }
--tesser-core = { version = "0.5.0", path = "../tesser-core" }
--tesser-data = { version = "0.5.0", path = "../tesser-data" }
--tesser-execution = { version = "0.5.0", path = "../tesser-execution" }
--tesser-portfolio = { version = "0.5.0", path = "../tesser-portfolio" }
--tesser-markets = { version = "0.5.0", path = "../tesser-markets" }
--tesser-strategy = { version = "0.5.0", path = "../tesser-strategy" }
--tesser-paper = { version = "0.5.0", path = "../connectors/tesser-paper" }
-+tesser-broker = { version = "0.6.0", path = "../tesser-broker" }
-+tesser-core = { version = "0.6.0", path = "../tesser-core" }
-+tesser-data = { version = "0.6.0", path = "../tesser-data" }
-+tesser-execution = { version = "0.6.0", path = "../tesser-execution" }
-+tesser-portfolio = { version = "0.6.0", path = "../tesser-portfolio" }
-+tesser-markets = { version = "0.6.0", path = "../tesser-markets" }
-+tesser-strategy = { version = "0.6.0", path = "../tesser-strategy" }
-+tesser-paper = { version = "0.6.0", path = "../connectors/tesser-paper" }
+-tesser-broker = { version = "0.6.0", path = "../tesser-broker" }
+-tesser-core = { version = "0.6.0", path = "../tesser-core" }
+-tesser-data = { version = "0.6.0", path = "../tesser-data" }
+-tesser-execution = { version = "0.6.0", path = "../tesser-execution" }
+-tesser-portfolio = { version = "0.6.0", path = "../tesser-portfolio" }
+-tesser-markets = { version = "0.6.0", path = "../tesser-markets" }
+-tesser-strategy = { version = "0.6.0", path = "../tesser-strategy" }
+-tesser-paper = { version = "0.6.0", path = "../connectors/tesser-paper" }
++tesser-broker = { version = "0.7.0", path = "../tesser-broker" }
++tesser-core = { version = "0.7.0", path = "../tesser-core" }
++tesser-data = { version = "0.7.0", path = "../tesser-data" }
++tesser-execution = { version = "0.7.0", path = "../tesser-execution" }
++tesser-portfolio = { version = "0.7.0", path = "../tesser-portfolio" }
++tesser-markets = { version = "0.7.0", path = "../tesser-markets" }
++tesser-strategy = { version = "0.7.0", path = "../tesser-strategy" }
++tesser-paper = { version = "0.7.0", path = "../connectors/tesser-paper" }
  itertools = "0.13"
  rust_decimal.workspace = true
 diff --git a/tesser-broker/Cargo.toml b/tesser-broker/Cargo.toml
-index ba254f1..020d2cf 100644
+index 020d2cf..5aaccfd 100644
 --- a/tesser-broker/Cargo.toml
 +++ b/tesser-broker/Cargo.toml
 @@ -13,5 +13,5 @@ async-trait.workspace = true
  serde.workspace = true
  serde_json.workspace = true
  thiserror.workspace = true
--tesser-core = { version = "0.5.0", path = "../tesser-core" }
-+tesser-core = { version = "0.6.0", path = "../tesser-core" }
+-tesser-core = { version = "0.6.0", path = "../tesser-core" }
++tesser-core = { version = "0.7.0", path = "../tesser-core" }
  once_cell.workspace = true
 diff --git a/tesser-cli/Cargo.toml b/tesser-cli/Cargo.toml
-index 684e30f..dc2975e 100644
+index 7641f32..1760a3e 100644
 --- a/tesser-cli/Cargo.toml
 +++ b/tesser-cli/Cargo.toml
-@@ -31,21 +31,21 @@ hyper.workspace = true
+@@ -31,27 +31,27 @@ hyper.workspace = true
  tracing-appender.workspace = true
  csv.workspace = true
  async-trait.workspace = true
--tesser-backtester = { version = "0.5.0", path = "../tesser-backtester" }
--tesser-config = { version = "0.5.0", path = "../tesser-config" }
--tesser-core = { version = "0.5.0", path = "../tesser-core" }
--tesser-data = { version = "0.5.0", path = "../tesser-data" }
--tesser-events = { version = "0.5.0", path = "../tesser-events" }
--tesser-execution = { version = "0.5.0", path = "../tesser-execution" }
--tesser-portfolio = { version = "0.5.0", path = "../tesser-portfolio" }
--tesser-markets = { version = "0.5.0", path = "../tesser-markets" }
--tesser-strategy = { version = "0.5.0", path = "../tesser-strategy" }
--tesser-broker = { version = "0.5.0", path = "../tesser-broker" }
--tesser-paper = { version = "0.5.0", path = "../connectors/tesser-paper" }
--tesser-bybit = { version = "0.5.0", path = "../connectors/tesser-bybit", optional = true }
--tesser-binance = { version = "0.5.0", path = "../connectors/tesser-binance", optional = true }
-+tesser-backtester = { version = "0.6.0", path = "../tesser-backtester" }
-+tesser-config = { version = "0.6.0", path = "../tesser-config" }
-+tesser-core = { version = "0.6.0", path = "../tesser-core" }
-+tesser-data = { version = "0.6.0", path = "../tesser-data" }
-+tesser-events = { version = "0.6.0", path = "../tesser-events" }
-+tesser-execution = { version = "0.6.0", path = "../tesser-execution" }
-+tesser-portfolio = { version = "0.6.0", path = "../tesser-portfolio" }
-+tesser-markets = { version = "0.6.0", path = "../tesser-markets" }
-+tesser-strategy = { version = "0.6.0", path = "../tesser-strategy" }
-+tesser-broker = { version = "0.6.0", path = "../tesser-broker" }
-+tesser-paper = { version = "0.6.0", path = "../connectors/tesser-paper" }
-+tesser-bybit = { version = "0.6.0", path = "../connectors/tesser-bybit", optional = true }
-+tesser-binance = { version = "0.6.0", path = "../connectors/tesser-binance", optional = true }
+-tesser-backtester = { version = "0.6.0", path = "../tesser-backtester" }
+-tesser-config = { version = "0.6.0", path = "../tesser-config" }
+-tesser-core = { version = "0.6.0", path = "../tesser-core" }
+-tesser-data = { version = "0.6.0", path = "../tesser-data" }
+-tesser-events = { version = "0.6.0", path = "../tesser-events" }
+-tesser-execution = { version = "0.6.0", path = "../tesser-execution" }
+-tesser-portfolio = { version = "0.6.0", path = "../tesser-portfolio" }
+-tesser-markets = { version = "0.6.0", path = "../tesser-markets" }
+-tesser-strategy = { version = "0.6.0", path = "../tesser-strategy" }
+-tesser-broker = { version = "0.6.0", path = "../tesser-broker" }
+-tesser-paper = { version = "0.6.0", path = "../connectors/tesser-paper" }
+-tesser-bybit = { version = "0.6.0", path = "../connectors/tesser-bybit", optional = true }
+-tesser-binance = { version = "0.6.0", path = "../connectors/tesser-binance", optional = true }
++tesser-backtester = { version = "0.7.0", path = "../tesser-backtester" }
++tesser-config = { version = "0.7.0", path = "../tesser-config" }
++tesser-core = { version = "0.7.0", path = "../tesser-core" }
++tesser-data = { version = "0.7.0", path = "../tesser-data" }
++tesser-events = { version = "0.7.0", path = "../tesser-events" }
++tesser-execution = { version = "0.7.0", path = "../tesser-execution" }
++tesser-portfolio = { version = "0.7.0", path = "../tesser-portfolio" }
++tesser-markets = { version = "0.7.0", path = "../tesser-markets" }
++tesser-strategy = { version = "0.7.0", path = "../tesser-strategy" }
++tesser-broker = { version = "0.7.0", path = "../tesser-broker" }
++tesser-paper = { version = "0.7.0", path = "../connectors/tesser-paper" }
++tesser-bybit = { version = "0.7.0", path = "../connectors/tesser-bybit", optional = true }
++tesser-binance = { version = "0.7.0", path = "../connectors/tesser-binance", optional = true }
  rust_decimal.workspace = true
+ arrow.workspace = true
+ parquet.workspace = true
+-tesser-rpc = { version = "0.5.0", path = "../tesser-rpc" }
++tesser-rpc = { version = "0.6.0", path = "../tesser-rpc" }
+ tonic = { version = "0.11", features = ["transport"] }
+ prost-types = "0.12"
  
  [dev-dependencies]
--tesser-test-utils = { version = "0.5.0", path = "../tesser-test-utils" }
-+tesser-test-utils = { version = "0.6.0", path = "../tesser-test-utils" }
+-tesser-test-utils = { version = "0.6.0", path = "../tesser-test-utils" }
++tesser-test-utils = { version = "0.7.0", path = "../tesser-test-utils" }
  tempfile = "3.10"
+ assert_cmd = "2.0"
 diff --git a/tesser-data/Cargo.toml b/tesser-data/Cargo.toml
-index 4299124..ea8dace 100644
+index dc8a71c..81933a7 100644
 --- a/tesser-data/Cargo.toml
 +++ b/tesser-data/Cargo.toml
 @@ -14,8 +14,8 @@ async-trait.workspace = true
  futures.workspace = true
  tokio.workspace = true
  tracing.workspace = true
--tesser-broker = { version = "0.5.0", path = "../tesser-broker" }
--tesser-core = { version = "0.5.0", path = "../tesser-core" }
-+tesser-broker = { version = "0.6.0", path = "../tesser-broker" }
-+tesser-core = { version = "0.6.0", path = "../tesser-core" }
+-tesser-broker = { version = "0.6.0", path = "../tesser-broker" }
+-tesser-core = { version = "0.6.0", path = "../tesser-core" }
++tesser-broker = { version = "0.7.0", path = "../tesser-broker" }
++tesser-core = { version = "0.7.0", path = "../tesser-core" }
  reqwest.workspace = true
  serde.workspace = true
  serde_json.workspace = true
 diff --git a/tesser-events/Cargo.toml b/tesser-events/Cargo.toml
-index c15faa3..a1eb852 100644
+index a1eb852..9bc18fb 100644
 --- a/tesser-events/Cargo.toml
 +++ b/tesser-events/Cargo.toml
 @@ -1,6 +1,6 @@
  [package]
  name = "tesser-events"
--version = "0.5.0"
-+version = "0.6.0"
+-version = "0.6.0"
++version = "0.7.0"
  edition = "2021"
  license.workspace = true
  authors.workspace = true
@@ -389,24 +396,24 @@ index c15faa3..a1eb852 100644
  readme = "README.md"
  
  [dependencies]
--tesser-core = { version = "0.5.0", path = "../tesser-core" }
-+tesser-core = { version = "0.6.0", path = "../tesser-core" }
+-tesser-core = { version = "0.6.0", path = "../tesser-core" }
++tesser-core = { version = "0.7.0", path = "../tesser-core" }
  tokio = { version = "1", features = ["sync"] }
  serde = { version = "1", features = ["derive"] }
 diff --git a/tesser-execution/Cargo.toml b/tesser-execution/Cargo.toml
-index aeefd25..d08055e 100644
+index d08055e..8135fb1 100644
 --- a/tesser-execution/Cargo.toml
 +++ b/tesser-execution/Cargo.toml
 @@ -15,9 +15,9 @@ rusqlite.workspace = true
  serde.workspace = true
  serde_json.workspace = true
  tracing.workspace = true
--tesser-broker = { version = "0.5.0", path = "../tesser-broker" }
--tesser-core = { version = "0.5.0", path = "../tesser-core" }
--tesser-strategy = { version = "0.5.0", path = "../tesser-strategy" }
-+tesser-broker = { version = "0.6.0", path = "../tesser-broker" }
-+tesser-core = { version = "0.6.0", path = "../tesser-core" }
-+tesser-strategy = { version = "0.6.0", path = "../tesser-strategy" }
+-tesser-broker = { version = "0.6.0", path = "../tesser-broker" }
+-tesser-core = { version = "0.6.0", path = "../tesser-core" }
+-tesser-strategy = { version = "0.6.0", path = "../tesser-strategy" }
++tesser-broker = { version = "0.7.0", path = "../tesser-broker" }
++tesser-core = { version = "0.7.0", path = "../tesser-core" }
++tesser-strategy = { version = "0.7.0", path = "../tesser-strategy" }
  thiserror.workspace = true
  uuid.workspace = true
  rust_decimal.workspace = true
@@ -414,131 +421,133 @@ index aeefd25..d08055e 100644
  [dev-dependencies]
  tempfile = "3.10"
  tokio = { workspace = true, features = ["test-util"] }
--tesser-paper = { version = "0.5.0", path = "../connectors/tesser-paper" }
-+tesser-paper = { version = "0.6.0", path = "../connectors/tesser-paper" }
+-tesser-paper = { version = "0.6.0", path = "../connectors/tesser-paper" }
++tesser-paper = { version = "0.7.0", path = "../connectors/tesser-paper" }
 diff --git a/tesser-indicators/Cargo.toml b/tesser-indicators/Cargo.toml
-index f8be8ab..b49e041 100644
+index b49e041..88d7e20 100644
 --- a/tesser-indicators/Cargo.toml
 +++ b/tesser-indicators/Cargo.toml
 @@ -12,7 +12,7 @@ readme = "README.md"
  num-traits.workspace = true
  rust_decimal.workspace = true
  thiserror.workspace = true
--tesser-core = { version = "0.5.0", path = "../tesser-core" }
-+tesser-core = { version = "0.6.0", path = "../tesser-core" }
+-tesser-core = { version = "0.6.0", path = "../tesser-core" }
++tesser-core = { version = "0.7.0", path = "../tesser-core" }
  
  [dev-dependencies]
  chrono.workspace = true
 diff --git a/tesser-markets/Cargo.toml b/tesser-markets/Cargo.toml
-index 99af239..d680c69 100644
+index d680c69..1672271 100644
 --- a/tesser-markets/Cargo.toml
 +++ b/tesser-markets/Cargo.toml
 @@ -12,5 +12,5 @@ readme = "README.md"
  serde = { workspace = true }
  thiserror = { workspace = true }
  toml = { workspace = true }
--tesser-core = { version = "0.5.0", path = "../tesser-core" }
--tesser-broker = { version = "0.5.0", path = "../tesser-broker" }
-+tesser-core = { version = "0.6.0", path = "../tesser-core" }
-+tesser-broker = { version = "0.6.0", path = "../tesser-broker" }
+-tesser-core = { version = "0.6.0", path = "../tesser-core" }
+-tesser-broker = { version = "0.6.0", path = "../tesser-broker" }
++tesser-core = { version = "0.7.0", path = "../tesser-core" }
++tesser-broker = { version = "0.7.0", path = "../tesser-broker" }
 diff --git a/tesser-portfolio/Cargo.toml b/tesser-portfolio/Cargo.toml
-index e3c72e8..75e20b1 100644
+index 75e20b1..15a9ece 100644
 --- a/tesser-portfolio/Cargo.toml
 +++ b/tesser-portfolio/Cargo.toml
 @@ -14,8 +14,8 @@ rusqlite.workspace = true
  serde.workspace = true
  serde_json.workspace = true
  thiserror.workspace = true
--tesser-core = { version = "0.5.0", path = "../tesser-core" }
--tesser-markets = { version = "0.5.0", path = "../tesser-markets" }
-+tesser-core = { version = "0.6.0", path = "../tesser-core" }
-+tesser-markets = { version = "0.6.0", path = "../tesser-markets" }
+-tesser-core = { version = "0.6.0", path = "../tesser-core" }
+-tesser-markets = { version = "0.6.0", path = "../tesser-markets" }
++tesser-core = { version = "0.7.0", path = "../tesser-core" }
++tesser-markets = { version = "0.7.0", path = "../tesser-markets" }
  rust_decimal.workspace = true
  
  [dev-dependencies]
 diff --git a/tesser-rpc/Cargo.toml b/tesser-rpc/Cargo.toml
-index b55eac2..8305c8e 100644
+index ceca550..4ff212e 100644
 --- a/tesser-rpc/Cargo.toml
 +++ b/tesser-rpc/Cargo.toml
 @@ -1,6 +1,6 @@
  [package]
  name = "tesser-rpc"
--version = "0.4.0"
-+version = "0.5.0"
+-version = "0.5.0"
++version = "0.6.0"
  edition = "2021"
  license.workspace = true
  authors.workspace = true
-@@ -15,9 +15,9 @@ prost-types = "0.12"
+@@ -15,10 +15,10 @@ prost-types = "0.12"
  rust_decimal.workspace = true
  serde.workspace = true
  serde_json.workspace = true
--tesser-core = { version = "0.5.0", path = "../tesser-core" }
--tesser-strategy = { version = "0.5.0", path = "../tesser-strategy" }
--tesser-strategy-macros = { version = "0.5.0", path = "../tesser-strategy-macros" }
-+tesser-core = { version = "0.6.0", path = "../tesser-core" }
-+tesser-strategy = { version = "0.6.0", path = "../tesser-strategy" }
-+tesser-strategy-macros = { version = "0.6.0", path = "../tesser-strategy-macros" }
+-tesser-core = { version = "0.6.0", path = "../tesser-core" }
+-tesser-strategy = { version = "0.6.0", path = "../tesser-strategy" }
+-tesser-strategy-macros = { version = "0.6.0", path = "../tesser-strategy-macros" }
+-tesser-portfolio = { version = "0.6.0", path = "../tesser-portfolio" }
++tesser-core = { version = "0.7.0", path = "../tesser-core" }
++tesser-strategy = { version = "0.7.0", path = "../tesser-strategy" }
++tesser-strategy-macros = { version = "0.7.0", path = "../tesser-strategy-macros" }
++tesser-portfolio = { version = "0.7.0", path = "../tesser-portfolio" }
  thiserror.workspace = true
  tokio.workspace = true
  tonic = "0.11"
 diff --git a/tesser-strategy/Cargo.toml b/tesser-strategy/Cargo.toml
-index f869595..7acb7b2 100644
+index 7acb7b2..fb1f62b 100644
 --- a/tesser-strategy/Cargo.toml
 +++ b/tesser-strategy/Cargo.toml
 @@ -14,12 +14,12 @@ thiserror.workspace = true
  toml.workspace = true
  tracing.workspace = true
  async-trait.workspace = true
--tesser-core = { version = "0.5.0", path = "../tesser-core" }
--tesser-indicators = { version = "0.5.0", path = "../tesser-indicators" }
--tesser-cortex = { version = "0.5.0", path = "../tesser-cortex" }
-+tesser-core = { version = "0.6.0", path = "../tesser-core" }
-+tesser-indicators = { version = "0.6.0", path = "../tesser-indicators" }
-+tesser-cortex = { version = "0.6.0", path = "../tesser-cortex" }
+-tesser-core = { version = "0.6.0", path = "../tesser-core" }
+-tesser-indicators = { version = "0.6.0", path = "../tesser-indicators" }
+-tesser-cortex = { version = "0.6.0", path = "../tesser-cortex" }
++tesser-core = { version = "0.7.0", path = "../tesser-core" }
++tesser-indicators = { version = "0.7.0", path = "../tesser-indicators" }
++tesser-cortex = { version = "0.7.0", path = "../tesser-cortex" }
  rust_decimal.workspace = true
  chrono.workspace = true
  once_cell = "1.19"
  ctor = "0.2"
--tesser-strategy-macros = { version = "0.5.0", path = "../tesser-strategy-macros" }
-+tesser-strategy-macros = { version = "0.6.0", path = "../tesser-strategy-macros" }
+-tesser-strategy-macros = { version = "0.6.0", path = "../tesser-strategy-macros" }
++tesser-strategy-macros = { version = "0.7.0", path = "../tesser-strategy-macros" }
  serde_json.workspace = true
 diff --git a/tesser/Cargo.toml b/tesser/Cargo.toml
-index 76b9979..0f1fa80 100644
+index 0f1fa80..bfe8c84 100644
 --- a/tesser/Cargo.toml
 +++ b/tesser/Cargo.toml
 @@ -18,19 +18,19 @@ binance = ["tesser-cli/binance", "dep:tesser-binance"]
  [dependencies]
  anyhow.workspace = true
  
--tesser-core = { version = "0.5.0", path = "../tesser-core" }
--tesser-config = { version = "0.5.0", path = "../tesser-config" }
--tesser-cli = { version = "0.5.0", path = "../tesser-cli", default-features = false }
--tesser-data = { version = "0.5.0", path = "../tesser-data" }
--tesser-events = { version = "0.5.0", path = "../tesser-events" }
--tesser-execution = { version = "0.5.0", path = "../tesser-execution" }
--tesser-portfolio = { version = "0.5.0", path = "../tesser-portfolio" }
--tesser-markets = { version = "0.5.0", path = "../tesser-markets" }
--tesser-strategy = { version = "0.5.0", path = "../tesser-strategy" }
--tesser-strategy-macros = { version = "0.5.0", path = "../tesser-strategy-macros" }
--tesser-indicators = { version = "0.5.0", path = "../tesser-indicators" }
--tesser-broker = { version = "0.5.0", path = "../tesser-broker" }
--tesser-backtester = { version = "0.5.0", path = "../tesser-backtester" }
--tesser-paper = { version = "0.5.0", path = "../connectors/tesser-paper" }
--tesser-bybit = { version = "0.5.0", path = "../connectors/tesser-bybit", optional = true }
--tesser-binance = { version = "0.5.0", path = "../connectors/tesser-binance", optional = true }
-+tesser-core = { version = "0.6.0", path = "../tesser-core" }
-+tesser-config = { version = "0.6.0", path = "../tesser-config" }
-+tesser-cli = { version = "0.6.0", path = "../tesser-cli", default-features = false }
-+tesser-data = { version = "0.6.0", path = "../tesser-data" }
-+tesser-events = { version = "0.6.0", path = "../tesser-events" }
-+tesser-execution = { version = "0.6.0", path = "../tesser-execution" }
-+tesser-portfolio = { version = "0.6.0", path = "../tesser-portfolio" }
-+tesser-markets = { version = "0.6.0", path = "../tesser-markets" }
-+tesser-strategy = { version = "0.6.0", path = "../tesser-strategy" }
-+tesser-strategy-macros = { version = "0.6.0", path = "../tesser-strategy-macros" }
-+tesser-indicators = { version = "0.6.0", path = "../tesser-indicators" }
-+tesser-broker = { version = "0.6.0", path = "../tesser-broker" }
-+tesser-backtester = { version = "0.6.0", path = "../tesser-backtester" }
-+tesser-paper = { version = "0.6.0", path = "../connectors/tesser-paper" }
-+tesser-bybit = { version = "0.6.0", path = "../connectors/tesser-bybit", optional = true }
-+tesser-binance = { version = "0.6.0", path = "../connectors/tesser-binance", optional = true }
+-tesser-core = { version = "0.6.0", path = "../tesser-core" }
+-tesser-config = { version = "0.6.0", path = "../tesser-config" }
+-tesser-cli = { version = "0.6.0", path = "../tesser-cli", default-features = false }
+-tesser-data = { version = "0.6.0", path = "../tesser-data" }
+-tesser-events = { version = "0.6.0", path = "../tesser-events" }
+-tesser-execution = { version = "0.6.0", path = "../tesser-execution" }
+-tesser-portfolio = { version = "0.6.0", path = "../tesser-portfolio" }
+-tesser-markets = { version = "0.6.0", path = "../tesser-markets" }
+-tesser-strategy = { version = "0.6.0", path = "../tesser-strategy" }
+-tesser-strategy-macros = { version = "0.6.0", path = "../tesser-strategy-macros" }
+-tesser-indicators = { version = "0.6.0", path = "../tesser-indicators" }
+-tesser-broker = { version = "0.6.0", path = "../tesser-broker" }
+-tesser-backtester = { version = "0.6.0", path = "../tesser-backtester" }
+-tesser-paper = { version = "0.6.0", path = "../connectors/tesser-paper" }
+-tesser-bybit = { version = "0.6.0", path = "../connectors/tesser-bybit", optional = true }
+-tesser-binance = { version = "0.6.0", path = "../connectors/tesser-binance", optional = true }
++tesser-core = { version = "0.7.0", path = "../tesser-core" }
++tesser-config = { version = "0.7.0", path = "../tesser-config" }
++tesser-cli = { version = "0.7.0", path = "../tesser-cli", default-features = false }
++tesser-data = { version = "0.7.0", path = "../tesser-data" }
++tesser-events = { version = "0.7.0", path = "../tesser-events" }
++tesser-execution = { version = "0.7.0", path = "../tesser-execution" }
++tesser-portfolio = { version = "0.7.0", path = "../tesser-portfolio" }
++tesser-markets = { version = "0.7.0", path = "../tesser-markets" }
++tesser-strategy = { version = "0.7.0", path = "../tesser-strategy" }
++tesser-strategy-macros = { version = "0.7.0", path = "../tesser-strategy-macros" }
++tesser-indicators = { version = "0.7.0", path = "../tesser-indicators" }
++tesser-broker = { version = "0.7.0", path = "../tesser-broker" }
++tesser-backtester = { version = "0.7.0", path = "../tesser-backtester" }
++tesser-paper = { version = "0.7.0", path = "../connectors/tesser-paper" }
++tesser-bybit = { version = "0.7.0", path = "../connectors/tesser-bybit", optional = true }
++tesser-binance = { version = "0.7.0", path = "../connectors/tesser-binance", optional = true }

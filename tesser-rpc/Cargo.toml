@@ -1,6 +1,6 @@
 [package]
 name = "tesser-rpc"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 license.workspace = true
 authors.workspace = true
@@ -15,10 +15,10 @@ prost-types = "0.12"
 rust_decimal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tesser-core = { version = "0.6.0", path = "../tesser-core" }
-tesser-strategy = { version = "0.6.0", path = "../tesser-strategy" }
-tesser-strategy-macros = { version = "0.6.0", path = "../tesser-strategy-macros" }
-tesser-portfolio = { version = "0.6.0", path = "../tesser-portfolio" }
+tesser-core = { version = "0.7.0", path = "../tesser-core" }
+tesser-strategy = { version = "0.7.0", path = "../tesser-strategy" }
+tesser-strategy-macros = { version = "0.7.0", path = "../tesser-strategy-macros" }
+tesser-portfolio = { version = "0.7.0", path = "../tesser-portfolio" }
 thiserror.workspace = true
 tokio.workspace = true
 tonic = "0.11"

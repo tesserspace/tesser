@@ -18,19 +18,19 @@ binance = ["tesser-cli/binance", "dep:tesser-binance"]
 [dependencies]
 anyhow.workspace = true
 
-tesser-core = { version = "0.6.0", path = "../tesser-core" }
-tesser-config = { version = "0.6.0", path = "../tesser-config" }
-tesser-cli = { version = "0.6.0", path = "../tesser-cli", default-features = false }
-tesser-data = { version = "0.6.0", path = "../tesser-data" }
-tesser-events = { version = "0.6.0", path = "../tesser-events" }
-tesser-execution = { version = "0.6.0", path = "../tesser-execution" }
-tesser-portfolio = { version = "0.6.0", path = "../tesser-portfolio" }
-tesser-markets = { version = "0.6.0", path = "../tesser-markets" }
-tesser-strategy = { version = "0.6.0", path = "../tesser-strategy" }
-tesser-strategy-macros = { version = "0.6.0", path = "../tesser-strategy-macros" }
-tesser-indicators = { version = "0.6.0", path = "../tesser-indicators" }
-tesser-broker = { version = "0.6.0", path = "../tesser-broker" }
-tesser-backtester = { version = "0.6.0", path = "../tesser-backtester" }
-tesser-paper = { version = "0.6.0", path = "../connectors/tesser-paper" }
-tesser-bybit = { version = "0.6.0", path = "../connectors/tesser-bybit", optional = true }
-tesser-binance = { version = "0.6.0", path = "../connectors/tesser-binance", optional = true }
+tesser-core = { version = "0.7.0", path = "../tesser-core" }
+tesser-config = { version = "0.7.0", path = "../tesser-config" }
+tesser-cli = { version = "0.7.0", path = "../tesser-cli", default-features = false }
+tesser-data = { version = "0.7.0", path = "../tesser-data" }
+tesser-events = { version = "0.7.0", path = "../tesser-events" }
+tesser-execution = { version = "0.7.0", path = "../tesser-execution" }
+tesser-portfolio = { version = "0.7.0", path = "../tesser-portfolio" }
+tesser-markets = { version = "0.7.0", path = "../tesser-markets" }
+tesser-strategy = { version = "0.7.0", path = "../tesser-strategy" }
+tesser-strategy-macros = { version = "0.7.0", path = "../tesser-strategy-macros" }
+tesser-indicators = { version = "0.7.0", path = "../tesser-indicators" }
+tesser-broker = { version = "0.7.0", path = "../tesser-broker" }
+tesser-backtester = { version = "0.7.0", path = "../tesser-backtester" }
+tesser-paper = { version = "0.7.0", path = "../connectors/tesser-paper" }
+tesser-bybit = { version = "0.7.0", path = "../connectors/tesser-bybit", optional = true }
+tesser-binance = { version = "0.7.0", path = "../connectors/tesser-binance", optional = true }
