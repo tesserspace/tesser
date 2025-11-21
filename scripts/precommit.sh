@@ -2,6 +2,7 @@
 set -euo pipefail
 
 cargo fmt --all
+cargo clippy --fix --allow-dirty --allow-staged
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --release --all-targets
 

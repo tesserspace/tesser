@@ -4,6 +4,8 @@ use crate::live::{run_live, ExecutionBackend, LiveSessionSettings};
 use crate::state;
 use crate::telemetry::init_tracing;
 use crate::PublicChannel;
+use arrow::util::pretty::print_batches;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
@@ -85,6 +87,8 @@ pub enum DataCommand {
     Validate(DataValidateArgs),
     /// Resample existing data (placeholder)
     Resample(DataResampleArgs),
+    /// Inspect a parquet file emitted by the flight recorder
+    InspectParquet(DataInspectParquetArgs),
 }
 
 #[derive(Subcommand)]
@@ -331,6 +335,62 @@ pub struct DataResampleArgs {
     interval: String,
 }
 
+#[derive(Args)]
+pub struct DataInspectParquetArgs {
+    /// Path to the parquet file produced by the flight recorder
+    #[arg(value_name = "PATH")]
+    path: PathBuf,
+    /// Number of rows to display (0 prints the entire file)
+    #[arg(long, default_value_t = 10)]
+    rows: usize,
+}
+
+impl DataInspectParquetArgs {
+    fn run(&self) -> Result<()> {
+        let limit = if self.rows == 0 {
+            usize::MAX
+        } else {
+            self.rows
+        };
+        let file = File::open(&self.path)
+            .with_context(|| format!("failed to open {}", self.path.display()))?;
+        let batch_size = limit.clamp(1, 8192);
+        let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?
+            .with_batch_size(batch_size)
+            .build()?;
+
+        let mut printed = 0usize;
+        while printed < limit {
+            match reader.next() {
+                Some(Ok(batch)) => {
+                    if batch.num_rows() == 0 {
+                        continue;
+                    }
+                    let remaining = limit.saturating_sub(printed);
+                    let take = remaining.min(batch.num_rows());
+                    let display_batch = if take == batch.num_rows() {
+                        batch
+                    } else {
+                        batch.slice(0, take)
+                    };
+                    print_batches(std::slice::from_ref(&display_batch))?;
+                    printed += take;
+                }
+                Some(Err(err)) => return Err(err.into()),
+                None => break,
+            }
+        }
+
+        if printed == 0 {
+            println!("no rows available in {}", self.path.display());
+        } else if limit != usize::MAX {
+            println!("displayed {printed} row(s) from {}", self.path.display());
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum BacktestModeArg {
     Candle,
@@ -425,6 +485,13 @@ pub struct LiveRunArgs {
     metrics_addr: Option<String>,
     #[arg(long)]
     log_path: Option<PathBuf>,
+    /// Directory where parquet market/trade data is recorded
+    #[arg(
+        long = "record-data",
+        value_name = "PATH",
+        default_value = "data/flight_recorder"
+    )]
+    record_data: PathBuf,
     #[arg(long)]
     initial_equity: Option<Decimal>,
     #[arg(long)]
@@ -613,6 +680,9 @@ async fn handle_data(cmd: DataCommand, config: &AppConfig) -> Result<()> {
                 args.output.display(),
                 args.interval
             );
+        }
+        DataCommand::InspectParquet(args) => {
+            args.run()?;
         }
     }
     Ok(())
@@ -868,6 +938,7 @@ impl LiveRunArgs {
             reconciliation_threshold,
             driver,
             orderbook_depth,
+            record_path: Some(self.record_data.clone()),
         };
 
         info!(

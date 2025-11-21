@@ -1,6 +1,8 @@
 //! Data utilities including streaming and historical downloads.
 
 pub mod download;
+pub mod encoding;
+pub mod recorder;
 
 /// Data distribution utilities that consume [`tesser_broker::MarketStream`].
 use anyhow::Context;

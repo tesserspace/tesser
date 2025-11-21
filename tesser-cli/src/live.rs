@@ -49,6 +49,7 @@ use tesser_core::{
     Candle, Fill, Interval, Order, OrderBook, OrderStatus, Position, Price, Quantity, Side, Signal,
     Symbol, Tick,
 };
+use tesser_data::recorder::{ParquetRecorder, RecorderConfig, RecorderHandle};
 use tesser_events::{
     CandleEvent, Event, EventBus, FillEvent, OrderBookEvent, OrderUpdateEvent, SignalEvent,
     TickEvent,
@@ -147,6 +148,7 @@ pub struct LiveSessionSettings {
     pub reconciliation_threshold: Decimal,
     pub driver: String,
     pub orderbook_depth: usize,
+    pub record_path: Option<PathBuf>,
 }
 
 impl LiveSessionSettings {
@@ -289,6 +291,7 @@ struct LiveRuntime {
     state_repo: Arc<dyn StateRepository>,
     persisted: Arc<Mutex<LiveState>>,
     event_bus: Arc<EventBus>,
+    recorder: Option<ParquetRecorder>,
     shutdown: ShutdownSignal,
     metrics_task: JoinHandle<()>,
     alert_task: Option<JoinHandle<()>>,
@@ -488,6 +491,30 @@ impl LiveRuntime {
             }
         }
 
+        let recorder = if let Some(record_path) = settings.record_path.clone() {
+            let config = RecorderConfig {
+                root: record_path.clone(),
+                ..RecorderConfig::default()
+            };
+            match ParquetRecorder::spawn(config).await {
+                Ok(recorder) => {
+                    info!(path = %record_path.display(), "flight recorder enabled");
+                    Some(recorder)
+                }
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        path = %record_path.display(),
+                        "failed to start flight recorder"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let recorder_handle = recorder.as_ref().map(|rec| rec.handle());
+
         let strategy = Arc::new(Mutex::new(strategy));
         let strategy_ctx = Arc::new(Mutex::new(strategy_ctx));
         let portfolio = Arc::new(Mutex::new(portfolio));
@@ -526,6 +553,7 @@ impl LiveRuntime {
             state_repo.clone(),
             persisted.clone(),
             settings.exec_backend,
+            recorder_handle.clone(),
         );
         let order_timeout_task = spawn_order_timeout_monitor(
             orchestrator.clone(),
@@ -554,6 +582,7 @@ impl LiveRuntime {
             state_repo,
             persisted,
             event_bus,
+            recorder,
             shutdown,
             metrics_task,
             alert_task,
@@ -663,6 +692,11 @@ impl LiveRuntime {
         .await
         {
             warn!(error = %err, "failed to persist shutdown state");
+        }
+        if let Some(recorder) = self.recorder.take() {
+            if let Err(err) = recorder.shutdown().await {
+                warn!(error = %err, "failed to flush flight recorder");
+            }
         }
         Ok(())
     }
@@ -983,8 +1017,10 @@ fn spawn_event_subscribers(
     state_repo: Arc<dyn StateRepository>,
     persisted: Arc<Mutex<LiveState>>,
     exec_backend: ExecutionBackend,
+    recorder: Option<RecorderHandle>,
 ) -> Vec<JoinHandle<()>> {
     let mut handles = Vec::new();
+    let market_recorder = recorder.clone();
 
     let market_bus = bus.clone();
     let market_strategy = strategy.clone();
@@ -997,10 +1033,14 @@ fn spawn_event_subscribers(
     let market_snapshot = market.clone();
     let orchestrator_clone = orchestrator.clone();
     handles.push(tokio::spawn(async move {
+        let recorder = market_recorder;
         let mut stream = market_bus.subscribe();
         loop {
             match stream.recv().await {
                 Ok(Event::Tick(evt)) => {
+                    if let Some(handle) = recorder.as_ref() {
+                        handle.record_tick(evt.tick.clone());
+                    }
                     if let Err(err) = process_tick_event(
                         evt.tick,
                         market_strategy.clone(),
@@ -1019,6 +1059,9 @@ fn spawn_event_subscribers(
                     }
                 }
                 Ok(Event::Candle(evt)) => {
+                    if let Some(handle) = recorder.as_ref() {
+                        handle.record_candle(evt.candle.clone());
+                    }
                     if let Err(err) = process_candle_event(
                         evt.candle,
                         market_strategy.clone(),
@@ -1105,13 +1148,18 @@ fn spawn_event_subscribers(
     let fill_orchestrator = orchestrator.clone();
     let fill_persisted = persisted.clone();
     let fill_alerts = alerts.clone();
+    let fill_recorder = recorder.clone();
     handles.push(tokio::spawn(async move {
         let orchestrator = fill_orchestrator.clone();
         let persisted = fill_persisted.clone();
+        let recorder = fill_recorder;
         let mut stream = fill_bus.subscribe();
         loop {
             match stream.recv().await {
                 Ok(Event::Fill(evt)) => {
+                    if let Some(handle) = recorder.as_ref() {
+                        handle.record_fill(evt.fill.clone());
+                    }
                     if let Err(err) = process_fill_event(
                         evt.fill,
                         portfolio.clone(),
@@ -1144,13 +1192,18 @@ fn spawn_event_subscribers(
     let order_orchestrator = orchestrator.clone();
     // Note: We don't pass strategy to order update handler to avoid lock contention
     // on high-frequency updates. Strategy state is snapshotted on candles/fills.
+    let order_recorder = recorder;
     handles.push(tokio::spawn(async move {
         let orchestrator = order_orchestrator.clone();
         let persisted = order_persisted.clone();
+        let recorder = order_recorder;
         let mut stream = order_bus.subscribe();
         loop {
             match stream.recv().await {
                 Ok(Event::OrderUpdate(evt)) => {
+                    if let Some(handle) = recorder.as_ref() {
+                        handle.record_order(evt.order.clone());
+                    }
                     if let Err(err) = process_order_update_event(
                         evt.order,
                         orchestrator.clone(),

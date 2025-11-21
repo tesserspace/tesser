@@ -25,3 +25,24 @@ The CLI spins up three async tasks:
 3. **Execution Engine** – Routes intent to the exchange and persists state for recovery.
 
 If the process restarts it reloads everything from the SQLite snapshot and resumes from the latest offsets. Pair it with Prometheus exporters to watch latency, error rates, and per-strategy PnL in Grafana.
+
+## Flight Recorder
+
+Set `--record-data <path>` when you launch `tesser-cli live run` to stream every `Tick`, `Candle`, `Fill`, and order update into partitioned Parquet files. The recorder runs on its own Tokio task, buffers data in Arrow `RecordBatch`es, and rotates files per day under the provided directory (defaults to `data/flight_recorder`).
+
+```bash
+cargo run -p tesser-cli -- \
+    live run \
+    --record-data data/flight_recorder \
+    --strategy-config strategies/sma_cross.toml
+```
+
+You can sanity check any file without leaving the CLI by using the new inspector:
+
+```bash
+cargo run -p tesser-cli -- \
+    data inspect-parquet data/flight_recorder/ticks/2025-05-01/ticks-*.parquet \
+    --rows 10
+```
+
+The output is Arrow's pretty table format, which makes it easy to spot malformed symbols, timestamps, or prices before feeding the data into Pandas/Polars for Phase 2 workflows.

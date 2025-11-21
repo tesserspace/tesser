@@ -61,6 +61,8 @@ toml = "0.8"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
+arrow = { version = "57.0", features = ["prettyprint"] }
+parquet = { version = "57.0", features = ["async"] }
 ort = "2.0.0-rc.10"
 native-tls = { version = "0.2", features = ["vendored"] }
 openssl = { version = "0.10", features = ["vendored"] }
