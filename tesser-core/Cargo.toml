@@ -13,3 +13,4 @@ chrono.workspace = true
 serde.workspace = true
 uuid.workspace = true
 rust_decimal.workspace = true
+crc32fast = "1.4"

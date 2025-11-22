@@ -3855,6 +3855,7 @@ name = "tesser-core"
 version = "0.7.0"
 dependencies = [
  "chrono",
+ "crc32fast",
  "rust_decimal",
  "serde",
  "uuid",
