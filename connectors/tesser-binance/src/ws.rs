@@ -4,6 +4,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    time::Duration,
 };
 
 use binance_sdk::common::{
@@ -17,16 +18,20 @@ use binance_sdk::derivatives_trading_usds_futures::{
     websocket_streams::{
         self, AggregateTradeStreamsParams, AggregateTradeStreamsResponse,
         KlineCandlestickStreamsParams, KlineCandlestickStreamsResponse, OrderTradeUpdateO,
-        PartialBookDepthStreamsParams, PartialBookDepthStreamsResponse,
     },
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use futures::{SinkExt, StreamExt};
+use reqwest::Client;
 use rust_decimal::Decimal;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tesser_broker::{BrokerError, BrokerInfo, BrokerResult, MarketStream};
-use tesser_core::{Candle, Interval, OrderBook, OrderBookLevel, Side, Tick};
+use tesser_core::{Candle, Interval, LocalOrderBook, OrderBook, OrderBookLevel, Side, Tick};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{mpsc, Mutex};
+use tokio::time::sleep;
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tracing::warn;
 
 use crate::{parse_decimal_opt, timestamp_from_ms};
 
@@ -40,6 +45,9 @@ pub enum BinanceSubscription {
 pub struct BinanceMarketStream {
     info: BrokerInfo,
     ws: Arc<websocket_streams::WebsocketStreams>,
+    rest_url: String,
+    ws_base_url: String,
+    http: Client,
     tick_tx: mpsc::Sender<Tick>,
     candle_tx: mpsc::Sender<Candle>,
     book_tx: mpsc::Sender<OrderBook>,
@@ -54,12 +62,13 @@ pub struct BinanceMarketStream {
 enum StreamHandle {
     Trade(Arc<WebsocketStream<AggregateTradeStreamsResponse>>),
     Kline(Arc<WebsocketStream<KlineCandlestickStreamsResponse>>),
-    Book(Arc<WebsocketStream<PartialBookDepthStreamsResponse>>),
+    Diff(tokio::task::JoinHandle<()>),
 }
 
 impl BinanceMarketStream {
     pub async fn connect(
         ws_url: &str,
+        rest_url: &str,
         connection_status: Option<Arc<AtomicBool>>,
     ) -> BrokerResult<Self> {
         let cfg = ConfigurationWebsocketStreams::builder()
@@ -87,6 +96,16 @@ impl BinanceMarketStream {
         let (tick_tx, tick_rx) = mpsc::channel(2048);
         let (candle_tx, candle_rx) = mpsc::channel(1024);
         let (book_tx, book_rx) = mpsc::channel(256);
+        let http = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .map_err(|err| BrokerError::Other(err.to_string()))?;
+        let ws_base_url = ws_url.trim_end_matches("/stream").trim_end_matches('/');
+        let ws_base = if ws_base_url.is_empty() {
+            ws_url.to_string()
+        } else {
+            ws_base_url.to_string()
+        };
         Ok(Self {
             info: BrokerInfo {
                 name: "binance-market".into(),
@@ -94,6 +113,9 @@ impl BinanceMarketStream {
                 supports_testnet: ws_url.contains("testnet"),
             },
             ws,
+            rest_url: rest_url.to_string(),
+            ws_base_url: ws_base,
+            http,
             tick_tx,
             candle_tx,
             book_tx,
@@ -145,27 +167,19 @@ impl BinanceMarketStream {
     }
 
     async fn subscribe_order_book(&mut self, symbol: String, depth: usize) -> BrokerResult<()> {
-        let clamped_depth = match depth {
-            d if d <= 5 => 5,
-            d if d <= 10 => 10,
-            _ => 20,
-        } as i64;
-        let params = PartialBookDepthStreamsParams::builder(symbol.to_lowercase(), clamped_depth)
-            .update_speed(Some("100ms".to_string()))
-            .build()
-            .map_err(|err| BrokerError::InvalidRequest(err.to_string()))?;
-        let stream = self
-            .ws
-            .partial_book_depth_streams(params)
-            .await
-            .map_err(|err| BrokerError::Transport(err.to_string()))?;
+        let ws_base = self.ws_base_url.clone();
+        let rest_url = self.rest_url.clone();
+        let http = self.http.clone();
         let tx = self.book_tx.clone();
-        stream.on_message(move |payload: PartialBookDepthStreamsResponse| {
-            if let Some(book) = convert_book(&payload) {
-                let _ = tx.try_send(book);
+        let depth = depth.max(1);
+        let handle = tokio::spawn(async move {
+            let mut task = DiffDepthTask::new(symbol, depth, rest_url, ws_base, http, tx);
+            let symbol = task.symbol_upper().to_string();
+            if let Err(err) = task.run().await {
+                warn!(symbol = %symbol, error = %err, "binance depth stream terminated");
             }
         });
-        self.handles.push(StreamHandle::Book(stream));
+        self.handles.push(StreamHandle::Diff(handle));
         Ok(())
     }
 }
@@ -261,28 +275,257 @@ fn convert_kline(payload: &KlineCandlestickStreamsResponse) -> Option<Candle> {
     })
 }
 
-fn convert_book(payload: &PartialBookDepthStreamsResponse) -> Option<OrderBook> {
-    let symbol = payload.s.clone()?;
-    let bids = parse_levels(payload.b.as_ref()?);
-    let asks = parse_levels(payload.a.as_ref()?);
-    Some(OrderBook {
-        symbol,
-        bids,
-        asks,
-        timestamp: timestamp_from_ms(payload.t_uppercase),
-    })
+struct DiffDepthTask {
+    symbol_upper: String,
+    symbol_lower: String,
+    depth: usize,
+    snapshot_limit: usize,
+    rest_url: String,
+    ws_base_url: String,
+    http: Client,
+    tx: mpsc::Sender<OrderBook>,
+    book: LocalOrderBook,
+    last_update_id: u64,
 }
 
-fn parse_levels(levels: &[Vec<String>]) -> Vec<OrderBookLevel> {
-    levels
-        .iter()
-        .filter_map(|level| {
-            let mut values = level.iter();
-            let price = values.next()?.parse::<Decimal>().ok()?;
-            let size = values.next()?.parse::<Decimal>().ok()?;
-            Some(OrderBookLevel { price, size })
+impl DiffDepthTask {
+    fn new(
+        symbol: String,
+        depth: usize,
+        rest_url: String,
+        ws_base_url: String,
+        http: Client,
+        tx: mpsc::Sender<OrderBook>,
+    ) -> Self {
+        let upper = symbol.to_uppercase();
+        let lower = symbol.to_lowercase();
+        Self {
+            symbol_upper: upper,
+            symbol_lower: lower,
+            depth,
+            snapshot_limit: snapshot_limit(depth),
+            rest_url,
+            ws_base_url,
+            http,
+            tx,
+            book: LocalOrderBook::new(),
+            last_update_id: 0,
+        }
+    }
+
+    fn symbol_upper(&self) -> &str {
+        &self.symbol_upper
+    }
+
+    async fn run(&mut self) -> BrokerResult<()> {
+        loop {
+            match self.stream_once().await {
+                Ok(_) => return Ok(()),
+                Err(err) => {
+                    warn!(
+                        symbol = %self.symbol_upper,
+                        error = %err,
+                        "binance diff depth stream restarting"
+                    );
+                    sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
+    }
+
+    async fn stream_once(&mut self) -> BrokerResult<()> {
+        self.sync_snapshot().await?;
+        let url = format!(
+            "{}/ws/{}@depth@100ms",
+            self.ws_base_url.trim_end_matches('/'),
+            self.symbol_lower
+        );
+        let (mut ws, _) = connect_async(&url)
+            .await
+            .map_err(|err| BrokerError::Transport(err.to_string()))?;
+        while let Some(msg) = ws.next().await {
+            match msg {
+                Ok(Message::Text(text)) => {
+                    self.process_message(&text).await?;
+                }
+                Ok(Message::Binary(bytes)) => {
+                    if let Ok(text) = String::from_utf8(bytes) {
+                        self.process_message(&text).await?;
+                    }
+                }
+                Ok(Message::Ping(payload)) => {
+                    ws.send(Message::Pong(payload))
+                        .await
+                        .map_err(|err| BrokerError::Transport(err.to_string()))?;
+                }
+                Ok(Message::Pong(_)) => {}
+                Ok(Message::Close(_)) => {
+                    return Err(BrokerError::Other("binance depth stream closed".into()));
+                }
+                Ok(Message::Frame(_)) => {}
+                Err(err) => return Err(BrokerError::Transport(err.to_string())),
+            }
+        }
+        Err(BrokerError::Other("binance depth stream terminated".into()))
+    }
+
+    async fn sync_snapshot(&mut self) -> BrokerResult<()> {
+        let snapshot = self.fetch_snapshot().await?;
+        let bids = convert_price_levels(&snapshot.bids)
+            .ok_or_else(|| BrokerError::Serialization("invalid snapshot bids".into()))?;
+        let asks = convert_price_levels(&snapshot.asks)
+            .ok_or_else(|| BrokerError::Serialization("invalid snapshot asks".into()))?;
+        self.book.load_snapshot(&bids, &asks);
+        self.last_update_id = snapshot.last_update_id;
+        self.emit_snapshot(Utc::now()).await;
+        Ok(())
+    }
+
+    async fn fetch_snapshot(&self) -> BrokerResult<DepthSnapshot> {
+        let url = format!(
+            "{}/fapi/v1/depth?symbol={}&limit={}",
+            self.rest_url.trim_end_matches('/'),
+            self.symbol_upper,
+            self.snapshot_limit
+        );
+        let resp = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(|err| BrokerError::Transport(err.to_string()))?
+            .error_for_status()
+            .map_err(|err| BrokerError::Transport(err.to_string()))?
+            .json::<DepthSnapshot>()
+            .await
+            .map_err(|err| BrokerError::Serialization(err.to_string()))?;
+        Ok(resp)
+    }
+
+    async fn process_message(&mut self, text: &str) -> BrokerResult<()> {
+        let event: DiffDepthEvent = serde_json::from_str(text)
+            .map_err(|err| BrokerError::Serialization(err.to_string()))?;
+        if event.final_update_id <= self.last_update_id {
+            return Ok(());
+        }
+        let expected = self
+            .last_update_id
+            .checked_add(1)
+            .ok_or_else(|| BrokerError::Other("sequence overflow".into()))?;
+        if event.first_update_id > expected {
+            return Err(BrokerError::Other(format!(
+                "diff depth gap detected: expected {}, got {}",
+                expected, event.first_update_id
+            )));
+        }
+        if event.final_update_id < expected {
+            return Ok(());
+        }
+        self.apply_levels(&event.bids, Side::Buy)
+            .map_err(|err| BrokerError::Serialization(err))?;
+        self.apply_levels(&event.asks, Side::Sell)
+            .map_err(|err| BrokerError::Serialization(err))?;
+        self.last_update_id = event.final_update_id;
+        self.emit_book(event.event_time).await;
+        Ok(())
+    }
+
+    fn apply_levels(&mut self, levels: &[[String; 2]], side: Side) -> Result<(), String> {
+        for entry in levels {
+            let price = entry
+                .first()
+                .ok_or_else(|| "missing price".to_string())
+                .and_then(|v| Decimal::from_str(v).map_err(|err| err.to_string()))?;
+            let qty = entry
+                .get(1)
+                .ok_or_else(|| "missing quantity".to_string())
+                .and_then(|v| Decimal::from_str(v).map_err(|err| err.to_string()))?;
+            self.book.apply_delta(side, price, qty);
+        }
+        Ok(())
+    }
+
+    async fn emit_snapshot(&self, ts: DateTime<Utc>) {
+        if let Some(book) = self.build_book(ts) {
+            let _ = self.tx.send(book).await;
+        }
+    }
+
+    async fn emit_book(&self, event_time: i64) {
+        let timestamp = timestamp_from_ms(Some(event_time));
+        if let Some(book) = self.build_book(timestamp) {
+            let _ = self.tx.send(book).await;
+        }
+    }
+
+    fn build_book(&self, timestamp: DateTime<Utc>) -> Option<OrderBook> {
+        if self.book.is_empty() {
+            return None;
+        }
+        let bids = self
+            .book
+            .bid_levels(self.depth)
+            .into_iter()
+            .map(|(price, size)| OrderBookLevel { price, size })
+            .collect::<Vec<_>>();
+        let asks = self
+            .book
+            .ask_levels(self.depth)
+            .into_iter()
+            .map(|(price, size)| OrderBookLevel { price, size })
+            .collect::<Vec<_>>();
+        Some(OrderBook {
+            symbol: self.symbol_upper.clone(),
+            bids,
+            asks,
+            timestamp,
         })
-        .collect()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct DepthSnapshot {
+    #[serde(rename = "lastUpdateId")]
+    last_update_id: u64,
+    bids: Vec<[String; 2]>,
+    asks: Vec<[String; 2]>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DiffDepthEvent {
+    #[serde(rename = "U")]
+    first_update_id: u64,
+    #[serde(rename = "u")]
+    final_update_id: u64,
+    #[serde(rename = "b")]
+    bids: Vec<[String; 2]>,
+    #[serde(rename = "a")]
+    asks: Vec<[String; 2]>,
+    #[serde(rename = "E")]
+    event_time: i64,
+}
+
+fn snapshot_limit(depth: usize) -> usize {
+    match depth {
+        d if d <= 5 => 5,
+        d if d <= 10 => 10,
+        d if d <= 20 => 20,
+        d if d <= 50 => 50,
+        d if d <= 100 => 100,
+        d if d <= 500 => 500,
+        d if d <= 1000 => 1000,
+        _ => 1000,
+    }
+}
+
+fn convert_price_levels(levels: &[[String; 2]]) -> Option<Vec<(Decimal, Decimal)>> {
+    let mut out = Vec::with_capacity(levels.len());
+    for entry in levels {
+        let price = Decimal::from_str(entry.first()?).ok()?;
+        let size = Decimal::from_str(entry.get(1)?).ok()?;
+        out.push((price, size));
+    }
+    Some(out)
 }
 
 pub struct BinanceUserDataStream {
@@ -331,4 +574,92 @@ pub fn extract_order_update(event: &UserDataStreamEventsResponse) -> Option<&Ord
 
 fn interval_label(interval: Interval) -> String {
     interval.to_binance().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use tokio::sync::mpsc;
+
+    fn test_task(depth: usize) -> (DiffDepthTask, mpsc::Receiver<OrderBook>) {
+        let client = Client::builder()
+            .build()
+            .expect("failed to build http client");
+        let (tx, rx) = mpsc::channel(8);
+        let task = DiffDepthTask::new(
+            "BTCUSDT".into(),
+            depth,
+            "https://example.com".into(),
+            "wss://example.com".into(),
+            client,
+            tx,
+        );
+        (task, rx)
+    }
+
+    #[tokio::test]
+    async fn diff_depth_task_applies_updates() {
+        let (mut task, mut rx) = test_task(5);
+        task.book.load_snapshot(
+            &[(Decimal::from(10), Decimal::from(1))],
+            &[(Decimal::from(11), Decimal::from(2))],
+        );
+        task.last_update_id = 1;
+        let message = json!({
+            "U": 2,
+            "u": 2,
+            "b": [["10","0"], ["9","1"]],
+            "a": [["12","3"]],
+            "E": 1_680_000_000_000i64
+        })
+        .to_string();
+        task.process_message(&message).await.expect("diff applied");
+        let book = rx.recv().await.expect("order book emitted");
+        assert_eq!(book.symbol, "BTCUSDT");
+        assert_eq!(book.bids[0].price, Decimal::from(9));
+        assert_eq!(book.asks[0].price, Decimal::from(11));
+    }
+
+    #[tokio::test]
+    async fn diff_depth_task_detects_sequence_gap() {
+        let (mut task, mut rx) = test_task(5);
+        task.book.load_snapshot(
+            &[(Decimal::from(100), Decimal::from(1))],
+            &[(Decimal::from(101), Decimal::from(1))],
+        );
+        task.last_update_id = 1;
+        let ok = json!({
+            "U": 2,
+            "u": 2,
+            "b": [["100","0"]],
+            "a": [],
+            "E": 1_680_000_000_100i64
+        })
+        .to_string();
+        task.process_message(&ok).await.expect("first diff ok");
+        let _ = rx.recv().await;
+        let gap = json!({
+            "U": 5,
+            "u": 5,
+            "b": [],
+            "a": [],
+            "E": 1_680_000_000_200i64
+        })
+        .to_string();
+        let err = task.process_message(&gap).await;
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn snapshot_limit_matches_expectations() {
+        assert_eq!(snapshot_limit(1), 5);
+        assert_eq!(snapshot_limit(7), 10);
+        assert_eq!(snapshot_limit(15), 20);
+        assert_eq!(snapshot_limit(40), 50);
+        assert_eq!(snapshot_limit(80), 100);
+        assert_eq!(snapshot_limit(200), 500);
+        assert_eq!(snapshot_limit(800), 1000);
+        assert_eq!(snapshot_limit(5_000), 1000);
+    }
 }

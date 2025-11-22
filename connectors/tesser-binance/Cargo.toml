@@ -18,6 +18,8 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tokio-tungstenite.workspace = true
+reqwest.workspace = true
 binance-sdk = { version = "31", features = ["derivatives_trading_usds_futures"] }
 uuid.workspace = true
 tesser-broker = { version = "0.7.0", path = "../../tesser-broker" }

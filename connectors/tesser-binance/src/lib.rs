@@ -688,8 +688,12 @@ impl ConnectorFactory for BinanceFactory {
         stream_config: ConnectorStreamConfig,
     ) -> BrokerResult<Box<dyn ConnectorStream>> {
         let cfg = self.parse_config(config)?;
-        let stream =
-            BinanceMarketStream::connect(&cfg.ws_url, stream_config.connection_status).await?;
+        let stream = BinanceMarketStream::connect(
+            &cfg.ws_url,
+            &cfg.rest_url,
+            stream_config.connection_status,
+        )
+        .await?;
         Ok(Box::new(BinanceConnectorStream::new(
             stream,
             stream_config
