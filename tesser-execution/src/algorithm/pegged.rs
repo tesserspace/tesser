@@ -2,7 +2,9 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use tesser_core::{Order, OrderRequest, OrderType, Quantity, Signal, Tick, TimeInForce};
+use tesser_core::{
+    Order, OrderRequest, OrderStatus, OrderType, Quantity, Signal, Tick, TimeInForce,
+};
 use uuid::Uuid;
 
 use super::{AlgoStatus, ChildOrderRequest, ExecutionAlgorithm};
@@ -126,6 +128,22 @@ impl PeggedBestAlgorithm {
             self.state.status = "Completed".into();
         }
     }
+
+    fn sequence_from_client_id(&self, client_id: &str) -> Option<u32> {
+        let rest = client_id.strip_prefix("peg-")?;
+        let (id_part, seq_part) = rest.rsplit_once('-')?;
+        if id_part != self.state.id.to_string() {
+            return None;
+        }
+        seq_part.parse().ok()
+    }
+
+    fn is_active_status(status: OrderStatus) -> bool {
+        matches!(
+            status,
+            OrderStatus::PendingNew | OrderStatus::Accepted | OrderStatus::PartiallyFilled
+        )
+    }
 }
 
 impl ExecutionAlgorithm for PeggedBestAlgorithm {
@@ -186,6 +204,26 @@ impl ExecutionAlgorithm for PeggedBestAlgorithm {
 
     fn cancel(&mut self) -> Result<()> {
         self.state.status = "Cancelled".into();
+        Ok(())
+    }
+
+    fn bind_child_order(&mut self, order: Order) -> Result<()> {
+        if !Self::is_active_status(order.status) {
+            return Ok(());
+        }
+        let Some(client_id) = order.request.client_order_id.as_deref() else {
+            return Ok(());
+        };
+        if let Some(seq) = self.sequence_from_client_id(client_id) {
+            self.state.next_child_seq = self.state.next_child_seq.max(seq);
+        }
+        self.state.last_order_time = Some(order.updated_at);
+        if let Some(price) = order.request.price {
+            self.state.last_peg_price = Some(price);
+        }
+        if !matches!(self.status(), AlgoStatus::Working) {
+            self.state.status = "Working".into();
+        }
         Ok(())
     }
 

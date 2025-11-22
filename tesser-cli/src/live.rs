@@ -46,8 +46,8 @@ use tesser_bybit::ws::{BybitWsExecution, BybitWsOrder, PrivateMessage};
 use tesser_bybit::{register_factory as register_bybit_factory, BybitClient, BybitCredentials};
 use tesser_config::{AlertingConfig, ExchangeConfig, RiskManagementConfig};
 use tesser_core::{
-    Candle, Fill, Interval, Order, OrderBook, OrderStatus, Position, Price, Quantity, Side, Signal,
-    Symbol, Tick,
+    AccountBalance, Candle, Fill, Interval, Order, OrderBook, OrderStatus, Position, Price,
+    Quantity, Side, Signal, Symbol, Tick,
 };
 use tesser_data::recorder::{ParquetRecorder, RecorderConfig, RecorderHandle};
 use tesser_events::{
@@ -237,12 +237,43 @@ pub async fn run_live_with_shutdown(
         risk_checker,
     );
 
+    let mut bootstrap = None;
+    if matches!(settings.exec_backend, ExecutionBackend::Live) {
+        info!("synchronizing portfolio snapshot from exchange");
+        let positions = execution_client
+            .positions()
+            .await
+            .context("failed to fetch remote positions")?;
+        let balances = execution_client
+            .account_balances()
+            .await
+            .context("failed to fetch remote account balances")?;
+        let mut open_orders = Vec::new();
+        for symbol in &symbols {
+            let mut symbol_orders = execution_client
+                .list_open_orders(symbol)
+                .await
+                .with_context(|| format!("failed to fetch open orders for {symbol}"))?;
+            open_orders.append(&mut symbol_orders);
+        }
+        bootstrap = Some(LiveBootstrap {
+            positions,
+            balances,
+            open_orders,
+        });
+    }
+
     // Create algorithm state repository
     let algo_repo_path = settings.state_path.with_extension("algos.db");
     let algo_state_repo = Arc::new(SqliteAlgoStateRepository::new(&algo_repo_path)?);
 
     // Create orchestrator with execution engine
-    let orchestrator = OrderOrchestrator::new(Arc::new(execution), algo_state_repo).await?;
+    let initial_open_orders = bootstrap
+        .as_ref()
+        .map(|data| data.open_orders.clone())
+        .unwrap_or_default();
+    let orchestrator =
+        OrderOrchestrator::new(Arc::new(execution), algo_state_repo, initial_open_orders).await?;
 
     let runtime = LiveRuntime::new(
         market_stream,
@@ -255,6 +286,7 @@ pub async fn run_live_with_shutdown(
         shutdown,
         public_connection,
         private_connection,
+        bootstrap,
     )
     .await?;
     runtime.run().await
@@ -311,6 +343,12 @@ struct LiveRuntime {
     _private_connection: Option<Arc<AtomicBool>>,
 }
 
+struct LiveBootstrap {
+    positions: Vec<Position>,
+    balances: Vec<AccountBalance>,
+    open_orders: Vec<Order>,
+}
+
 impl LiveRuntime {
     #[allow(clippy::too_many_arguments)]
     async fn new(
@@ -324,6 +362,7 @@ impl LiveRuntime {
         shutdown: ShutdownSignal,
         public_connection: Arc<AtomicBool>,
         private_connection: Option<Arc<AtomicBool>>,
+        bootstrap: Option<LiveBootstrap>,
     ) -> Result<Self> {
         let mut strategy_ctx = StrategyContext::new(settings.history);
         let state_repo: Arc<dyn StateRepository> =
@@ -345,27 +384,11 @@ impl LiveRuntime {
             }
         };
         let mut live_bootstrap = None;
-        if matches!(settings.exec_backend, ExecutionBackend::Live) {
-            info!("Synchronizing portfolio state from exchange");
-            let execution_client = orchestrator.execution_engine().client();
-            let positions = execution_client
-                .positions()
-                .await
-                .context("failed to fetch remote positions")?;
-            let balances = execution_client
-                .account_balances()
-                .await
-                .context("failed to fetch remote account balances")?;
-            let mut open_orders = Vec::new();
-            for symbol in &symbols {
-                let mut symbol_orders = execution_client
-                    .list_open_orders(symbol)
-                    .await
-                    .with_context(|| format!("failed to fetch open orders for {symbol}"))?;
-                open_orders.append(&mut symbol_orders);
-            }
-            persisted.open_orders = open_orders;
-            live_bootstrap = Some((positions, balances));
+        if let Some(data) = bootstrap {
+            persisted.open_orders = data.open_orders;
+            live_bootstrap = Some((data.positions, data.balances));
+        } else if matches!(settings.exec_backend, ExecutionBackend::Live) {
+            warn!("live session missing bootstrap data; continuing without remote snapshot");
         }
 
         let portfolio_cfg = PortfolioConfig {

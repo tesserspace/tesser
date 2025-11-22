@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{AlgoStatus, ChildOrderRequest, ExecutionAlgorithm};
-use tesser_core::{Fill, Order, OrderRequest, OrderType, Quantity, Signal, Tick};
+use tesser_core::{Fill, Order, OrderRequest, OrderStatus, OrderType, Quantity, Signal, Tick};
 
 /// Persistent state for the TWAP algorithm.
 #[derive(Debug, Deserialize, Serialize)]
@@ -153,6 +153,22 @@ impl TwapAlgorithm {
             );
         }
     }
+
+    fn slice_from_client_id(&self, client_id: &str) -> Option<u32> {
+        let rest = client_id.strip_prefix("twap-")?;
+        let (id_part, slice_part) = rest.split_once("-slice-")?;
+        if id_part != self.state.id.to_string() {
+            return None;
+        }
+        slice_part.parse().ok()
+    }
+
+    fn is_active_status(status: OrderStatus) -> bool {
+        matches!(
+            status,
+            OrderStatus::PendingNew | OrderStatus::Accepted | OrderStatus::PartiallyFilled
+        )
+    }
 }
 
 impl ExecutionAlgorithm for TwapAlgorithm {
@@ -253,6 +269,35 @@ impl ExecutionAlgorithm for TwapAlgorithm {
     fn cancel(&mut self) -> Result<()> {
         self.state.status = "Cancelled".to_string();
         tracing::info!(id = %self.state.id, "TWAP algorithm cancelled");
+        Ok(())
+    }
+
+    fn bind_child_order(&mut self, order: Order) -> Result<()> {
+        if !Self::is_active_status(order.status) {
+            return Ok(());
+        }
+        let Some(client_id) = order.request.client_order_id.as_deref() else {
+            return Ok(());
+        };
+        let Some(slice_number) = self.slice_from_client_id(client_id) else {
+            return Ok(());
+        };
+
+        let previous = self.state.executed_slices;
+        if slice_number > previous {
+            self.state.executed_slices = slice_number;
+        }
+        self.state.next_slice_time = Utc::now() + self.state.slice_interval;
+        if !matches!(self.status(), AlgoStatus::Working) {
+            self.state.status = "Working".to_string();
+        }
+
+        tracing::info!(
+            id = %self.state.id,
+            slice = slice_number,
+            order_id = %order.id,
+            "bound TWAP child order after recovery"
+        );
         Ok(())
     }
 
