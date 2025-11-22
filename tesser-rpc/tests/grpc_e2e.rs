@@ -147,6 +147,8 @@ fn build_book() -> OrderBook {
             size: Decimal::from_f64(1.1).unwrap(),
         }],
         timestamp: Utc::now(),
+        exchange_checksum: None,
+        local_checksum: None,
     }
 }
 

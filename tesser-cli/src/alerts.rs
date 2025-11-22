@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -45,6 +46,7 @@ struct AlertState {
     last_private_connection: Instant,
     public_alerted: bool,
     private_alerted: bool,
+    checksum_alerts: HashMap<String, Instant>,
 }
 
 pub struct AlertManager {
@@ -72,6 +74,7 @@ impl AlertManager {
             last_private_connection: Instant::now(),
             public_alerted: false,
             private_alerted: false,
+            checksum_alerts: HashMap::new(),
         };
         Self {
             config,
@@ -108,6 +111,33 @@ impl AlertManager {
     pub async fn reset_order_failures(&self) {
         let mut state = self.state.lock().await;
         state.consecutive_failures = 0;
+    }
+
+    pub async fn order_book_checksum_mismatch(
+        &self,
+        driver: &str,
+        symbol: &str,
+        expected: u32,
+        actual: u32,
+    ) {
+        let mut state = self.state.lock().await;
+        let key = format!("{driver}:{symbol}");
+        let now = Instant::now();
+        if let Some(last) = state.checksum_alerts.get(&key) {
+            if now.duration_since(*last) < Duration::from_secs(30) {
+                return;
+            }
+        }
+        state.checksum_alerts.insert(key, now);
+        drop(state);
+        self.dispatcher
+            .notify(
+                "Order book checksum mismatch",
+                &format!(
+                    "Driver {driver} symbol {symbol} checksum mismatch (expected {expected}, local {actual})"
+                ),
+            )
+            .await;
     }
 
     pub async fn notify(&self, title: &str, message: &str) {

@@ -422,9 +422,9 @@ impl DiffDepthTask {
             return Ok(());
         }
         self.apply_levels(&event.bids, Side::Buy)
-            .map_err(|err| BrokerError::Serialization(err))?;
+            .map_err(BrokerError::Serialization)?;
         self.apply_levels(&event.asks, Side::Sell)
-            .map_err(|err| BrokerError::Serialization(err))?;
+            .map_err(BrokerError::Serialization)?;
         self.last_update_id = event.final_update_id;
         self.emit_book(event.event_time).await;
         Ok(())
@@ -479,6 +479,8 @@ impl DiffDepthTask {
             bids,
             asks,
             timestamp,
+            exchange_checksum: None,
+            local_checksum: Some(self.book.checksum(self.depth)),
         })
     }
 }

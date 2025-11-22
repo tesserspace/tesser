@@ -65,6 +65,8 @@ message OrderBook {
   repeated OrderBookLevel bids = 2;
   repeated OrderBookLevel asks = 3;
   google.protobuf.Timestamp timestamp = 4;
+  optional uint32 exchange_checksum = 5;
+  optional uint32 local_checksum = 6;
 }
 
 // Context & State

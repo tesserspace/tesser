@@ -529,6 +529,8 @@ fn decode_order_book(
         bids,
         asks,
         timestamp,
+        exchange_checksum: None,
+        local_checksum: None,
     })
 }
 
@@ -675,6 +677,8 @@ fn snapshot_from_state(
         bids,
         asks,
         timestamp,
+        exchange_checksum: None,
+        local_checksum: None,
     })
 }
 

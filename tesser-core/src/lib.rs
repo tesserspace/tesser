@@ -302,6 +302,10 @@ pub struct OrderBook {
     pub bids: Vec<OrderBookLevel>,
     pub asks: Vec<OrderBookLevel>,
     pub timestamp: DateTime<Utc>,
+    #[serde(default)]
+    pub exchange_checksum: Option<u32>,
+    #[serde(default)]
+    pub local_checksum: Option<u32>,
 }
 
 impl OrderBook {
@@ -329,6 +333,25 @@ impl OrderBook {
         } else {
             Some((bid_vol - ask_vol) / denom)
         }
+    }
+
+    /// Compute a checksum for the current order book using up to `depth` levels (or full depth when `None`).
+    #[must_use]
+    pub fn computed_checksum(&self, depth: Option<usize>) -> u32 {
+        let mut lob = LocalOrderBook::new();
+        let bids = self
+            .bids
+            .iter()
+            .map(|level| (level.price, level.size))
+            .collect::<Vec<_>>();
+        let asks = self
+            .asks
+            .iter()
+            .map(|level| (level.price, level.size))
+            .collect::<Vec<_>>();
+        lob.load_snapshot(&bids, &asks);
+        let depth = depth.unwrap_or_else(|| bids.len().max(asks.len()).max(1));
+        lob.checksum(depth)
     }
 }
 

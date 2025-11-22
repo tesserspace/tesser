@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use hyper::body::Body;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Request, Response, StatusCode};
-use prometheus::{Encoder, Gauge, GaugeVec, IntCounter, Registry, TextEncoder};
+use prometheus::{Encoder, Gauge, GaugeVec, IntCounter, IntCounterVec, Registry, TextEncoder};
 use tracing::{error, info};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
@@ -69,6 +69,7 @@ pub struct LiveMetrics {
     reconciliation_balance_diff: GaugeVec,
     connection_status: GaugeVec,
     last_data_timestamp: Gauge,
+    checksum_mismatches: IntCounterVec,
 }
 
 impl LiveMetrics {
@@ -122,6 +123,14 @@ impl LiveMetrics {
             "Unix timestamp of the last received market data event",
         )
         .unwrap();
+        let checksum_mismatches = IntCounterVec::new(
+            prometheus::Opts::new(
+                "tesser_order_book_checksum_mismatches_total",
+                "Count of order book checksum mismatches detected",
+            ),
+            &["driver", "symbol"],
+        )
+        .unwrap();
 
         registry.register(Box::new(ticks_total.clone())).unwrap();
         registry.register(Box::new(candles_total.clone())).unwrap();
@@ -143,6 +152,9 @@ impl LiveMetrics {
         registry
             .register(Box::new(last_data_timestamp.clone()))
             .unwrap();
+        registry
+            .register(Box::new(checksum_mismatches.clone()))
+            .unwrap();
 
         Self {
             registry,
@@ -158,6 +170,7 @@ impl LiveMetrics {
             reconciliation_balance_diff,
             connection_status,
             last_data_timestamp,
+            checksum_mismatches,
         }
     }
 
@@ -201,6 +214,12 @@ impl LiveMetrics {
         self.reconciliation_position_diff
             .with_label_values(&[symbol])
             .set(diff);
+    }
+
+    pub fn inc_checksum_mismatch(&self, driver: &str, symbol: &str) {
+        self.checksum_mismatches
+            .with_label_values(&[driver, symbol])
+            .inc();
     }
 
     pub fn update_balance_diff(&self, currency: &str, diff: f64) {

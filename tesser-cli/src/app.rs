@@ -1395,6 +1395,8 @@ fn load_lob_events_from_paths(paths: &[PathBuf]) -> Result<Vec<MarketEvent>> {
                         bids,
                         asks,
                         timestamp: ts,
+                        exchange_checksum: None,
+                        local_checksum: None,
                     };
                     events.push(MarketEvent {
                         timestamp: ts,

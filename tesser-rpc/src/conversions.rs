@@ -105,6 +105,8 @@ impl From<OrderBook> for proto::OrderBook {
             bids: b.bids.into_iter().map(Into::into).collect(),
             asks: b.asks.into_iter().map(Into::into).collect(),
             timestamp: Some(to_timestamp_proto(b.timestamp)),
+            exchange_checksum: b.exchange_checksum,
+            local_checksum: b.local_checksum,
         }
     }
 }

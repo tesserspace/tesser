@@ -636,6 +636,8 @@ struct OrderbookData {
     prev_seq: Option<i64>,
     #[serde(rename = "pu", default)]
     prev_update_id: Option<i64>,
+    #[serde(rename = "checksum", default)]
+    checksum: Option<u32>,
 }
 
 impl OrderbookData {
@@ -738,6 +740,7 @@ struct SymbolBook {
     last_seq: Option<i64>,
     synced: bool,
     pending: Vec<PendingDelta>,
+    last_checksum: Option<u32>,
 }
 
 impl SymbolBook {
@@ -749,6 +752,7 @@ impl SymbolBook {
             last_seq: None,
             synced: false,
             pending: Vec::new(),
+            last_checksum: None,
         }
     }
 
@@ -761,6 +765,7 @@ impl SymbolBook {
     }
 
     fn apply_snapshot(&mut self, data: OrderbookData, ts: i64) -> BookUpdate {
+        self.last_checksum = data.checksum;
         let Some(snapshot_bids) = parse_levels(&data.b) else {
             return BookUpdate::Pending;
         };
@@ -786,6 +791,7 @@ impl SymbolBook {
     }
 
     fn apply_delta(&mut self, data: OrderbookData, ts: i64) -> BookUpdate {
+        self.last_checksum = data.checksum;
         let Some(delta) = PendingDelta::from_data(data, ts) else {
             return BookUpdate::Pending;
         };
@@ -855,6 +861,8 @@ impl SymbolBook {
             bids,
             asks,
             timestamp,
+            exchange_checksum: self.last_checksum,
+            local_checksum: Some(self.book.checksum(self.depth)),
         })
     }
 
@@ -1004,6 +1012,7 @@ mod tests {
             seq: Some(seq),
             prev_seq,
             prev_update_id: None,
+            checksum: None,
         }
     }
 

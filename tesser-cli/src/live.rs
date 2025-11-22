@@ -341,6 +341,7 @@ struct LiveRuntime {
     strategy: Arc<Mutex<Box<dyn Strategy>>>,
     _public_connection: Arc<AtomicBool>,
     _private_connection: Option<Arc<AtomicBool>>,
+    driver: Arc<String>,
 }
 
 struct LiveBootstrap {
@@ -365,6 +366,7 @@ impl LiveRuntime {
         bootstrap: Option<LiveBootstrap>,
     ) -> Result<Self> {
         let mut strategy_ctx = StrategyContext::new(settings.history);
+        let driver = Arc::new(settings.driver.clone());
         let state_repo: Arc<dyn StateRepository> =
             Arc::new(SqliteStateRepository::new(settings.state_path.clone()));
         let mut persisted = match tokio::task::spawn_blocking({
@@ -590,6 +592,7 @@ impl LiveRuntime {
             settings.exec_backend,
             recorder_handle.clone(),
             last_data_timestamp.clone(),
+            driver.clone(),
         );
         let order_timeout_task = spawn_order_timeout_monitor(
             orchestrator.clone(),
@@ -633,6 +636,7 @@ impl LiveRuntime {
             strategy,
             _public_connection: public_connection,
             _private_connection: private_connection,
+            driver,
         })
     }
 
@@ -1068,6 +1072,7 @@ fn spawn_event_subscribers(
     exec_backend: ExecutionBackend,
     recorder: Option<RecorderHandle>,
     last_data_timestamp: Arc<AtomicI64>,
+    driver: Arc<String>,
 ) -> Vec<JoinHandle<()>> {
     let mut handles = Vec::new();
     let market_recorder = recorder.clone();
@@ -1083,6 +1088,7 @@ fn spawn_event_subscribers(
     let market_snapshot = market.clone();
     let orchestrator_clone = orchestrator.clone();
     let market_data_tracker = last_data_timestamp.clone();
+    let driver_clone = driver.clone();
     handles.push(tokio::spawn(async move {
         let recorder = market_recorder;
         let mut stream = market_bus.subscribe();
@@ -1144,6 +1150,7 @@ fn spawn_event_subscribers(
                         market_snapshot.clone(),
                         market_bus.clone(),
                         market_data_tracker.clone(),
+                        driver_clone.clone(),
                     )
                     .await
                     {
@@ -1462,7 +1469,7 @@ async fn process_candle_event(
 
 #[allow(clippy::too_many_arguments)]
 async fn process_order_book_event(
-    book: OrderBook,
+    mut book: OrderBook,
     strategy: Arc<Mutex<Box<dyn Strategy>>>,
     strategy_ctx: Arc<Mutex<StrategyContext>>,
     metrics: Arc<LiveMetrics>,
@@ -1470,10 +1477,27 @@ async fn process_order_book_event(
     _market: Arc<Mutex<HashMap<String, MarketSnapshot>>>,
     bus: Arc<EventBus>,
     last_data_timestamp: Arc<AtomicI64>,
+    driver: Arc<String>,
 ) -> Result<()> {
     metrics.update_staleness(0.0);
     alerts.heartbeat().await;
     last_data_timestamp.store(book.timestamp.timestamp(), Ordering::SeqCst);
+    let driver_name = driver.as_str();
+    let local_checksum = if let Some(cs) = book.local_checksum {
+        cs
+    } else {
+        let computed = book.computed_checksum(None);
+        book.local_checksum = Some(computed);
+        computed
+    };
+    if let Some(expected) = book.exchange_checksum {
+        if expected != local_checksum {
+            metrics.inc_checksum_mismatch(driver_name, &book.symbol);
+            alerts
+                .order_book_checksum_mismatch(driver_name, &book.symbol, expected, local_checksum)
+                .await;
+        }
+    }
     {
         let mut ctx = strategy_ctx.lock().await;
         ctx.push_order_book(book.clone());
