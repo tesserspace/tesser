@@ -341,7 +341,6 @@ struct LiveRuntime {
     strategy: Arc<Mutex<Box<dyn Strategy>>>,
     _public_connection: Arc<AtomicBool>,
     _private_connection: Option<Arc<AtomicBool>>,
-    driver: Arc<String>,
 }
 
 struct LiveBootstrap {
@@ -636,7 +635,6 @@ impl LiveRuntime {
             strategy,
             _public_connection: public_connection,
             _private_connection: private_connection,
-            driver,
         })
     }
 

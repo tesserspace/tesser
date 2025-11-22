@@ -75,3 +75,12 @@ cargo run -p tesser-cli -- \
 ```
 
 The output is Arrow's pretty table format, which makes it easy to spot malformed symbols, timestamps, or prices before feeding the data into Pandas/Polars for Phase 2 workflows.
+
+## Order Book Integrity Monitoring
+
+Microstructure strategies (scalpers, peggers, etc.) are only as good as the order book they see. The Bybit and Binance connectors now publish the exchange-provided checksum alongside the locally reconstructed CRC32 so that the runtime can detect silent desyncs:
+
+- `tesser_order_book_checksum_mismatches_total{driver,symbol}` (Prometheus) increments any time the local checksum diverges from what the exchange reports. Wire this into Grafana/Alertmanager to catch data drift before fills look “off”.
+- The live CLI also emits an `Order book checksum mismatch` webhook/alert with the driver, symbol, and both checksums. This reuses the existing alerting config, so no extra setup is required.
+
+If you see repeated mismatches for a symbol, the runtime will already be attempting to resubscribe, but you should still investigate packet loss, fan-out latency, or upstream throttling that may point to a deeper connectivity problem.
