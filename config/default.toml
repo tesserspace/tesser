@@ -64,11 +64,15 @@ api_key = ""
 api_secret = ""
 
 [live]
-state_path = "./reports/live_state.db" # SQLite database for live state
+state_path = "./reports/live_state.db" # Legacy path override for state persistence
 metrics_addr = "127.0.0.1:9100"
 log_path = "./logs/live.json"
 reconciliation_interval_secs = 60
 reconciliation_threshold = 0.001
+
+[live.persistence]
+engine = "sqlite"
+path = "./reports/live_state.db"
 
 [live.alerting]
 webhook_url = ""

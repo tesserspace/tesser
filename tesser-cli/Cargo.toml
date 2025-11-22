@@ -42,6 +42,7 @@ tesser-markets = { version = "0.7.0", path = "../tesser-markets" }
 tesser-strategy = { version = "0.7.0", path = "../tesser-strategy" }
 tesser-broker = { version = "0.7.0", path = "../tesser-broker" }
 tesser-paper = { version = "0.7.0", path = "../connectors/tesser-paper" }
+tesser-journal = { version = "0.7.0", path = "../tesser-journal" }
 tesser-bybit = { version = "0.7.0", path = "../connectors/tesser-bybit", optional = true }
 tesser-binance = { version = "0.7.0", path = "../connectors/tesser-binance", optional = true }
 rust_decimal.workspace = true

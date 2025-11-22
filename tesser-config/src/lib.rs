@@ -59,6 +59,8 @@ pub struct ExchangeConfig {
 pub struct LiveRuntimeConfig {
     #[serde(default = "default_state_path")]
     pub state_path: PathBuf,
+    #[serde(default)]
+    pub persistence: PersistenceConfig,
     #[serde(default = "default_metrics_addr")]
     pub metrics_addr: String,
     #[serde(default = "default_control_addr")]
@@ -109,6 +111,7 @@ impl Default for LiveRuntimeConfig {
     fn default() -> Self {
         Self {
             state_path: default_state_path(),
+            persistence: PersistenceConfig::default(),
             metrics_addr: default_metrics_addr(),
             control_addr: default_control_addr(),
             log_path: default_live_log_path(),
@@ -140,6 +143,48 @@ impl Default for RiskManagementConfig {
     }
 }
 
+impl LiveRuntimeConfig {
+    /// Return persistence settings, preserving legacy `state_path` overrides.
+    pub fn persistence_config(&self) -> PersistenceConfig {
+        self.persistence.with_fallback(&self.state_path)
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PersistenceConfig {
+    #[serde(default = "default_persistence_engine")]
+    pub engine: PersistenceEngine,
+    #[serde(default = "default_state_path")]
+    pub path: PathBuf,
+}
+
+impl Default for PersistenceConfig {
+    fn default() -> Self {
+        Self {
+            engine: default_persistence_engine(),
+            path: default_state_path(),
+        }
+    }
+}
+
+impl PersistenceConfig {
+    /// Resolve the effective path, preferring legacy `live.state_path` overrides when supplied.
+    pub fn with_fallback(&self, fallback_path: &Path) -> Self {
+        let mut cloned = self.clone();
+        if cloned.path == default_state_path() && fallback_path != default_state_path() {
+            cloned.path = fallback_path.to_path_buf();
+        }
+        cloned
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PersistenceEngine {
+    Sqlite,
+    Lmdb,
+}
+
 fn default_data_path() -> PathBuf {
     PathBuf::from("./data")
 }
@@ -168,6 +213,10 @@ fn default_exchange_driver_name() -> String {
 
 fn default_state_path() -> PathBuf {
     PathBuf::from("./reports/live_state.db")
+}
+
+fn default_persistence_engine() -> PersistenceEngine {
+    PersistenceEngine::Sqlite
 }
 
 fn default_metrics_addr() -> String {

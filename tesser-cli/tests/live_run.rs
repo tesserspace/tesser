@@ -25,10 +25,11 @@ use tonic::transport::Channel;
 
 use async_trait::async_trait;
 use tesser_cli::live::{
-    run_live_with_shutdown, ExecutionBackend, LiveSessionSettings, ShutdownSignal,
+    run_live_with_shutdown, ExecutionBackend, LiveSessionSettings, PersistenceSettings,
+    ShutdownSignal,
 };
 use tesser_cli::PublicChannel;
-use tesser_config::{AlertingConfig, ExchangeConfig, RiskManagementConfig};
+use tesser_config::{AlertingConfig, ExchangeConfig, PersistenceEngine, RiskManagementConfig};
 use tesser_core::{AccountBalance, Candle, Interval, Position, Side, Signal, SignalKind, Tick};
 use tesser_portfolio::{SqliteStateRepository, StateRepository};
 use tesser_rpc::proto::control_service_client::ControlServiceClient;
@@ -173,6 +174,7 @@ async fn live_run_executes_round_trip() -> Result<()> {
         .await;
 
     let temp = tempdir()?;
+    let state_path = temp.path().join("live_state.db");
     let markets_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/markets.toml");
     let settings = LiveSessionSettings {
         category: PublicChannel::Linear,
@@ -182,7 +184,7 @@ async fn live_run_executes_round_trip() -> Result<()> {
         fee_bps: Decimal::ZERO,
         history: 8,
         metrics_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
-        state_path: temp.path().join("live_state.db"),
+        persistence: PersistenceSettings::new(PersistenceEngine::Sqlite, state_path.clone()),
         initial_balances: HashMap::from([(String::from("USDT"), Decimal::new(10_000, 0))]),
         reporting_currency: "USDT".into(),
         markets_file: Some(markets_file),
@@ -289,6 +291,7 @@ async fn control_plane_reports_status() -> Result<()> {
 
     let control_addr = next_control_addr();
     let temp = tempdir()?;
+    let state_path = temp.path().join("live_state.db");
     let markets_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/markets.toml");
     let settings = LiveSessionSettings {
         category: PublicChannel::Linear,
@@ -298,7 +301,7 @@ async fn control_plane_reports_status() -> Result<()> {
         fee_bps: Decimal::ZERO,
         history: 8,
         metrics_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
-        state_path: temp.path().join("live_state.db"),
+        persistence: PersistenceSettings::new(PersistenceEngine::Sqlite, state_path.clone()),
         initial_balances: HashMap::from([(String::from("USDT"), Decimal::new(10_000, 0))]),
         reporting_currency: "USDT".into(),
         markets_file: Some(markets_file),
@@ -412,7 +415,7 @@ async fn reconciliation_enters_liquidate_only_on_divergence() -> Result<()> {
         fee_bps: Decimal::ZERO,
         history: 4,
         metrics_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
-        state_path: state_path.clone(),
+        persistence: PersistenceSettings::new(PersistenceEngine::Sqlite, state_path.clone()),
         initial_balances: HashMap::from([(String::from("USDT"), Decimal::new(10_000, 0))]),
         reporting_currency: "USDT".into(),
         markets_file: Some(markets_file),
@@ -559,7 +562,7 @@ async fn alerts_on_rejected_order() -> Result<()> {
         fee_bps: Decimal::ZERO,
         history: 4,
         metrics_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
-        state_path,
+        persistence: PersistenceSettings::new(PersistenceEngine::Sqlite, state_path),
         initial_balances: HashMap::from([(String::from("USDT"), Decimal::new(10_000, 0))]),
         reporting_currency: "USDT".into(),
         markets_file: Some(markets_file),

@@ -4,22 +4,39 @@ use anyhow::{anyhow, Result};
 use chrono::SecondsFormat;
 use rust_decimal::Decimal;
 use serde_json::to_string_pretty;
+use tesser_config::PersistenceEngine;
 use tesser_core::Side;
-use tesser_portfolio::{LiveState, PortfolioState, SqliteStateRepository, StateRepository};
+use tesser_journal::LmdbJournal;
+use tesser_portfolio::{LiveState, PortfolioState, SqliteStateRepository};
 
 const MAX_ORDER_ROWS: usize = 5;
 const MAX_PRICE_ROWS: usize = 8;
 
-pub async fn inspect_state(path: PathBuf, raw: bool) -> Result<()> {
-    let repo = SqliteStateRepository::new(path.clone());
-    let state = tokio::task::spawn_blocking(move || repo.load())
-        .await
-        .map_err(|err| anyhow!("state inspection task failed: {err}"))?
-        .map_err(|err| anyhow!(err.to_string()))?;
+pub async fn inspect_state(path: PathBuf, engine: PersistenceEngine, raw: bool) -> Result<()> {
+    let (state, resolved_path) = match engine {
+        PersistenceEngine::Sqlite => {
+            let repo = SqliteStateRepository::new(path.clone());
+            let state = tokio::task::spawn_blocking(move || repo.load())
+                .await
+                .map_err(|err| anyhow!("state inspection task failed: {err}"))?
+                .map_err(|err| anyhow!(err.to_string()))?;
+            (state, path)
+        }
+        PersistenceEngine::Lmdb => {
+            let journal = LmdbJournal::open(&path)
+                .map_err(|err| anyhow!("failed to open LMDB journal: {err}"))?;
+            let repo = journal.state_repo();
+            let state = tokio::task::spawn_blocking(move || repo.load())
+                .await
+                .map_err(|err| anyhow!("state inspection task failed: {err}"))?
+                .map_err(|err| anyhow!(err.to_string()))?;
+            (state, journal.path().to_path_buf())
+        }
+    };
     if raw {
         println!("{}", to_string_pretty(&state)?);
     } else {
-        print_summary(&path, &state);
+        print_summary(&resolved_path, &state);
     }
     Ok(())
 }

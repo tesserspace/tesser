@@ -1,7 +1,9 @@
 use crate::alerts::sanitize_webhook;
 use crate::analyze;
 use crate::data_validation::{validate_dataset, ValidationConfig, ValidationOutcome};
-use crate::live::{run_live, ExecutionBackend, LiveSessionSettings};
+use crate::live::{
+    run_live, ExecutionBackend, LiveSessionSettings, PersistenceBackend, PersistenceSettings,
+};
 use crate::state;
 use crate::telemetry::init_tracing;
 use crate::PublicChannel;
@@ -32,7 +34,7 @@ use tesser_backtester::{
     MarketEventKind, MarketEventStream,
 };
 use tesser_broker::ExecutionClient;
-use tesser_config::{load_config, AppConfig, RiskManagementConfig};
+use tesser_config::{load_config, AppConfig, PersistenceEngine, RiskManagementConfig};
 use tesser_core::{Candle, DepthUpdate, Interval, OrderBook, OrderBookLevel, Side, Symbol, Tick};
 use tesser_data::analytics::ExecutionAnalysisRequest;
 use tesser_data::download::{BinanceDownloader, BybitDownloader, KlineRequest};
@@ -120,7 +122,7 @@ pub enum LiveCommand {
 
 #[derive(Subcommand)]
 pub enum StateCommand {
-    /// Inspect the SQLite state database
+    /// Inspect the persisted live state snapshot
     Inspect(StateInspectArgs),
 }
 
@@ -162,7 +164,7 @@ pub struct DataDownloadArgs {
 
 #[derive(Args)]
 pub struct StateInspectArgs {
-    /// Path to the SQLite state database (defaults to live.state_path)
+    /// Path to the persisted state (file for sqlite, directory for lmdb)
     #[arg(long)]
     path: Option<PathBuf>,
     /// Emit the raw JSON payload stored inside the database
@@ -187,7 +189,11 @@ impl StateInspectArgs {
     fn resolved_path(&self, config: &AppConfig) -> PathBuf {
         self.path
             .clone()
-            .unwrap_or_else(|| config.live.state_path.clone())
+            .unwrap_or_else(|| config.live.persistence_config().path.clone())
+    }
+
+    fn resolved_engine(&self, config: &AppConfig) -> PersistenceEngine {
+        config.live.persistence_config().engine
     }
 }
 
@@ -534,8 +540,12 @@ pub struct LiveRunArgs {
         alias = "live-exec"
     )]
     exec: ExecutionBackend,
+    /// Path to persisted state (file for sqlite, directory for lmdb)
     #[arg(long)]
     state_path: Option<PathBuf>,
+    /// Persistence backend to use for runtime state (overrides config.live.persistence.engine)
+    #[arg(long, value_enum)]
+    persistence: Option<PersistenceBackend>,
     #[arg(long)]
     metrics_addr: Option<String>,
     #[arg(long)]
@@ -593,12 +603,6 @@ impl LiveRunArgs {
         self.log_path
             .clone()
             .unwrap_or_else(|| config.live.log_path.clone())
-    }
-
-    fn resolved_state_path(&self, config: &AppConfig) -> PathBuf {
-        self.state_path
-            .clone()
-            .unwrap_or_else(|| config.live.state_path.clone())
     }
 
     fn resolved_metrics_addr(&self, config: &AppConfig) -> Result<SocketAddr> {
@@ -759,7 +763,12 @@ async fn handle_data(cmd: DataCommand, config: &AppConfig) -> Result<()> {
 async fn handle_state(cmd: StateCommand, config: &AppConfig) -> Result<()> {
     match cmd {
         StateCommand::Inspect(args) => {
-            state::inspect_state(args.resolved_path(config), args.raw).await?;
+            state::inspect_state(
+                args.resolved_path(config),
+                args.resolved_engine(config),
+                args.raw,
+            )
+            .await?;
         }
     }
     Ok(())
@@ -1054,7 +1063,16 @@ impl LiveRunArgs {
             PublicChannel::from_str(&self.category).map_err(|err| anyhow!(err.to_string()))?;
         let metrics_addr = self.resolved_metrics_addr(config)?;
         let control_addr = self.resolved_control_addr(config)?;
-        let state_path = self.resolved_state_path(config);
+        let persistence_cfg = config.live.persistence_config();
+        let persistence_engine = self
+            .persistence
+            .map(PersistenceEngine::from)
+            .unwrap_or(persistence_cfg.engine);
+        let state_path = self
+            .state_path
+            .clone()
+            .unwrap_or_else(|| persistence_cfg.path.clone());
+        let persistence = PersistenceSettings::new(persistence_engine, state_path);
         let alerting = self.build_alerting(config);
         let history = self.history.max(32);
         let reconciliation_interval = self.reconciliation_interval(config);
@@ -1071,7 +1089,7 @@ impl LiveRunArgs {
             fee_bps: self.fee_bps.max(Decimal::ZERO),
             history,
             metrics_addr,
-            state_path,
+            persistence,
             initial_balances,
             reporting_currency,
             markets_file,
@@ -1093,6 +1111,8 @@ impl LiveRunArgs {
             interval = %self.interval,
             driver = ?settings.driver,
             exec = ?self.exec,
+            persistence_engine = ?settings.persistence.engine,
+            state_path = %settings.persistence.state_path.display(),
             control_addr = %settings.control_addr,
             "starting live session"
         );

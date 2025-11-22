@@ -44,7 +44,7 @@ use tesser_broker::{
 use tesser_bybit::ws::{BybitWsExecution, BybitWsOrder, PrivateMessage};
 #[cfg(feature = "bybit")]
 use tesser_bybit::{register_factory as register_bybit_factory, BybitClient, BybitCredentials};
-use tesser_config::{AlertingConfig, ExchangeConfig, RiskManagementConfig};
+use tesser_config::{AlertingConfig, ExchangeConfig, PersistenceEngine, RiskManagementConfig};
 use tesser_core::{
     AccountBalance, Candle, Fill, Interval, Order, OrderBook, OrderStatus, Position, Price,
     Quantity, Side, Signal, Symbol, Tick,
@@ -55,9 +55,10 @@ use tesser_events::{
     TickEvent,
 };
 use tesser_execution::{
-    BasicRiskChecker, ExecutionEngine, FixedOrderSizer, OrderOrchestrator, PreTradeRiskChecker,
-    RiskContext, RiskLimits, SqliteAlgoStateRepository,
+    AlgoStateRepository, BasicRiskChecker, ExecutionEngine, FixedOrderSizer, OrderOrchestrator,
+    PreTradeRiskChecker, RiskContext, RiskLimits, SqliteAlgoStateRepository, StoredAlgoState,
 };
+use tesser_journal::LmdbJournal;
 use tesser_markets::MarketRegistry;
 use tesser_paper::{PaperExecutionClient, PaperFactory};
 use tesser_portfolio::{
@@ -87,6 +88,22 @@ pub enum ExecutionBackend {
 impl ExecutionBackend {
     fn is_paper(self) -> bool {
         matches!(self, Self::Paper)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum PersistenceBackend {
+    Sqlite,
+    Lmdb,
+}
+
+impl From<PersistenceBackend> for PersistenceEngine {
+    fn from(value: PersistenceBackend) -> Self {
+        match value {
+            PersistenceBackend::Sqlite => PersistenceEngine::Sqlite,
+            PersistenceBackend::Lmdb => PersistenceEngine::Lmdb,
+        }
     }
 }
 
@@ -130,6 +147,36 @@ impl LiveMarketStream for FactoryStreamAdapter {
     }
 }
 
+#[derive(Clone)]
+pub struct PersistenceSettings {
+    pub engine: PersistenceEngine,
+    pub state_path: PathBuf,
+    pub algo_path: PathBuf,
+}
+
+impl PersistenceSettings {
+    fn new(engine: PersistenceEngine, state_path: PathBuf) -> Self {
+        let algo_path = match engine {
+            PersistenceEngine::Sqlite => state_path.with_extension("algos.db"),
+            PersistenceEngine::Lmdb => state_path.clone(),
+        };
+        Self {
+            engine,
+            state_path,
+            algo_path,
+        }
+    }
+
+    fn algo_repo_path(&self) -> &PathBuf {
+        &self.algo_path
+    }
+}
+
+struct PersistenceHandles {
+    state: Arc<dyn StateRepository<Snapshot = LiveState>>,
+    algo: Arc<dyn AlgoStateRepository<State = StoredAlgoState>>,
+}
+
 pub struct LiveSessionSettings {
     pub category: PublicChannel,
     pub interval: Interval,
@@ -138,7 +185,7 @@ pub struct LiveSessionSettings {
     pub fee_bps: Decimal,
     pub history: usize,
     pub metrics_addr: SocketAddr,
-    pub state_path: PathBuf,
+    pub persistence: PersistenceSettings,
     pub initial_balances: HashMap<Symbol, Decimal>,
     pub reporting_currency: Symbol,
     pub markets_file: Option<PathBuf>,
@@ -158,6 +205,34 @@ impl LiveSessionSettings {
         RiskLimits {
             max_order_quantity: self.risk.max_order_quantity.max(Decimal::ZERO),
             max_position_quantity: self.risk.max_position_quantity.max(Decimal::ZERO),
+        }
+    }
+}
+
+fn build_persistence_handles(settings: &LiveSessionSettings) -> Result<PersistenceHandles> {
+    match settings.persistence.engine {
+        PersistenceEngine::Sqlite => {
+            let state_repo: Arc<dyn StateRepository<Snapshot = LiveState>> = Arc::new(
+                SqliteStateRepository::new(settings.persistence.state_path.clone()),
+            );
+            let algo_repo: Arc<dyn AlgoStateRepository<State = StoredAlgoState>> = Arc::new(
+                SqliteAlgoStateRepository::new(settings.persistence.algo_repo_path())?,
+            );
+            Ok(PersistenceHandles {
+                state: state_repo,
+                algo: algo_repo,
+            })
+        }
+        PersistenceEngine::Lmdb => {
+            let journal = Arc::new(LmdbJournal::open(&settings.persistence.state_path)?);
+            let state_repo: Arc<dyn StateRepository<Snapshot = LiveState>> =
+                Arc::new(journal.state_repo());
+            let algo_repo: Arc<dyn AlgoStateRepository<State = StoredAlgoState>> =
+                Arc::new(journal.algo_repo());
+            Ok(PersistenceHandles {
+                state: state_repo,
+                algo: algo_repo,
+            })
         }
     }
 }
@@ -263,23 +338,26 @@ pub async fn run_live_with_shutdown(
         });
     }
 
-    // Create algorithm state repository
-    let algo_repo_path = settings.state_path.with_extension("algos.db");
-    let algo_state_repo = Arc::new(SqliteAlgoStateRepository::new(&algo_repo_path)?);
+    let persistence = build_persistence_handles(&settings)?;
 
     // Create orchestrator with execution engine
     let initial_open_orders = bootstrap
         .as_ref()
         .map(|data| data.open_orders.clone())
         .unwrap_or_default();
-    let orchestrator =
-        OrderOrchestrator::new(Arc::new(execution), algo_state_repo, initial_open_orders).await?;
+    let orchestrator = OrderOrchestrator::new(
+        Arc::new(execution),
+        persistence.algo.clone(),
+        initial_open_orders,
+    )
+    .await?;
 
     let runtime = LiveRuntime::new(
         market_stream,
         strategy,
         symbols,
         orchestrator,
+        persistence.state,
         settings,
         exchange.ws_url.clone(),
         market_registry,
@@ -322,7 +400,7 @@ async fn build_execution_client(
 struct LiveRuntime {
     market: Box<dyn LiveMarketStream>,
     orchestrator: Arc<OrderOrchestrator>,
-    state_repo: Arc<dyn StateRepository>,
+    state_repo: Arc<dyn StateRepository<Snapshot = LiveState>>,
     persisted: Arc<Mutex<LiveState>>,
     event_bus: Arc<EventBus>,
     recorder: Option<ParquetRecorder>,
@@ -356,6 +434,7 @@ impl LiveRuntime {
         mut strategy: Box<dyn Strategy>,
         symbols: Vec<String>,
         orchestrator: OrderOrchestrator,
+        state_repo: Arc<dyn StateRepository<Snapshot = LiveState>>,
         settings: LiveSessionSettings,
         #[cfg_attr(not(feature = "binance"), allow(unused_variables))] exchange_ws_url: String,
         market_registry: Arc<MarketRegistry>,
@@ -366,8 +445,6 @@ impl LiveRuntime {
     ) -> Result<Self> {
         let mut strategy_ctx = StrategyContext::new(settings.history);
         let driver = Arc::new(settings.driver.clone());
-        let state_repo: Arc<dyn StateRepository> =
-            Arc::new(SqliteStateRepository::new(settings.state_path.clone()));
         let mut persisted = match tokio::task::spawn_blocking({
             let repo = state_repo.clone();
             move || repo.load()
@@ -604,7 +681,8 @@ impl LiveRuntime {
             symbols = ?symbols,
             category = ?settings.category,
             metrics_addr = %settings.metrics_addr,
-            state_path = %settings.state_path.display(),
+            state_path = %settings.persistence.state_path.display(),
+            persistence_engine = ?settings.persistence.engine,
             history = settings.history,
             "market stream ready"
         );
@@ -750,7 +828,7 @@ struct ReconciliationContext {
     client: Arc<dyn ExecutionClient>,
     portfolio: Arc<Mutex<Portfolio>>,
     persisted: Arc<Mutex<LiveState>>,
-    state_repo: Arc<dyn StateRepository>,
+    state_repo: Arc<dyn StateRepository<Snapshot = LiveState>>,
     alerts: Arc<AlertManager>,
     metrics: Arc<LiveMetrics>,
     reporting_currency: Symbol,
@@ -761,7 +839,7 @@ struct ReconciliationContextConfig {
     client: Arc<dyn ExecutionClient>,
     portfolio: Arc<Mutex<Portfolio>>,
     persisted: Arc<Mutex<LiveState>>,
-    state_repo: Arc<dyn StateRepository>,
+    state_repo: Arc<dyn StateRepository<Snapshot = LiveState>>,
     alerts: Arc<AlertManager>,
     metrics: Arc<LiveMetrics>,
     reporting_currency: Symbol,
@@ -1065,7 +1143,7 @@ fn spawn_event_subscribers(
     metrics: Arc<LiveMetrics>,
     alerts: Arc<AlertManager>,
     market: Arc<Mutex<HashMap<String, MarketSnapshot>>>,
-    state_repo: Arc<dyn StateRepository>,
+    state_repo: Arc<dyn StateRepository<Snapshot = LiveState>>,
     persisted: Arc<Mutex<LiveState>>,
     exec_backend: ExecutionBackend,
     recorder: Option<RecorderHandle>,
@@ -1297,7 +1375,7 @@ async fn process_tick_event(
     alerts: Arc<AlertManager>,
     market: Arc<Mutex<HashMap<String, MarketSnapshot>>>,
     portfolio: Arc<Mutex<Portfolio>>,
-    state_repo: Arc<dyn StateRepository>,
+    state_repo: Arc<dyn StateRepository<Snapshot = LiveState>>,
     persisted: Arc<Mutex<LiveState>>,
     bus: Arc<EventBus>,
     last_data_timestamp: Arc<AtomicI64>,
@@ -1381,7 +1459,7 @@ async fn process_candle_event(
     portfolio: Arc<Mutex<Portfolio>>,
     orchestrator: Arc<OrderOrchestrator>,
     exec_backend: ExecutionBackend,
-    state_repo: Arc<dyn StateRepository>,
+    state_repo: Arc<dyn StateRepository<Snapshot = LiveState>>,
     persisted: Arc<Mutex<LiveState>>,
     bus: Arc<EventBus>,
     last_data_timestamp: Arc<AtomicI64>,
@@ -1565,7 +1643,7 @@ async fn process_fill_event(
     orchestrator: Arc<OrderOrchestrator>,
     metrics: Arc<LiveMetrics>,
     alerts: Arc<AlertManager>,
-    state_repo: Arc<dyn StateRepository>,
+    state_repo: Arc<dyn StateRepository<Snapshot = LiveState>>,
     persisted: Arc<Mutex<LiveState>>,
 ) -> Result<()> {
     let mut drawdown_triggered = false;
@@ -1642,7 +1720,7 @@ async fn process_order_update_event(
     order: Order,
     orchestrator: Arc<OrderOrchestrator>,
     alerts: Arc<AlertManager>,
-    state_repo: Arc<dyn StateRepository>,
+    state_repo: Arc<dyn StateRepository<Snapshot = LiveState>>,
     persisted: Arc<Mutex<LiveState>>,
 ) -> Result<()> {
     orchestrator.on_order_update(&order);
@@ -1706,7 +1784,7 @@ async fn emit_signals(
 }
 
 async fn persist_state(
-    repo: Arc<dyn StateRepository>,
+    repo: Arc<dyn StateRepository<Snapshot = LiveState>>,
     persisted: Arc<Mutex<LiveState>>,
     strategy: Option<Arc<Mutex<Box<dyn Strategy>>>>,
 ) -> Result<()> {
