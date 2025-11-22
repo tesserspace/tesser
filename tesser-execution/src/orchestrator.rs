@@ -5,7 +5,7 @@ use chrono::Duration;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, Instant};
 use uuid::Uuid;
@@ -70,6 +70,7 @@ impl OrderOrchestrator {
     pub async fn new(
         execution_engine: Arc<ExecutionEngine>,
         state_repo: Arc<dyn AlgoStateRepository>,
+        open_orders: Vec<Order>,
     ) -> Result<Self> {
         let algorithms = Arc::new(Mutex::new(HashMap::new()));
         let order_mapping = Arc::new(Mutex::new(HashMap::new()));
@@ -87,6 +88,7 @@ impl OrderOrchestrator {
 
         // Restore algorithms from persistent state
         orchestrator.restore_algorithms().await?;
+        orchestrator.adopt_open_orders(open_orders).await?;
 
         Ok(orchestrator)
     }
@@ -137,6 +139,79 @@ impl OrderOrchestrator {
         Ok(())
     }
 
+    async fn adopt_open_orders(&self, open_orders: Vec<Order>) -> Result<()> {
+        if open_orders.is_empty() {
+            return Ok(());
+        }
+
+        let mut touched_algorithms = HashSet::new();
+
+        for order in open_orders {
+            if !Self::is_active_order_status(order.status) {
+                continue;
+            }
+            let Some(client_id) = order.request.client_order_id.clone() else {
+                continue;
+            };
+            let Some(algo_id) = Self::extract_algo_id(&client_id) else {
+                continue;
+            };
+
+            let mut should_register = false;
+            {
+                let mut algorithms = self.algorithms.lock().unwrap();
+                if let Some(algo) = algorithms.get_mut(&algo_id) {
+                    if let Err(err) = algo.bind_child_order(order.clone()) {
+                        tracing::warn!(
+                            algo_id = %algo_id,
+                            order_id = %order.id,
+                            error = %err,
+                            "failed to bind recovered child order"
+                        );
+                    } else {
+                        should_register = true;
+                        touched_algorithms.insert(algo_id);
+                    }
+                } else {
+                    tracing::debug!(
+                        algo_id = %algo_id,
+                        order_id = %order.id,
+                        "no matching algorithm found for recovered order"
+                    );
+                }
+            }
+
+            if !should_register {
+                continue;
+            }
+
+            {
+                let mut mapping = self.order_mapping.lock().unwrap();
+                mapping.insert(order.id.clone(), algo_id);
+            }
+            self.register_pending(&order);
+            tracing::info!(
+                algo_id = %algo_id,
+                order_id = %order.id,
+                symbol = %order.request.symbol,
+                status = ?order.status,
+                "adopted in-flight child order"
+            );
+        }
+
+        for algo_id in touched_algorithms {
+            if let Err(err) = self.persist_algo_state(&algo_id).await {
+                tracing::error!(
+                    algo_id = %algo_id,
+                    error = %err,
+                    "failed to persist algorithm state after adoption"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     fn decode_stored_state(value: serde_json::Value) -> StoredAlgoState {
         serde_json::from_value::<StoredAlgoState>(value.clone()).unwrap_or(StoredAlgoState {
             algo_type: "TWAP".to_string(),
@@ -167,6 +242,36 @@ impl OrderOrchestrator {
     fn cached_risk_context(&self, symbol: &str) -> Option<RiskContext> {
         let contexts = self.risk_contexts.lock().unwrap();
         contexts.get(symbol).copied()
+    }
+
+    fn is_active_order_status(status: OrderStatus) -> bool {
+        matches!(
+            status,
+            OrderStatus::PendingNew | OrderStatus::Accepted | OrderStatus::PartiallyFilled
+        )
+    }
+
+    fn extract_algo_id(client_id: &str) -> Option<Uuid> {
+        if let Some(rest) = client_id.strip_prefix("twap-") {
+            let (id_part, _) = rest.split_once("-slice-")?;
+            return Uuid::parse_str(id_part).ok();
+        }
+        if let Some(rest) = client_id.strip_prefix("iceberg-") {
+            let (id_part, _) = rest.rsplit_once('-')?;
+            return Uuid::parse_str(id_part).ok();
+        }
+        if let Some(rest) = client_id.strip_prefix("peg-") {
+            let (id_part, _) = rest.rsplit_once('-')?;
+            return Uuid::parse_str(id_part).ok();
+        }
+        if let Some(rest) = client_id.strip_prefix("vwap-") {
+            let (id_part, _) = rest.rsplit_once('-')?;
+            return Uuid::parse_str(id_part).ok();
+        }
+        if let Some(rest) = client_id.strip_prefix("sniper-") {
+            return Uuid::parse_str(rest).ok();
+        }
+        None
     }
 
     /// Handle a signal from a strategy.
@@ -244,9 +349,14 @@ impl OrderOrchestrator {
             return Ok(());
         }
 
-        // Use a sensible default for number of slices
+        // Use a sensible default for number of slices (seconds granularity for shorter runs)
         // TODO: Make this configurable
-        let num_slices = std::cmp::min(30, duration.num_minutes() as u32).max(1);
+        let mut slice_guess = duration.num_minutes() as u32;
+        if slice_guess == 0 {
+            let seconds = duration.num_seconds().max(1);
+            slice_guess = seconds as u32;
+        }
+        let num_slices = slice_guess.max(1).min(30);
 
         // Create and start the algorithm
         let mut algo = TwapAlgorithm::new(signal, total_quantity, duration, num_slices)?;

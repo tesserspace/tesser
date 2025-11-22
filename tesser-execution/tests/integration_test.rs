@@ -70,7 +70,7 @@ async fn test_orchestrator_integration() {
     let algo_state_repo = Arc::new(SqliteAlgoStateRepository::new(temp_path).unwrap());
 
     // Create orchestrator
-    let orchestrator = OrderOrchestrator::new(execution_engine, algo_state_repo)
+    let orchestrator = OrderOrchestrator::new(execution_engine, algo_state_repo, Vec::new())
         .await
         .unwrap();
 
@@ -128,7 +128,7 @@ async fn orchestrator_restores_from_sqlite() {
     let risk_checker = Arc::new(NoopRiskChecker);
     let engine = Arc::new(ExecutionEngine::new(client, sizer, risk_checker));
 
-    let orchestrator = OrderOrchestrator::new(engine.clone(), repo.clone())
+    let orchestrator = OrderOrchestrator::new(engine.clone(), repo.clone(), Vec::new())
         .await
         .unwrap();
     let signal =
@@ -146,6 +146,8 @@ async fn orchestrator_restores_from_sqlite() {
 
     drop(orchestrator);
 
-    let restored = OrderOrchestrator::new(engine, repo).await.unwrap();
+    let restored = OrderOrchestrator::new(engine, repo, Vec::new())
+        .await
+        .unwrap();
     assert_eq!(restored.active_algorithms_count(), 1);
 }

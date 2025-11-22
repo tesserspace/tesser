@@ -51,6 +51,11 @@ pub trait ExecutionAlgorithm: Send + Sync {
     /// Called when a fill is received for one of this algorithm's child orders.
     fn on_fill(&mut self, fill: &Fill) -> Result<Vec<ChildOrderRequest>>;
 
+    /// Bind a previously placed child order to the algorithm (used during recovery).
+    fn bind_child_order(&mut self, _order: Order) -> Result<()> {
+        Ok(())
+    }
+
     /// Called when market tick data is received (mainly for VWAP algorithms).
     fn on_tick(&mut self, tick: &Tick) -> Result<Vec<ChildOrderRequest>>;
 

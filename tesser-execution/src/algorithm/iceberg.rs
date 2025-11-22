@@ -2,8 +2,9 @@ use anyhow::{bail, Result};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use tesser_core::{
-    Order, OrderRequest, OrderType, Price, Quantity, Side, Signal, Tick, TimeInForce,
+    Order, OrderRequest, OrderStatus, OrderType, Price, Quantity, Side, Signal, Tick, TimeInForce,
 };
+use tracing::info;
 use uuid::Uuid;
 
 use super::{AlgoStatus, ChildOrderRequest, ExecutionAlgorithm};
@@ -129,6 +130,22 @@ impl IcebergAlgorithm {
             self.state.status = "Completed".into();
         }
     }
+
+    fn sequence_from_client_id(&self, client_id: &str) -> Option<u32> {
+        let rest = client_id.strip_prefix("iceberg-")?;
+        let (id_part, seq_part) = rest.rsplit_once('-')?;
+        if id_part != self.state.id.to_string() {
+            return None;
+        }
+        seq_part.parse().ok()
+    }
+
+    fn is_active_status(status: OrderStatus) -> bool {
+        matches!(
+            status,
+            OrderStatus::PendingNew | OrderStatus::Accepted | OrderStatus::PartiallyFilled
+        )
+    }
 }
 
 impl ExecutionAlgorithm for IcebergAlgorithm {
@@ -185,6 +202,37 @@ impl ExecutionAlgorithm for IcebergAlgorithm {
 
     fn cancel(&mut self) -> Result<()> {
         self.state.status = "Cancelled".into();
+        Ok(())
+    }
+
+    fn bind_child_order(&mut self, order: Order) -> Result<()> {
+        if !Self::is_active_status(order.status) {
+            return Ok(());
+        }
+        let Some(client_id) = order.request.client_order_id.as_deref() else {
+            return Ok(());
+        };
+        let Some(seq) = self.sequence_from_client_id(client_id) else {
+            return Ok(());
+        };
+
+        self.state.next_child_seq = self.state.next_child_seq.max(seq);
+        let remaining = (order.request.quantity.abs() - order.filled_quantity).max(Decimal::ZERO);
+        self.state.active_child = Some(ActiveChild {
+            order_id: order.id.clone(),
+            remaining,
+        });
+        if !matches!(self.status(), AlgoStatus::Working) {
+            self.state.status = "Working".into();
+        }
+
+        info!(
+            id = %self.state.id,
+            order_id = %order.id,
+            seq = seq,
+            remaining = %remaining,
+            "bound Iceberg child order after recovery"
+        );
         Ok(())
     }
 
