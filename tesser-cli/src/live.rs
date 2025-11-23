@@ -1250,6 +1250,9 @@ fn spawn_event_subscribers(
                     }
                 }
                 Ok(Event::OrderBook(evt)) => {
+                    if let Some(handle) = recorder.as_ref() {
+                        handle.record_order_book(evt.order_book.clone());
+                    }
                     if let Err(err) = process_order_book_event(
                         evt.order_book,
                         market_strategy.clone(),

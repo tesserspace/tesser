@@ -2,12 +2,14 @@
 
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpListener};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
+use arrow::datatypes::{DataType, TimeUnit};
 use chrono::{Duration as ChronoDuration, Utc};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rust_decimal::Decimal;
 use serde_json::Value as JsonValue;
 use tempfile::{tempdir, TempDir};
@@ -22,8 +24,10 @@ use tesser_cli::live::{
 use tesser_cli::PublicChannel;
 use tesser_config::{AlertingConfig, ExchangeConfig, PersistenceEngine, RiskManagementConfig};
 use tesser_core::{
-    AccountBalance, Candle, ExecutionHint, Interval, Side, Signal, SignalKind, Tick,
+    AccountBalance, Candle, ExecutionHint, Interval, OrderBook, OrderBookLevel, Side, Signal,
+    SignalKind, Tick,
 };
+use tesser_data::recorder::{ParquetRecorder, RecorderConfig};
 use tesser_rpc::proto::control_service_client::ControlServiceClient;
 use tesser_rpc::proto::{event::Payload, Event, MonitorRequest};
 use tesser_strategy::{Strategy, StrategyContext, StrategyResult};
@@ -36,6 +40,63 @@ fn next_control_addr() -> SocketAddr {
     let addr = listener.local_addr().expect("local addr");
     drop(listener);
     addr
+}
+
+fn find_parquet_file(dir: &Path) -> Option<PathBuf> {
+    if !dir.exists() {
+        return None;
+    }
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&path) {
+            for entry in entries.flatten() {
+                if let Ok(metadata) = entry.metadata() {
+                    if metadata.is_dir() {
+                        stack.push(entry.path());
+                    } else if entry
+                        .path()
+                        .extension()
+                        .map(|ext| ext == "parquet")
+                        .unwrap_or(false)
+                    {
+                        return Some(entry.path());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn assert_list_of_levels(field: &arrow::datatypes::Field) {
+    match field.data_type() {
+        DataType::List(inner) => match inner.data_type() {
+            DataType::Struct(children) => {
+                assert_decimal_child(children, "price");
+                assert_decimal_child(children, "size");
+            }
+            other => panic!(
+                "expected struct items for {}, got {:?}",
+                field.name(),
+                other
+            ),
+        },
+        other => panic!(
+            "expected list of structs for column {}, got {:?}",
+            field.name(),
+            other
+        ),
+    }
+}
+
+fn assert_decimal_child(children: &arrow::datatypes::Fields, name: &str) {
+    let (_, child) = children
+        .find(name)
+        .unwrap_or_else(|| panic!("missing '{name}' field"));
+    match child.data_type() {
+        DataType::Decimal128(_, _) => {}
+        other => panic!("expected decimal for {name}, got {:?}", other),
+    }
 }
 
 async fn connect_control_client(addr: SocketAddr) -> Result<ControlServiceClient<Channel>> {
@@ -209,6 +270,81 @@ async fn monitor_streams_signal_events_and_records() -> Result<()> {
     );
     drop(tempdir);
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn flight_recorder_writes_order_books() -> Result<()> {
+    let temp = tempdir()?;
+    let config = RecorderConfig {
+        root: temp.path().to_path_buf(),
+        max_buffered_rows: 1,
+        flush_interval: Duration::from_millis(10),
+        max_rows_per_file: 16,
+        channel_capacity: 4,
+    };
+    let recorder = ParquetRecorder::spawn(config).await?;
+    let handle = recorder.handle();
+    handle.record_order_book(OrderBook {
+        symbol: SYMBOL.into(),
+        bids: vec![OrderBookLevel {
+            price: Decimal::new(20_000, 0),
+            size: Decimal::new(1, 0),
+        }],
+        asks: vec![OrderBookLevel {
+            price: Decimal::new(20_010, 0),
+            size: Decimal::new(2, 0),
+        }],
+        timestamp: Utc::now(),
+        exchange_checksum: Some(123),
+        local_checksum: Some(123),
+    });
+    sleep(Duration::from_millis(50)).await;
+    drop(handle);
+    recorder.shutdown().await?;
+
+    let book_dir = temp.path().join("order_books");
+    let file_path = find_parquet_file(&book_dir)
+        .ok_or_else(|| anyhow!("flight recorder did not persist order book parquet file"))?;
+
+    let file = std::fs::File::open(&file_path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    let schema = builder.schema();
+    let ts_field = schema
+        .field_with_name("timestamp")
+        .context("missing timestamp column")?;
+    assert!(
+        matches!(
+            ts_field.data_type(),
+            DataType::Timestamp(TimeUnit::Nanosecond, None)
+        ),
+        "unexpected timestamp type: {:?}",
+        ts_field.data_type()
+    );
+    let symbol_field = schema
+        .field_with_name("symbol")
+        .context("missing symbol column")?;
+    assert!(
+        matches!(symbol_field.data_type(), DataType::Utf8),
+        "unexpected symbol type: {:?}",
+        symbol_field.data_type()
+    );
+    let bids_field = schema
+        .field_with_name("bids")
+        .context("missing bids column")?;
+    let asks_field = schema
+        .field_with_name("asks")
+        .context("missing asks column")?;
+    assert_list_of_levels(bids_field);
+    assert_list_of_levels(asks_field);
+
+    let mut reader = builder.build()?;
+    let batch = reader
+        .next()
+        .transpose()?
+        .expect("order book batch missing");
+    assert!(batch.num_rows() > 0, "order book batch empty");
+    drop(temp);
     Ok(())
 }
 
