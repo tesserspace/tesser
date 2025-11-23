@@ -25,6 +25,8 @@ csv.workspace = true
 arrow.workspace = true
 parquet.workspace = true
 once_cell.workspace = true
+tokio-util = { version = "0.7", features = ["io"] }
+async-compression = { version = "0.4", features = ["tokio", "gzip"] }
 
 [dev-dependencies]
 tempfile = "3.10"

@@ -5,7 +5,7 @@ description: Acquire, validate, and store high quality market data.
 
 ## Sources
 
-- **Bybit/Binance Historical** – Use the venue’s public bulk download API or trigger `tesser-cli data download` with your API key for authenticated ranges.
+- **Bybit/Binance Historical** – Use `tesser-cli data download` for candles or `tesser-cli data download-trades` for tick data. When you need months of Bybit trades, pass `--source bybit-public --partition-by-day --resume` to stream the public archive without re-downloading finished partitions.
 - **Custom Feeds** – Drop CSV/JSONL files under `data/` and point backtests to them via `--data`.
 
 ## Validation
@@ -23,7 +23,7 @@ The validator detects:
 
 ## Storage
 
-- CSV is the default interchange format.
-- Parquet support is underway; the CLI already exposes `data convert --to parquet` so you can try it today for analytics workloads.
+- CSV is the default interchange format for candles and quick diagnostics.
+- Tick downloads are written as Parquet using the exact schema produced by the flight recorder, so the backtester can consume them without conversion.
 
 Keep raw downloads immutable and derive normalized datasets via scripts in `research/` so simulations remain reproducible.
