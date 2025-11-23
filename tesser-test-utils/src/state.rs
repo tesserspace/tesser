@@ -7,8 +7,8 @@ use rust_decimal::Decimal;
 use tokio::sync::{mpsc, Mutex};
 
 use tesser_core::{
-    AccountBalance, Candle, Fill, Order, OrderId, OrderStatus, Position, Price, Quantity, Side,
-    Symbol, Tick,
+    AccountBalance, AssetId, Candle, Fill, Order, OrderId, OrderStatus, Position, Price,
+    Quantity, Side, Symbol, Tick,
 };
 
 use crate::scenario::ScenarioManager;
@@ -39,7 +39,7 @@ pub(crate) struct Inner {
 #[derive(Clone)]
 pub struct AccountState {
     pub api_secret: String,
-    pub balances: HashMap<String, AccountBalance>,
+    pub balances: HashMap<AssetId, AccountBalance>,
     pub positions: HashMap<Symbol, Position>,
     pub executions: VecDeque<Fill>,
     pub orders: HashMap<OrderId, Order>,
@@ -52,7 +52,7 @@ impl AccountState {
             balances: config
                 .balances
                 .into_iter()
-                .map(|balance| (balance.currency.clone(), balance))
+                .map(|balance| (balance.asset, balance))
                 .collect(),
             positions: config
                 .positions
@@ -158,11 +158,13 @@ impl AccountState {
     }
 
     fn update_balances(&mut self, fill: &Fill) {
+        let quote_asset = AssetId::from(DEFAULT_QUOTE_CURRENCY);
         let quote = self
             .balances
-            .entry(DEFAULT_QUOTE_CURRENCY.to_string())
+            .entry(quote_asset)
             .or_insert(AccountBalance {
-                currency: DEFAULT_QUOTE_CURRENCY.into(),
+                exchange: quote_asset.exchange,
+                asset: quote_asset,
                 total: Decimal::ZERO,
                 available: Decimal::ZERO,
                 updated_at: Utc::now(),
@@ -200,7 +202,7 @@ impl AccountState {
         self.positions.values().cloned().collect()
     }
 
-    pub fn open_orders_snapshot(&self, symbol: Option<&str>) -> Vec<Order> {
+    pub fn open_orders_snapshot(&self, symbol: Option<Symbol>) -> Vec<Order> {
         self.orders
             .values()
             .filter(|order| {
@@ -548,6 +550,7 @@ impl MockExchangeState {
     }
 
     pub async fn open_orders(&self, api_key: &str, symbol: Option<&str>) -> Result<Vec<Order>> {
+        let symbol = symbol.map(Symbol::from);
         self.with_account(api_key, |account| Ok(account.open_orders_snapshot(symbol)))
             .await
     }

@@ -15,7 +15,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 use tracing::warn;
 
-use tesser_core::Side;
+use tesser_core::{Side, Symbol};
 
 use crate::state::{MockExchangeState, PrivateMessage};
 
@@ -234,8 +234,9 @@ async fn stream_trades(
     symbol: String,
     tx: mpsc::UnboundedSender<Message>,
 ) {
+    let symbol_id: Symbol = symbol.as_str().into();
     while let Some(tick) = state.next_tick().await {
-        if tick.symbol != symbol {
+        if tick.symbol != symbol_id {
             continue;
         }
         let payload = json!({
@@ -245,7 +246,7 @@ async fn stream_trades(
             "ts": tick.exchange_timestamp.timestamp_millis(),
             "data": [{
                 "T": tick.exchange_timestamp.timestamp_millis(),
-                "s": tick.symbol,
+                "s": tick.symbol.to_string(),
                 "S": match tick.side { Side::Buy => "Buy", Side::Sell => "Sell" },
                 "v": decimal_to_string(tick.size),
                 "p": decimal_to_string(tick.price),
@@ -265,8 +266,9 @@ async fn stream_klines(
     interval: String,
     tx: mpsc::UnboundedSender<Message>,
 ) {
+    let symbol_id: Symbol = symbol.as_str().into();
     while let Some(candle) = state.next_candle().await {
-        if candle.symbol != symbol {
+        if candle.symbol != symbol_id {
             continue;
         }
         let payload = json!({

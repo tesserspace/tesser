@@ -11,8 +11,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use rust_decimal::Decimal;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tesser_core::{
-    AccountBalance, Cash, CashBook, Fill, Instrument, InstrumentKind, Order, Position, Price,
-    Quantity, Side, Symbol,
+    AccountBalance, AssetId, Cash, CashBook, Fill, Instrument, InstrumentKind, Order, Position,
+    Price, Quantity, Side, Symbol,
 };
 use tesser_markets::MarketRegistry;
 use thiserror::Error;
@@ -34,18 +34,18 @@ pub enum PortfolioError {
 /// Configuration used when instantiating a portfolio.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PortfolioConfig {
-    pub initial_balances: HashMap<Symbol, Price>,
-    pub reporting_currency: Symbol,
+    pub initial_balances: HashMap<AssetId, Price>,
+    pub reporting_currency: AssetId,
     pub max_drawdown: Option<Decimal>,
 }
 
 impl Default for PortfolioConfig {
     fn default() -> Self {
         let mut balances = HashMap::new();
-        balances.insert("USDT".to_string(), Decimal::from(10_000));
+        balances.insert(AssetId::from("USDT"), Decimal::from(10_000));
         Self {
             initial_balances: balances,
-            reporting_currency: "USDT".into(),
+            reporting_currency: AssetId::from("USDT"),
             max_drawdown: None,
         }
     }
@@ -55,7 +55,7 @@ impl Default for PortfolioConfig {
 pub struct Portfolio {
     positions: HashMap<Symbol, Position>,
     balances: CashBook,
-    reporting_currency: Symbol,
+    reporting_currency: AssetId,
     initial_equity: Price,
     drawdown_limit: Option<Decimal>,
     peak_equity: Price,
@@ -70,7 +70,7 @@ impl Portfolio {
         let mut balances = CashBook::new();
         for (currency, amount) in &config.initial_balances {
             balances.upsert(Cash {
-                currency: currency.clone(),
+                currency: *currency,
                 quantity: *amount,
                 conversion_rate: if currency == &config.reporting_currency {
                     Decimal::ONE
@@ -81,9 +81,9 @@ impl Portfolio {
         }
         balances
             .0
-            .entry(config.reporting_currency.clone())
+            .entry(config.reporting_currency)
             .or_insert(Cash {
-                currency: config.reporting_currency.clone(),
+                currency: config.reporting_currency,
                 quantity: Decimal::ZERO,
                 conversion_rate: Decimal::ONE,
             });
@@ -113,14 +113,14 @@ impl Portfolio {
             if position.quantity.is_zero() {
                 continue;
             }
-            position_map.insert(position.symbol.clone(), position);
+            position_map.insert(position.symbol, position);
         }
         let mut cash_book = CashBook::new();
         for balance in balances {
             cash_book.upsert(Cash {
-                currency: balance.currency.clone(),
+                currency: balance.asset,
                 quantity: balance.available,
-                conversion_rate: if balance.currency == portfolio.reporting_currency {
+                conversion_rate: if balance.asset == portfolio.reporting_currency {
                     Decimal::ONE
                 } else {
                     Decimal::ZERO
@@ -129,9 +129,9 @@ impl Portfolio {
         }
         cash_book
             .0
-            .entry(portfolio.reporting_currency.clone())
+            .entry(portfolio.reporting_currency)
             .or_insert(Cash {
-                currency: portfolio.reporting_currency.clone(),
+                currency: portfolio.reporting_currency,
                 quantity: Decimal::ZERO,
                 conversion_rate: Decimal::ONE,
             });
@@ -226,8 +226,9 @@ impl Portfolio {
 
     /// Retrieve a position snapshot for a symbol.
     #[must_use]
-    pub fn position(&self, symbol: &str) -> Option<&Position> {
-        self.positions.get(symbol)
+    pub fn position(&self, symbol: impl Into<Symbol>) -> Option<&Position> {
+        let symbol = symbol.into();
+        self.positions.get(&symbol)
     }
 
     /// Total net asset value (cash + unrealized PnL).
@@ -267,9 +268,10 @@ impl Portfolio {
 
     /// Signed position quantity helper (long positive, short negative).
     #[must_use]
-    pub fn signed_position_qty(&self, symbol: &str) -> Quantity {
+    pub fn signed_position_qty(&self, symbol: impl Into<Symbol>) -> Quantity {
+        let symbol = symbol.into();
         self.positions
-            .get(symbol)
+            .get(&symbol)
             .map(|position| match position.side {
                 Some(Side::Buy) => position.quantity,
                 Some(Side::Sell) => -position.quantity,
@@ -300,7 +302,7 @@ impl Portfolio {
         PortfolioState {
             positions: self.positions.clone(),
             balances: self.balances.clone(),
-            reporting_currency: self.reporting_currency.clone(),
+            reporting_currency: self.reporting_currency,
             initial_equity: self.initial_equity,
             drawdown_limit: self.drawdown_limit,
             peak_equity: self.peak_equity,
@@ -329,23 +331,26 @@ impl Portfolio {
             liquidate_only: state.liquidate_only,
             market_registry: registry,
         };
-        let reporting = portfolio.reporting_currency.clone();
+        let reporting = portfolio.reporting_currency;
         portfolio.ensure_currency(&reporting);
-        portfolio
-            .balances
-            .update_conversion_rate(&reporting, Decimal::ONE);
+        portfolio.balances.update_conversion_rate(reporting, Decimal::ONE);
         portfolio.update_drawdown_state();
         portfolio
     }
 
     /// Refresh mark-to-market pricing and conversion rates for a symbol.
-    pub fn update_market_data(&mut self, symbol: &str, price: Price) -> PortfolioResult<bool> {
+    pub fn update_market_data(
+        &mut self,
+        symbol: impl Into<Symbol>,
+        price: Price,
+    ) -> PortfolioResult<bool> {
+        let symbol = symbol.into();
         let instrument = self
             .market_registry
             .get(symbol)
-            .ok_or_else(|| PortfolioError::UnknownSymbol(symbol.to_string()))?;
+            .ok_or_else(|| PortfolioError::UnknownSymbol(symbol))?;
         let mut updated = false;
-        if let Some(position) = self.positions.get_mut(symbol) {
+        if let Some(position) = self.positions.get_mut(&symbol) {
             update_unrealized(position, &instrument, price);
             updated = true;
         }
@@ -415,9 +420,10 @@ impl Portfolio {
         }
     }
 
-    fn ensure_currency(&mut self, currency: &str) {
-        self.balances.0.entry(currency.to_string()).or_insert(Cash {
-            currency: currency.to_string(),
+    fn ensure_currency(&mut self, currency: impl Into<AssetId>) {
+        let currency = currency.into();
+        self.balances.0.entry(currency).or_insert(Cash {
+            currency,
             quantity: Decimal::ZERO,
             conversion_rate: if currency == self.reporting_currency {
                 Decimal::ONE
@@ -533,7 +539,7 @@ fn update_unrealized(position: &mut Position, instrument: &Instrument, price: Pr
 pub struct PortfolioState {
     pub positions: HashMap<Symbol, Position>,
     pub balances: CashBook,
-    pub reporting_currency: Symbol,
+    pub reporting_currency: AssetId,
     pub initial_equity: Price,
     pub drawdown_limit: Option<Decimal>,
     pub peak_equity: Price,
@@ -545,7 +551,7 @@ pub struct PortfolioState {
 pub struct LiveState {
     pub portfolio: Option<PortfolioState>,
     pub open_orders: Vec<Order>,
-    pub last_prices: HashMap<String, Price>,
+    pub last_prices: HashMap<Symbol, Price>,
     pub last_candle_ts: Option<DateTime<Utc>>,
     pub strategy_state: Option<serde_json::Value>,
 }
