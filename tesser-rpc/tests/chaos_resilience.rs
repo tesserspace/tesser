@@ -51,6 +51,12 @@ impl StrategyService for ResilientMockStrategy {
             take_profit: None,
             execution_hint: None,
             note,
+            id: format!("mock-signal-{}", generation),
+            generated_at: Some(prost_types::Timestamp {
+                seconds: 0,
+                nanos: 0,
+            }),
+            metadata: String::new(),
         };
 
         Ok(Response::new(SignalList {

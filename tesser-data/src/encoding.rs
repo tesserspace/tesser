@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use arrow::array::{
-    ArrayRef, Decimal128Builder, Int8Builder, StringBuilder, TimestampNanosecondBuilder,
+    ArrayRef, Decimal128Builder, Float64Builder, Int8Builder, StringBuilder,
+    TimestampNanosecondBuilder,
 };
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use arrow::record_batch::RecordBatch;
@@ -11,9 +12,13 @@ use chrono::{DateTime, Utc};
 use once_cell::sync::Lazy;
 use rust_decimal::prelude::RoundingStrategy;
 use rust_decimal::Decimal;
+use serde_json::{json, Map};
 use tracing::warn;
 
-use tesser_core::{Candle, Fill, Interval, Order, OrderStatus, OrderType, Tick, TimeInForce};
+use tesser_core::{
+    Candle, ExecutionHint, Fill, Interval, Order, OrderStatus, OrderType, Signal, SignalKind, Tick,
+    TimeInForce,
+};
 
 const DECIMAL_PRECISION: u8 = 38;
 const DECIMAL_SCALE: i8 = 18;
@@ -105,6 +110,19 @@ static ORDER_SCHEMA: Lazy<SchemaRef> = Lazy::new(|| {
     ]))
 });
 
+static SIGNAL_SCHEMA: Lazy<SchemaRef> = Lazy::new(|| {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("symbol", DataType::Utf8, false),
+        Field::new("kind", DataType::Utf8, false),
+        Field::new("confidence", DataType::Float64, false),
+        decimal_field("stop_loss", true),
+        decimal_field("take_profit", true),
+        timestamp_field("generated_at"),
+        Field::new("metadata", DataType::Utf8, true),
+    ]))
+});
+
 /// Returns the schema used when encoding ticks.
 pub fn tick_schema() -> SchemaRef {
     TICK_SCHEMA.clone()
@@ -123,6 +141,11 @@ pub fn fill_schema() -> SchemaRef {
 /// Returns the schema used when encoding orders.
 pub fn order_schema() -> SchemaRef {
     ORDER_SCHEMA.clone()
+}
+
+/// Returns the schema used when encoding signals.
+pub fn signal_schema() -> SchemaRef {
+    SIGNAL_SCHEMA.clone()
 }
 
 /// Converts a slice of ticks into a [`RecordBatch`].
@@ -307,6 +330,47 @@ pub fn orders_to_batch(rows: &[Order]) -> Result<RecordBatch> {
     RecordBatch::try_new(order_schema(), columns).context("failed to build order batch")
 }
 
+/// Converts a slice of signals into a [`RecordBatch`].
+pub fn signals_to_batch(rows: &[Signal]) -> Result<RecordBatch> {
+    let capacity = rows.len();
+    let mut ids = string_builder(capacity);
+    let mut symbols = string_builder(capacity);
+    let mut kinds = string_builder(capacity);
+    let mut confidences = Float64Builder::with_capacity(capacity);
+    let mut stop_losses = decimal_builder(capacity);
+    let mut take_profits = decimal_builder(capacity);
+    let mut generated = timestamp_builder(capacity);
+    let mut metadata = string_builder(capacity);
+
+    for signal in rows {
+        ids.append_value(signal.id.to_string());
+        symbols.append_value(&signal.symbol);
+        kinds.append_value(signal_kind_label(signal.kind));
+        confidences.append_value(signal.confidence);
+        append_decimal_option(&mut stop_losses, signal.stop_loss)?;
+        append_decimal_option(&mut take_profits, signal.take_profit)?;
+        generated.append_value(timestamp_to_nanos(&signal.generated_at));
+        if let Some(meta) = signal_metadata(signal) {
+            metadata.append_value(meta);
+        } else {
+            metadata.append_null();
+        }
+    }
+
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(ids.finish()),
+        Arc::new(symbols.finish()),
+        Arc::new(kinds.finish()),
+        Arc::new(confidences.finish()),
+        Arc::new(stop_losses.finish()),
+        Arc::new(take_profits.finish()),
+        Arc::new(generated.finish()),
+        Arc::new(metadata.finish()),
+    ];
+
+    RecordBatch::try_new(signal_schema(), columns).context("failed to build signal batch")
+}
+
 fn decimal_to_i128(value: Decimal) -> Result<i128> {
     let scale_limit = DECIMAL_SCALE as i32;
     let mut normalized = value;
@@ -398,5 +462,74 @@ fn status_code(status: OrderStatus) -> i8 {
         OrderStatus::Filled => 3,
         OrderStatus::Canceled => 4,
         OrderStatus::Rejected => 5,
+    }
+}
+
+fn signal_metadata(signal: &Signal) -> Option<String> {
+    let note = signal.note.as_deref();
+    let hint = signal.execution_hint.as_ref().map(execution_hint_metadata);
+    if note.is_none() && hint.is_none() {
+        return None;
+    }
+    let mut payload = Map::new();
+    if let Some(note) = note {
+        payload.insert("note".into(), json!(note));
+    }
+    if let Some(hint) = hint {
+        payload.insert("execution_hint".into(), hint);
+    }
+    serde_json::to_string(&serde_json::Value::Object(payload)).ok()
+}
+
+fn execution_hint_metadata(hint: &ExecutionHint) -> serde_json::Value {
+    match hint {
+        ExecutionHint::Twap { duration } => json!({
+            "type": "twap",
+            "duration_ms": duration.num_milliseconds(),
+        }),
+        ExecutionHint::Vwap {
+            duration,
+            participation_rate,
+        } => json!({
+            "type": "vwap",
+            "duration_ms": duration.num_milliseconds(),
+            "participation_rate": participation_rate.as_ref().map(|d| d.to_string()),
+        }),
+        ExecutionHint::IcebergSimulated {
+            display_size,
+            limit_offset_bps,
+        } => json!({
+            "type": "iceberg",
+            "display_size": display_size.to_string(),
+            "limit_offset_bps": limit_offset_bps.as_ref().map(|d| d.to_string()),
+        }),
+        ExecutionHint::PeggedBest {
+            offset_bps,
+            clip_size,
+            refresh_secs,
+        } => json!({
+            "type": "pegged_best",
+            "offset_bps": offset_bps.to_string(),
+            "clip_size": clip_size.as_ref().map(|d| d.to_string()),
+            "refresh_secs": refresh_secs,
+        }),
+        ExecutionHint::Sniper {
+            trigger_price,
+            timeout,
+        } => json!({
+            "type": "sniper",
+            "trigger_price": trigger_price.to_string(),
+            "timeout_ms": timeout.map(|d| d.num_milliseconds()),
+        }),
+    }
+}
+
+fn signal_kind_label(kind: SignalKind) -> &'static str {
+    match kind {
+        SignalKind::EnterLong => "enter_long",
+        SignalKind::ExitLong => "exit_long",
+        SignalKind::EnterShort => "enter_short",
+        SignalKind::ExitShort => "exit_short",
+        SignalKind::Flatten => "flatten",
     }
 }

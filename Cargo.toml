@@ -93,6 +93,7 @@ tesser-bybit = { version = "0.8.0", path = "connectors/tesser-bybit" }
 tesser-binance = { version = "0.8.0", path = "connectors/tesser-binance" }
 tesser-paper = { version = "0.8.0", path = "connectors/tesser-paper" }
 uuid = { version = "1.10", features = ["v4", "serde"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 [workspace.metadata.release]
 pre-release-commit-message = "chore(release): v{{version}}"

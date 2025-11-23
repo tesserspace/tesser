@@ -90,6 +90,12 @@ fn build_signal(kind: proto::signal::Kind, note: &str) -> Signal {
         take_profit: None,
         execution_hint: None,
         note: note.to_string(),
+        id: format!("grpc-test-{}", note),
+        generated_at: Some(prost_types::Timestamp {
+            seconds: 0,
+            nanos: 0,
+        }),
+        metadata: String::new(),
     }
 }
 

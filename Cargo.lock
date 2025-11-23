@@ -3979,6 +3979,7 @@ dependencies = [
  "tesser-strategy",
  "tesser-test-utils",
  "tokio",
+ "tokio-stream",
  "tokio-tungstenite 0.21.0",
  "toml",
  "tonic",
@@ -4440,6 +4441,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

@@ -107,12 +107,12 @@ fn read_csv(path: &Path) -> Result<Vec<Candle>> {
 fn read_parquet(path: &Path) -> Result<Vec<Candle>> {
     let file = File::open(path)
         .with_context(|| format!("failed to open parquet file {}", path.display()))?;
-    let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)?
         .with_batch_size(1024)
         .build()?;
     let mut columns: Option<CandleColumns> = None;
     let mut candles = Vec::new();
-    while let Some(batch) = reader.next() {
+    for batch in reader {
         let batch = batch?;
         if columns.is_none() {
             columns = Some(CandleColumns::from_batch(&batch)?);

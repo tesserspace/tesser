@@ -171,6 +171,9 @@ message Signal {
   Decimal take_profit = 5;
   ExecutionHint execution_hint = 6;
   string note = 7;
+  string id = 8;
+  google.protobuf.Timestamp generated_at = 9;
+  string metadata = 10;
 }
 
 message SignalList {
@@ -247,6 +250,18 @@ message CancelAllResponse {
   uint32 cancelled_algorithms = 2;
 }
 
+message MonitorRequest {}
+
+message Event {
+  oneof payload {
+    Tick tick = 1;
+    Candle candle = 2;
+    Signal signal = 3;
+    OrderSnapshot order = 4;
+    Fill fill = 5;
+  }
+}
+
 service StrategyService {
   rpc Initialize (InitRequest) returns (InitResponse);
   rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
@@ -261,4 +276,5 @@ service ControlService {
   rpc GetOpenOrders (GetOpenOrdersRequest) returns (GetOpenOrdersResponse);
   rpc GetStatus (GetStatusRequest) returns (GetStatusResponse);
   rpc CancelAll (CancelAllRequest) returns (CancelAllResponse);
+  rpc Monitor (MonitorRequest) returns (stream Event);
 }

@@ -15,11 +15,11 @@ use tokio::task::JoinHandle;
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, warn};
 
-use tesser_core::{Candle, Fill, Order, Tick};
+use tesser_core::{Candle, Fill, Order, Signal, Tick};
 
 use crate::encoding::{
     candle_schema, candles_to_batch, fill_schema, fills_to_batch, order_schema, orders_to_batch,
-    tick_schema, ticks_to_batch,
+    signal_schema, signals_to_batch, tick_schema, ticks_to_batch,
 };
 
 /// Configuration used when spawning a [`ParquetRecorder`].
@@ -121,6 +121,15 @@ impl RecorderHandle {
         self.enqueue(RecorderMessage::Order(order), "order", &ORDER_SATURATION);
     }
 
+    /// Enqueues a signal for recording.
+    pub fn record_signal(&self, signal: Signal) {
+        self.enqueue(
+            RecorderMessage::Signal(signal),
+            "signal",
+            &SIGNAL_SATURATION,
+        );
+    }
+
     fn enqueue(&self, message: RecorderMessage, label: &'static str, flag: &'static AtomicBool) {
         match self.sender.try_send(message) {
             Ok(()) => {}
@@ -141,12 +150,14 @@ enum RecorderMessage {
     Candle(Candle),
     Fill(Fill),
     Order(Order),
+    Signal(Signal),
 }
 
 static TICK_SATURATION: AtomicBool = AtomicBool::new(false);
 static CANDLE_SATURATION: AtomicBool = AtomicBool::new(false);
 static FILL_SATURATION: AtomicBool = AtomicBool::new(false);
 static ORDER_SATURATION: AtomicBool = AtomicBool::new(false);
+static SIGNAL_SATURATION: AtomicBool = AtomicBool::new(false);
 
 struct FlightRecorderWorker {
     rx: mpsc::Receiver<RecorderMessage>,
@@ -154,6 +165,7 @@ struct FlightRecorderWorker {
     candle_sink: DataSink<CandleEncoder>,
     fill_sink: DataSink<FillEncoder>,
     order_sink: DataSink<OrderEncoder>,
+    signal_sink: DataSink<SignalEncoder>,
     flush_interval: Duration,
 }
 
@@ -169,6 +181,7 @@ impl FlightRecorderWorker {
         let candle_dir = ensure_subdir(&config.root, CandleEncoder::KIND).await?;
         let fill_dir = ensure_subdir(&config.root, FillEncoder::KIND).await?;
         let order_dir = ensure_subdir(&config.root, OrderEncoder::KIND).await?;
+        let signal_dir = ensure_subdir(&config.root, SignalEncoder::KIND).await?;
 
         Ok(Self {
             rx,
@@ -198,6 +211,13 @@ impl FlightRecorderWorker {
                 config.max_buffered_rows,
                 config.max_rows_per_file,
                 config.flush_interval,
+                writer_props.clone(),
+            ),
+            signal_sink: DataSink::new(
+                signal_dir,
+                config.max_buffered_rows,
+                config.max_rows_per_file,
+                config.flush_interval,
                 writer_props,
             ),
             flush_interval: config.flush_interval,
@@ -210,16 +230,19 @@ impl FlightRecorderWorker {
 
         loop {
             tokio::select! {
-                Some(msg) = self.rx.recv() => {
-                    self.handle_message(msg).await?;
+                message = self.rx.recv() => {
+                    match message {
+                        Some(msg) => self.handle_message(msg).await?,
+                        None => break,
+                    }
                 }
                 _ = timer.tick() => {
                     self.tick_sink.maybe_flush_due_time().await?;
                     self.candle_sink.maybe_flush_due_time().await?;
                     self.fill_sink.maybe_flush_due_time().await?;
                     self.order_sink.maybe_flush_due_time().await?;
+                    self.signal_sink.maybe_flush_due_time().await?;
                 }
-                else => break,
             }
         }
 
@@ -227,6 +250,7 @@ impl FlightRecorderWorker {
         self.candle_sink.shutdown().await?;
         self.fill_sink.shutdown().await?;
         self.order_sink.shutdown().await?;
+        self.signal_sink.shutdown().await?;
         Ok(())
     }
 
@@ -236,6 +260,7 @@ impl FlightRecorderWorker {
             RecorderMessage::Candle(candle) => self.candle_sink.push(candle).await?,
             RecorderMessage::Fill(fill) => self.fill_sink.push(fill).await?,
             RecorderMessage::Order(order) => self.order_sink.push(order).await?,
+            RecorderMessage::Signal(signal) => self.signal_sink.push(signal).await?,
         }
         Ok(())
     }
@@ -262,6 +287,7 @@ struct TickEncoder;
 struct CandleEncoder;
 struct FillEncoder;
 struct OrderEncoder;
+struct SignalEncoder;
 
 impl SinkEncoder for TickEncoder {
     type Record = Tick;
@@ -328,6 +354,23 @@ impl SinkEncoder for OrderEncoder {
 
     fn partition_for(record: &Self::Record) -> NaiveDate {
         record.updated_at.date_naive()
+    }
+}
+
+impl SinkEncoder for SignalEncoder {
+    type Record = Signal;
+    const KIND: &'static str = "signals";
+
+    fn schema() -> Arc<arrow::datatypes::Schema> {
+        signal_schema()
+    }
+
+    fn encode(records: &[Self::Record]) -> Result<arrow::record_batch::RecordBatch> {
+        signals_to_batch(records)
+    }
+
+    fn partition_for(record: &Self::Record) -> NaiveDate {
+        record.generated_at.date_naive()
     }
 }
 
@@ -503,5 +546,144 @@ impl ActiveWriter {
         self.writer.finish().await?;
         debug!(path = %self.path.display(), "closed flight recorder file");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{
+        Array, Decimal128Array, Float64Array, StringArray, TimestampNanosecondArray,
+    };
+    use arrow::datatypes::DataType;
+    use arrow::record_batch::RecordBatch;
+    use chrono::Duration as ChronoDuration;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    use rust_decimal::Decimal;
+    use tempfile::tempdir;
+    use tesser_core::{ExecutionHint, Signal, SignalKind};
+
+    fn build_signal() -> Signal {
+        let mut signal = Signal::new("BTCUSDT", SignalKind::EnterLong, 0.82);
+        signal.stop_loss = Some(Decimal::new(99_500, 2));
+        signal.take_profit = Some(Decimal::new(101_500, 2));
+        signal.generated_at = chrono::Utc::now();
+        signal.note = Some("trend-follow".into());
+        signal.execution_hint = Some(ExecutionHint::Twap {
+            duration: ChronoDuration::minutes(5),
+        });
+        signal
+    }
+
+    fn read_signal_batch(path: &Path) -> RecordBatch {
+        let file = std::fs::File::open(path).expect("open parquet file");
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).expect("build batch reader");
+        let mut reader = builder.build().expect("build reader");
+        reader.next().expect("batch result").expect("batch")
+    }
+
+    fn find_signal_file(root: &Path) -> PathBuf {
+        let signals_dir = root.join(SignalEncoder::KIND);
+        for day in std::fs::read_dir(&signals_dir).expect("read signal dir") {
+            let day = day.expect("entry");
+            if day.path().is_dir() {
+                for file in std::fs::read_dir(day.path()).expect("read partition dir") {
+                    let file = file.expect("file entry");
+                    if file
+                        .path()
+                        .extension()
+                        .map(|ext| ext == "parquet")
+                        .unwrap_or(false)
+                    {
+                        return file.path();
+                    }
+                }
+            }
+        }
+        panic!("no signal parquet files found in {}", signals_dir.display());
+    }
+
+    fn decimal_from_array(arr: &Decimal128Array, idx: usize) -> Decimal {
+        let scale = match arr.data_type() {
+            DataType::Decimal128(_, scale) => (*scale) as u32,
+            _ => panic!("unexpected data type"),
+        };
+        Decimal::from_i128_with_scale(arr.value(idx), scale)
+    }
+
+    #[tokio::test]
+    async fn writes_signal_batches() {
+        let signal = build_signal();
+        let temp = tempdir().expect("tempdir");
+        let config = RecorderConfig {
+            root: temp.path().to_path_buf(),
+            max_buffered_rows: 1,
+            flush_interval: Duration::from_millis(20),
+            max_rows_per_file: 16,
+            channel_capacity: 4,
+        };
+        let recorder = ParquetRecorder::spawn(config)
+            .await
+            .expect("spawn recorder");
+        let handle = recorder.handle();
+        handle.record_signal(signal.clone());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(handle);
+        recorder.shutdown().await.expect("shutdown recorder");
+
+        let file_path = find_signal_file(temp.path());
+        let batch = read_signal_batch(&file_path);
+        assert_eq!(batch.num_rows(), 1);
+
+        let ids = batch
+            .column(batch.schema().index_of("id").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(ids.value(0), signal.id.to_string());
+
+        let kinds = batch
+            .column(batch.schema().index_of("kind").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(kinds.value(0), "enter_long");
+
+        let confidences = batch
+            .column(batch.schema().index_of("confidence").unwrap())
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        assert!((confidences.value(0) - signal.confidence).abs() < f64::EPSILON);
+
+        let stop_losses = batch
+            .column(batch.schema().index_of("stop_loss").unwrap())
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap();
+        assert_eq!(
+            decimal_from_array(stop_losses, 0),
+            signal.stop_loss.unwrap()
+        );
+
+        let generated = batch
+            .column(batch.schema().index_of("generated_at").unwrap())
+            .as_any()
+            .downcast_ref::<TimestampNanosecondArray>()
+            .unwrap();
+        let nanos = generated.value(0);
+        let secs = nanos / 1_000_000_000;
+        let rem = (nanos % 1_000_000_000) as u32;
+        let recorded_ts = chrono::DateTime::<chrono::Utc>::from_timestamp(secs, rem).unwrap();
+        assert_eq!(recorded_ts.timestamp(), signal.generated_at.timestamp());
+
+        let metadata = batch
+            .column(batch.schema().index_of("metadata").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let meta_value: serde_json::Value =
+            serde_json::from_str(metadata.value(0)).expect("metadata json");
+        assert_eq!(meta_value["note"], signal.note.as_ref().unwrap().as_str());
     }
 }

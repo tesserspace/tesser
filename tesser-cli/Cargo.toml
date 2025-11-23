@@ -51,6 +51,7 @@ parquet.workspace = true
 tesser-rpc = { version = "0.7.0", path = "../tesser-rpc" }
 tonic = { version = "0.11", features = ["transport"] }
 prost-types = "0.12"
+tokio-stream.workspace = true
 
 [dev-dependencies]
 tesser-test-utils = { version = "0.8.0", path = "../tesser-test-utils" }

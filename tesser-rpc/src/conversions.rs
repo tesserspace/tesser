@@ -1,13 +1,15 @@
 use crate::proto;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
+use serde_json::{json, Map};
 use std::str::FromStr;
 use tesser_core::{
-    Candle, Cash, Fill, Interval, Order, OrderBook, OrderBookLevel, OrderStatus, OrderType,
-    Position, Side, Signal, SignalKind, Tick,
+    Candle, Cash, ExecutionHint, Fill, Interval, Order, OrderBook, OrderBookLevel, OrderStatus,
+    OrderType, Position, Side, Signal, SignalKind, Tick,
 };
 use tesser_portfolio::{Portfolio, PortfolioState};
 use tesser_strategy::StrategyContext;
+use uuid::Uuid;
 
 // --- Helpers ---
 
@@ -26,6 +28,13 @@ pub fn to_timestamp_proto(dt: DateTime<Utc>) -> prost_types::Timestamp {
         seconds: dt.timestamp(),
         nanos: dt.timestamp_subsec_nanos() as i32,
     }
+}
+
+pub fn from_timestamp_proto(ts: prost_types::Timestamp) -> DateTime<Utc> {
+    let secs = ts.seconds;
+    let nanos = ts.nanos.clamp(0, 999_999_999);
+    DateTime::<Utc>::from_timestamp(secs, nanos as u32)
+        .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap())
 }
 
 // --- Enums ---
@@ -185,6 +194,34 @@ impl From<&PortfolioState> for proto::PortfolioSnapshot {
     }
 }
 
+impl From<Signal> for proto::Signal {
+    fn from(signal: Signal) -> Self {
+        let metadata = signal_metadata(&signal).unwrap_or_default();
+        Self {
+            symbol: signal.symbol,
+            kind: signal_kind_to_proto(signal.kind) as i32,
+            confidence: signal.confidence,
+            stop_loss: signal.stop_loss.map(to_decimal_proto),
+            take_profit: signal.take_profit.map(to_decimal_proto),
+            execution_hint: None,
+            note: signal.note.unwrap_or_default(),
+            id: signal.id.to_string(),
+            generated_at: Some(to_timestamp_proto(signal.generated_at)),
+            metadata,
+        }
+    }
+}
+
+fn signal_kind_to_proto(kind: SignalKind) -> proto::signal::Kind {
+    match kind {
+        SignalKind::EnterLong => proto::signal::Kind::EnterLong,
+        SignalKind::ExitLong => proto::signal::Kind::ExitLong,
+        SignalKind::EnterShort => proto::signal::Kind::EnterShort,
+        SignalKind::ExitShort => proto::signal::Kind::ExitShort,
+        SignalKind::Flatten => proto::signal::Kind::Flatten,
+    }
+}
+
 fn portfolio_state_to_proto(state: &PortfolioState) -> proto::PortfolioSnapshot {
     let unrealized: Decimal = state.positions.values().map(|pos| pos.unrealized_pnl).sum();
     let cash_value = state.balances.total_value();
@@ -274,8 +311,74 @@ impl From<proto::Signal> for Signal {
             signal.note = Some(note);
         }
 
-        // TODO: Future expansion for execution hints
+        if let Some(ts) = p.generated_at {
+            signal.generated_at = from_timestamp_proto(ts);
+        }
+        if !p.id.is_empty() {
+            if let Ok(uuid) = Uuid::parse_str(&p.id) {
+                signal.id = uuid;
+            }
+        }
 
         signal
+    }
+}
+
+fn signal_metadata(signal: &Signal) -> Option<String> {
+    let note = signal.note.as_deref();
+    let hint = signal.execution_hint.as_ref().map(execution_hint_metadata);
+    if note.is_none() && hint.is_none() {
+        return None;
+    }
+    let mut payload = Map::new();
+    if let Some(note) = note {
+        payload.insert("note".into(), json!(note));
+    }
+    if let Some(hint) = hint {
+        payload.insert("execution_hint".into(), hint);
+    }
+    serde_json::to_string(&serde_json::Value::Object(payload)).ok()
+}
+
+fn execution_hint_metadata(hint: &ExecutionHint) -> serde_json::Value {
+    match hint {
+        ExecutionHint::Twap { duration } => json!({
+            "type": "twap",
+            "duration_ms": duration.num_milliseconds(),
+        }),
+        ExecutionHint::Vwap {
+            duration,
+            participation_rate,
+        } => json!({
+            "type": "vwap",
+            "duration_ms": duration.num_milliseconds(),
+            "participation_rate": participation_rate.as_ref().map(|d| d.to_string()),
+        }),
+        ExecutionHint::IcebergSimulated {
+            display_size,
+            limit_offset_bps,
+        } => json!({
+            "type": "iceberg",
+            "display_size": display_size.to_string(),
+            "limit_offset_bps": limit_offset_bps.as_ref().map(|d| d.to_string()),
+        }),
+        ExecutionHint::PeggedBest {
+            offset_bps,
+            clip_size,
+            refresh_secs,
+        } => json!({
+            "type": "pegged_best",
+            "offset_bps": offset_bps.to_string(),
+            "clip_size": clip_size.as_ref().map(|d| d.to_string()),
+            "refresh_secs": refresh_secs,
+        }),
+        ExecutionHint::Sniper {
+            trigger_price,
+            timeout,
+        } => json!({
+            "type": "sniper",
+            "trigger_price": trigger_price.to_string(),
+            "timeout_ms": timeout.map(|d| d.num_milliseconds()),
+        }),
     }
 }
