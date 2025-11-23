@@ -1660,3 +1660,45 @@ impl MarketStream for PaperMarketStream {
         Ok(None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn matching_engine_amend_updates_resting_state() {
+        let engine = MatchingEngine::new("paper", vec!["BTCUSDT".into()], Decimal::from(10_000));
+        let request = OrderRequest {
+            symbol: "BTCUSDT".into(),
+            side: Side::Buy,
+            order_type: OrderType::Limit,
+            quantity: Decimal::from(2),
+            price: Some(Decimal::from(25_000)),
+            trigger_price: None,
+            time_in_force: Some(TimeInForce::GoodTilCanceled),
+            client_order_id: None,
+            take_profit: None,
+            stop_loss: None,
+            display_quantity: None,
+        };
+
+        let order = engine.place_order(request).await.unwrap();
+        assert_eq!(order.status, OrderStatus::Accepted);
+        let update = OrderUpdateRequest {
+            order_id: order.id.clone(),
+            symbol: order.request.symbol.clone(),
+            side: order.request.side,
+            new_price: Some(Decimal::from(25_500)),
+            new_quantity: Some(Decimal::from(3)),
+        };
+
+        let amended = engine.amend_order(update).await.unwrap();
+        assert_eq!(amended.request.price, Some(Decimal::from(25_500)));
+        assert_eq!(amended.request.quantity, Decimal::from(3));
+
+        let book = engine.resting_depth.lock().unwrap();
+        let (price, qty) = book.best_bid().expect("resting bid exists");
+        assert_eq!(price, Decimal::from(25_500));
+        assert_eq!(qty, Decimal::from(3));
+    }
+}

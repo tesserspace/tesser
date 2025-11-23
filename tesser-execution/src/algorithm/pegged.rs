@@ -329,7 +329,7 @@ impl ExecutionAlgorithm for PeggedBestAlgorithm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tesser_core::{Signal, SignalKind, Tick};
+    use tesser_core::{Order, OrderStatus, Signal, SignalKind, Tick};
 
     #[test]
     fn emits_child_after_tick() {
@@ -356,6 +356,60 @@ mod tests {
         match &orders[0].action {
             ChildOrderAction::Place(request) => assert!(request.quantity > Decimal::ZERO),
             other => panic!("unexpected action: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chases_active_order_with_amend() {
+        let signal = Signal::new("BTCUSDT", SignalKind::EnterLong, 0.9);
+        let mut algo = PeggedBestAlgorithm::new(
+            signal,
+            Decimal::from(2),
+            Decimal::new(1, 1),
+            None,
+            Duration::seconds(1),
+            Some(Decimal::from(5)),
+        )
+        .unwrap();
+        let first_tick = Tick {
+            symbol: "BTCUSDT".into(),
+            price: Decimal::from(30_000),
+            size: Decimal::ONE,
+            side: tesser_core::Side::Buy,
+            exchange_timestamp: Utc::now(),
+            received_at: Utc::now(),
+        };
+        let child = algo.on_tick(&first_tick).unwrap();
+        let request = match &child[0].action {
+            ChildOrderAction::Place(req) => req.clone(),
+            other => panic!("expected placement, got {other:?}"),
+        };
+        let order = Order {
+            id: "child-order".into(),
+            request: request.clone(),
+            status: OrderStatus::Accepted,
+            filled_quantity: Decimal::ZERO,
+            avg_fill_price: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        algo.on_child_order_placed(&order);
+        algo.state.last_order_time = Some(Utc::now() - Duration::seconds(5));
+
+        let chase_tick = Tick {
+            price: Decimal::from(30_020),
+            ..first_tick
+        };
+        let chase = algo.on_tick(&chase_tick).unwrap();
+        assert_eq!(chase.len(), 1);
+        match &chase[0].action {
+            ChildOrderAction::Amend(update) => {
+                assert_eq!(update.order_id, order.id);
+                assert_eq!(update.symbol, order.request.symbol);
+                assert_eq!(update.new_quantity, Some(order.request.quantity));
+                assert!(update.new_price.unwrap() > request.price.unwrap());
+            }
+            other => panic!("expected amend action, got {other:?}"),
         }
     }
 }
