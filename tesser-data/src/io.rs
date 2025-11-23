@@ -14,7 +14,7 @@ use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use rust_decimal::Decimal;
 
-use tesser_core::{Candle, Interval, Tick};
+use tesser_core::{Candle, Interval, Symbol, Tick};
 
 use crate::encoding::{candles_to_batch, ticks_to_batch};
 
@@ -151,7 +151,7 @@ fn read_csv(path: &Path) -> Result<Vec<Candle>> {
             })?,
         };
         let candle = Candle {
-            symbol,
+            symbol: Symbol::from(symbol.as_str()),
             interval: infer_interval(path).unwrap_or(Interval::OneMinute),
             open: parse_decimal(record.get(2), "open", path)?,
             high: parse_decimal(record.get(3), "high", path)?,
@@ -208,7 +208,7 @@ fn write_csv(path: &Path, candles: &[Candle]) -> Result<()> {
     ])?;
     for candle in candles {
         writer.write_record([
-            candle.symbol.as_str(),
+            &candle.symbol.to_string(),
             &candle.timestamp.to_rfc3339(),
             &candle.open.to_string(),
             &candle.high.to_string(),
@@ -321,7 +321,7 @@ impl CandleColumns {
         let interval =
             Interval::from_str(&interval_raw).map_err(|err| anyhow!("{interval_raw}: {err}"))?;
         Ok(Candle {
-            symbol,
+            symbol: Symbol::from(symbol.as_str()),
             interval,
             open: decimal_value(batch, self.open, row)?,
             high: decimal_value(batch, self.high, row)?,
@@ -399,7 +399,7 @@ mod tests {
         let base = Utc::now() - Duration::minutes(10);
         (0..4)
             .map(|idx| Candle {
-                symbol: "BTCUSDT".into(),
+                symbol: Symbol::from("BTCUSDT"),
                 interval: Interval::OneMinute,
                 open: Decimal::new(10 + idx as i64, 0),
                 high: Decimal::new(11 + idx as i64, 0),

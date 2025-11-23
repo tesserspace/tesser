@@ -266,7 +266,7 @@ impl ArrivalLookup {
         Self { ticks }
     }
 
-    fn price_at(&self, symbol: &str, timestamp: DateTime<Utc>) -> Option<Decimal> {
+    fn price_at(&self, symbol: &Symbol, timestamp: DateTime<Utc>) -> Option<Decimal> {
         let series = self.ticks.get(symbol)?;
         if series.is_empty() {
             return None;
@@ -424,7 +424,7 @@ fn load_orders(paths: &[PathBuf], range: &TimeRange) -> Result<Vec<OrderRow>> {
                 let algo_label = infer_algo_label(client_order_id.as_deref());
                 rows.push(OrderRow {
                     id,
-                    symbol,
+                    symbol: Symbol::from(symbol.as_str()),
                     side,
                     created_at,
                     algo_label,
@@ -479,8 +479,9 @@ fn load_ticks(paths: &[PathBuf]) -> Result<Vec<TickPoint>> {
             }
             let columns = columns.as_ref().expect("tick columns set");
             for row in 0..batch.num_rows() {
+                let symbol = string_value(&batch, columns.symbol, row)?;
                 rows.push(TickPoint {
-                    symbol: string_value(&batch, columns.symbol, row)?,
+                    symbol: Symbol::from(symbol.as_str()),
                     price: decimal_value(&batch, columns.price, row)?,
                     timestamp: timestamp_value(&batch, columns.exchange_ts, row)?,
                 });
@@ -652,7 +653,7 @@ mod tests {
     use parquet::file::properties::WriterProperties;
     use rust_decimal::prelude::FromPrimitive;
     use tempfile::tempdir;
-    use tesser_core::{Fill, Order, OrderRequest, OrderStatus, OrderType, Tick, TimeInForce};
+    use tesser_core::{Fill, Order, OrderRequest, OrderStatus, OrderType, Symbol, Tick, TimeInForce};
 
     use crate::encoding::{fills_to_batch, orders_to_batch, ticks_to_batch};
 
@@ -665,7 +666,7 @@ mod tests {
         let order = Order {
             id: order_id.clone(),
             request: OrderRequest {
-                symbol: "BTCUSDT".to_string(),
+                symbol: Symbol::from("BTCUSDT"),
                 side: Side::Buy,
                 order_type: OrderType::Market,
                 quantity: Decimal::from_i64(2).unwrap(),
@@ -752,7 +753,7 @@ mod tests {
         let order = Order {
             id: "order-1".to_string(),
             request: OrderRequest {
-                symbol: "BTCUSDT".to_string(),
+                symbol: Symbol::from("BTCUSDT"),
                 side: Side::Buy,
                 order_type: OrderType::Market,
                 quantity: Decimal::ONE,

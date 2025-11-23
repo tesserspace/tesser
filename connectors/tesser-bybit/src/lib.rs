@@ -19,8 +19,9 @@ use tesser_broker::{
     RateLimiter, RateLimiterError,
 };
 use tesser_core::{
-    AccountBalance, Candle, Fill, Instrument, InstrumentKind, Order, OrderBook, OrderRequest,
-    OrderStatus, OrderType, OrderUpdateRequest, Position, Quantity, Side, TimeInForce,
+    AccountBalance, AssetId, Candle, ExchangeId, Fill, Instrument, InstrumentKind, Order,
+    OrderBook, OrderRequest, OrderStatus, OrderType, OrderUpdateRequest, Position, Quantity, Side,
+    Symbol, TimeInForce,
 };
 use tracing::warn;
 
@@ -68,11 +69,16 @@ pub struct BybitClient {
     info: BrokerInfo,
     public_limiter: Option<RateLimiter>,
     private_limiter: Option<RateLimiter>,
+    exchange: ExchangeId,
 }
 
 impl BybitClient {
     /// Build a new client optionally configured with credentials.
-    pub fn new(config: BybitConfig, credentials: Option<BybitCredentials>) -> Self {
+    pub fn new(
+        config: BybitConfig,
+        credentials: Option<BybitCredentials>,
+        exchange: ExchangeId,
+    ) -> Self {
         let http = Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(10))
@@ -91,16 +97,25 @@ impl BybitClient {
             credentials,
             public_limiter,
             private_limiter,
+            exchange,
         }
     }
 
     /// Convenience helper for the Bybit testnet.
     pub fn testnet(credentials: Option<BybitCredentials>) -> Self {
-        Self::new(BybitConfig::default(), credentials)
+        Self::new(
+            BybitConfig::default(),
+            credentials,
+            ExchangeId::from("bybit_linear"),
+        )
     }
 
     pub fn get_credentials(&self) -> Option<BybitCredentials> {
         self.credentials.clone()
+    }
+
+    pub fn exchange(&self) -> ExchangeId {
+        self.exchange
     }
 
     pub fn get_ws_url(&self) -> String {
@@ -108,6 +123,18 @@ impl BybitClient {
             .ws_url
             .clone()
             .unwrap_or_else(|| self.config.base_url.replace("https://api", "wss://stream"))
+    }
+
+    fn symbol_code(symbol: Symbol) -> &'static str {
+        symbol.code()
+    }
+
+    fn parse_symbol(&self, value: &str) -> Symbol {
+        Symbol::from_code(self.exchange, value)
+    }
+
+    fn parse_asset(&self, value: &str) -> AssetId {
+        AssetId::from_code(self.exchange, value)
     }
 
     async fn throttle_public(&self) -> BrokerResult<()> {
@@ -331,7 +358,7 @@ impl BybitClient {
                 };
                 out.push(Fill {
                     order_id: item.order_id,
-                    symbol: item.symbol,
+                    symbol: self.parse_symbol(&item.symbol),
                     side,
                     fill_price: price,
                     fill_quantity: exec_qty,
@@ -363,7 +390,7 @@ impl ExecutionClient for BybitClient {
     async fn place_order(&self, request: OrderRequest) -> BrokerResult<Order> {
         let mut payload = serde_json::json!({
             "category": self.config.category,
-            "symbol": request.symbol,
+            "symbol": Self::symbol_code(request.symbol),
             "side": Self::map_side(request.side),
             "qty": Self::qty_string(request.quantity),
             "timeInForce": Self::map_time_in_force(request.time_in_force),
@@ -411,7 +438,7 @@ impl ExecutionClient for BybitClient {
     async fn amend_order(&self, request: OrderUpdateRequest) -> BrokerResult<Order> {
         let mut payload = serde_json::json!({
             "category": self.config.category,
-            "symbol": request.symbol,
+            "symbol": Self::symbol_code(request.symbol),
             "orderId": request.order_id,
         });
         if let Some(price) = request.new_price {
@@ -428,7 +455,7 @@ impl ExecutionClient for BybitClient {
         let resp: ApiResponse<CreateOrderResult> = self
             .signed_request(Method::POST, "/v5/order/amend", payload, None)
             .await?;
-        if let Ok(open_orders) = self.list_open_orders(&request.symbol).await {
+        if let Ok(open_orders) = self.list_open_orders(Self::symbol_code(request.symbol)).await {
             if let Some(order) = open_orders
                 .into_iter()
                 .find(|order| order.id == resp.result.order_id)
@@ -472,39 +499,42 @@ impl ExecutionClient for BybitClient {
             .result
             .list
             .into_iter()
-            .map(|item| Order {
-                id: item.order_id,
-                request: OrderRequest {
-                    symbol: item.symbol,
-                    side: if item.side == "Buy" {
-                        Side::Buy
-                    } else {
-                        Side::Sell
+            .map(|item| {
+                let symbol = self.parse_symbol(&item.symbol);
+                Order {
+                    id: item.order_id,
+                    request: OrderRequest {
+                        symbol,
+                        side: if item.side == "Buy" {
+                            Side::Buy
+                        } else {
+                            Side::Sell
+                        },
+                        order_type: if item.trigger_price.is_some() {
+                            tesser_core::OrderType::StopMarket
+                        } else if item.order_type == "Market" {
+                            tesser_core::OrderType::Market
+                        } else {
+                            tesser_core::OrderType::Limit
+                        },
+                        quantity: item.qty.parse().unwrap_or(Decimal::ZERO),
+                        price: item.price.parse::<Decimal>().ok(),
+                        trigger_price: item
+                            .trigger_price
+                            .as_deref()
+                            .and_then(|value| value.parse::<Decimal>().ok()),
+                        time_in_force: None,
+                        client_order_id: Some(item.order_link_id),
+                        take_profit: None,
+                        stop_loss: None,
+                        display_quantity: None,
                     },
-                    order_type: if item.trigger_price.is_some() {
-                        tesser_core::OrderType::StopMarket
-                    } else if item.order_type == "Market" {
-                        tesser_core::OrderType::Market
-                    } else {
-                        tesser_core::OrderType::Limit
-                    },
-                    quantity: item.qty.parse().unwrap_or(Decimal::ZERO),
-                    price: item.price.parse::<Decimal>().ok(),
-                    trigger_price: item
-                        .trigger_price
-                        .as_deref()
-                        .and_then(|value| value.parse::<Decimal>().ok()),
-                    time_in_force: None,
-                    client_order_id: Some(item.order_link_id),
-                    take_profit: None,
-                    stop_loss: None,
-                    display_quantity: None,
-                },
-                status: Self::map_order_status(&item.order_status),
-                filled_quantity: item.cum_exec_qty.parse().unwrap_or(Decimal::ZERO),
-                avg_fill_price: item.avg_price.parse::<Decimal>().ok(),
-                created_at: millis_to_datetime(&item.created_time),
-                updated_at: millis_to_datetime(&item.updated_time),
+                    status: Self::map_order_status(&item.order_status),
+                    filled_quantity: item.cum_exec_qty.parse().unwrap_or(Decimal::ZERO),
+                    avg_fill_price: item.avg_price.parse::<Decimal>().ok(),
+                    created_at: millis_to_datetime(&item.created_time),
+                    updated_at: millis_to_datetime(&item.updated_time),
+                }
             })
             .collect();
         Ok(orders)
@@ -531,7 +561,8 @@ impl ExecutionClient for BybitClient {
                     .parse()
                     .unwrap_or(Decimal::ZERO);
                 balances.push(AccountBalance {
-                    currency: coin.coin,
+                    exchange: self.exchange,
+                    asset: self.parse_asset(&coin.coin),
                     total,
                     available,
                     updated_at: Utc::now(),
@@ -557,7 +588,7 @@ impl ExecutionClient for BybitClient {
             }
             let entry_price = item.avg_price.parse().ok();
             positions.push(Position {
-                symbol: item.symbol,
+                symbol: self.parse_symbol(&item.symbol),
                 side: match item.side.as_str() {
                     "Buy" => Some(Side::Buy),
                     "Sell" => Some(Side::Sell),
@@ -590,11 +621,11 @@ impl ExecutionClient for BybitClient {
                 .clone()
                 .unwrap_or_else(|| item.quote_coin.clone());
             instruments.push(Instrument {
-                symbol: item.symbol,
-                base: item.base_coin,
-                quote: item.quote_coin,
+                symbol: self.parse_symbol(&item.symbol),
+                base: self.parse_asset(&item.base_coin),
+                quote: self.parse_asset(&item.quote_coin),
                 kind: map_instrument_kind(item.contract_type.as_deref(), category),
-                settlement_currency: settlement,
+                settlement_currency: self.parse_asset(&settlement),
                 tick_size,
                 lot_size,
             });
@@ -781,6 +812,8 @@ struct BybitConnectorConfig {
     rest_url: String,
     #[serde(default = "default_ws_url")]
     ws_url: String,
+    #[serde(default)]
+    exchange: Option<String>,
     #[serde(default = "default_category")]
     category: String,
     #[serde(default)]
@@ -807,6 +840,18 @@ fn default_ws_url() -> String {
 
 fn default_category() -> String {
     "linear".into()
+}
+
+fn resolve_exchange_id(cfg: &BybitConnectorConfig) -> ExchangeId {
+    let default_name = format!("bybit_{}", cfg.category.trim().to_ascii_lowercase());
+    let name = cfg
+        .exchange
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or(default_name);
+    ExchangeId::from(name.as_str())
 }
 
 fn default_recv_window() -> u64 {
@@ -887,6 +932,7 @@ impl ConnectorFactory for BybitFactory {
         config: &Value,
     ) -> BrokerResult<Arc<dyn ExecutionClient>> {
         let cfg = self.parse_config(config)?;
+        let exchange = resolve_exchange_id(&cfg);
         let (public_quota, private_quota) = rate_limits_from_config(&cfg);
         let bybit_cfg = BybitConfig {
             base_url: cfg.rest_url.clone(),
@@ -899,6 +945,7 @@ impl ConnectorFactory for BybitFactory {
         Ok(Arc::new(BybitClient::new(
             bybit_cfg,
             Self::credentials(&cfg),
+            exchange,
         )))
     }
 
@@ -908,12 +955,14 @@ impl ConnectorFactory for BybitFactory {
         stream_config: ConnectorStreamConfig,
     ) -> BrokerResult<Box<dyn ConnectorStream>> {
         let cfg = self.parse_config(config)?;
+        let exchange = resolve_exchange_id(&cfg);
         let channel = PublicChannel::from_str(&cfg.category)
             .map_err(|err| BrokerError::InvalidRequest(err.to_string()))?;
         let stream = BybitMarketStream::connect_public(
             &cfg.ws_url,
             channel,
             stream_config.connection_status,
+            exchange,
         )
         .await?;
         Ok(Box::new(BybitConnectorStream::new(

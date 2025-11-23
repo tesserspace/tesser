@@ -48,7 +48,7 @@ impl ParquetMarketStream {
     ) -> Self {
         let info = BrokerInfo {
             name: "parquet-replay".into(),
-            markets: symbols,
+            markets: symbols.iter().map(|s| s.to_string()).collect(),
             supports_testnet: true,
         };
         Self {
@@ -503,7 +503,7 @@ fn optional_column_index(schema: &SchemaRef, name: &str) -> Option<usize> {
 }
 
 fn decode_tick(batch: &RecordBatch, row: usize, columns: &TickColumns) -> Result<Tick> {
-    let symbol = string_value(batch, columns.symbol, row)?;
+    let symbol = symbol_value(batch, columns.symbol, row)?;
     let price = decimal_value(batch, columns.price, row)?;
     let size = decimal_value(batch, columns.size, row)?;
     let side = side_value(batch, columns.side, row)?;
@@ -520,7 +520,7 @@ fn decode_tick(batch: &RecordBatch, row: usize, columns: &TickColumns) -> Result
 }
 
 fn decode_candle(batch: &RecordBatch, row: usize, columns: &CandleColumns) -> Result<Candle> {
-    let symbol = string_value(batch, columns.symbol, row)?;
+    let symbol = symbol_value(batch, columns.symbol, row)?;
     let interval_raw = string_value(batch, columns.interval, row)?;
     let interval = Interval::from_str(&interval_raw)
         .map_err(|err| anyhow!("invalid interval '{interval_raw}': {err}"))?;
@@ -547,7 +547,7 @@ fn decode_order_book(
     row: usize,
     columns: &OrderBookColumns,
 ) -> Result<OrderBook> {
-    let symbol = string_value(batch, columns.symbol, row)?;
+    let symbol = symbol_value(batch, columns.symbol, row)?;
     let bids = columns.bids.decode(batch, row)?;
     let asks = columns.asks.decode(batch, row)?;
     let timestamp = timestamp_value(batch, columns.timestamp, row)?;
@@ -567,19 +567,24 @@ fn decode_depth_update(
     columns: &DepthColumns,
 ) -> Result<DepthUpdate> {
     Ok(DepthUpdate {
-        symbol: string_value(batch, columns.symbol, row)?,
+        symbol: symbol_value(batch, columns.symbol, row)?,
         bids: columns.bids.decode(batch, row)?,
         asks: columns.asks.decode(batch, row)?,
         timestamp: timestamp_value(batch, columns.timestamp, row)?,
     })
 }
 
-fn string_value(batch: &RecordBatch, column: usize, row: usize) -> Result<Symbol> {
+fn string_value(batch: &RecordBatch, column: usize, row: usize) -> Result<String> {
     let array = as_array::<StringArray>(batch, column)?;
     if array.is_null(row) {
         return Err(anyhow!("column {column} contains null string"));
     }
     Ok(array.value(row).to_string())
+}
+
+fn symbol_value(batch: &RecordBatch, column: usize, row: usize) -> Result<Symbol> {
+    let raw = string_value(batch, column, row)?;
+    Ok(Symbol::from(raw.as_str()))
 }
 
 fn decimal_value(batch: &RecordBatch, column: usize, row: usize) -> Result<Decimal> {
@@ -722,7 +727,7 @@ fn upsert_level(book: &mut LocalOrderBook, side: Side, level: &OrderBookLevel) {
 }
 
 fn snapshot_from_state(
-    symbol: &str,
+    symbol: &Symbol,
     book: &LocalOrderBook,
     timestamp: DateTime<Utc>,
 ) -> Option<OrderBook> {
@@ -741,7 +746,7 @@ fn snapshot_from_state(
         return None;
     }
     Some(OrderBook {
-        symbol: symbol.to_string(),
+        symbol: *symbol,
         bids,
         asks,
         timestamp,
@@ -786,7 +791,7 @@ mod tests {
         let books = rows
             .iter()
             .map(|row| OrderBook {
-                symbol: row.symbol.to_string(),
+                symbol: Symbol::from(row.symbol),
                 bids: to_levels(&row.bids),
                 asks: to_levels(&row.asks),
                 timestamp: Utc::now(),
@@ -892,7 +897,7 @@ mod tests {
 
     fn sample_candles() -> Vec<Candle> {
         vec![Candle {
-            symbol: "BTCUSDT".into(),
+            symbol: Symbol::from("BTCUSDT"),
             interval: Interval::OneMinute,
             open: Decimal::ONE,
             high: Decimal::new(2, 0),
@@ -905,7 +910,7 @@ mod tests {
 
     fn sample_ticks() -> Vec<Tick> {
         vec![Tick {
-            symbol: "BTCUSDT".into(),
+            symbol: Symbol::from("BTCUSDT"),
             price: Decimal::new(20_000, 0),
             size: Decimal::new(1, 0),
             side: Side::Buy,
@@ -922,7 +927,8 @@ mod tests {
         let batch = candles_to_batch(&candles)?;
         write_parquet_file(&path, &batch)?;
 
-        let mut stream = ParquetMarketStream::with_candles(vec!["BTCUSDT".into()], vec![path]);
+        let mut stream =
+            ParquetMarketStream::with_candles(vec![Symbol::from("BTCUSDT")], vec![path]);
         let first = stream
             .next_candle()
             .await
@@ -941,7 +947,7 @@ mod tests {
         write_parquet_file(&path, &batch)?;
 
         let mut stream = ParquetMarketStream::new(
-            vec!["BTCUSDT".into()],
+            vec![Symbol::from("BTCUSDT")],
             vec![path],
             Vec::new(),
             Vec::new(),
@@ -968,7 +974,8 @@ mod tests {
         let batch = legacy_order_book_batch(&rows)?;
         write_parquet_file(&path, &batch)?;
 
-        let mut stream = ParquetMarketStream::with_order_books(vec!["BTCUSDT".into()], vec![path]);
+        let mut stream =
+            ParquetMarketStream::with_order_books(vec![Symbol::from("BTCUSDT")], vec![path]);
         let book = stream
             .next_order_book()
             .await?
@@ -991,7 +998,7 @@ mod tests {
         write_parquet_file(&path, &batch)?;
 
         let mut stream =
-            ParquetMarketStream::with_depth_updates(vec!["BTCUSDT".into()], vec![path]);
+            ParquetMarketStream::with_depth_updates(vec![Symbol::from("BTCUSDT")], vec![path]);
         let book = stream
             .next_order_book()
             .await?

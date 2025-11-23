@@ -58,9 +58,9 @@ pub struct RpcStrategy {
     client: Option<SharedClient>,
     config: Option<RpcStrategyConfig>,
     config_payload: String,
-    subscriptions: Vec<String>,
+    subscriptions: Vec<Symbol>,
     pending_signals: Vec<Signal>,
-    symbol: String, // Primary symbol fallback
+    symbol: Symbol, // Primary symbol fallback
     health: Arc<AtomicBool>,
     heartbeat_handle: Option<JoinHandle<()>>,
     heartbeat_interval: Duration,
@@ -75,7 +75,7 @@ impl Default for RpcStrategy {
             config_payload: "{}".to_string(),
             subscriptions: vec![],
             pending_signals: vec![],
-            symbol: "UNKNOWN".to_string(),
+            symbol: Symbol::from("UNKNOWN"),
             health: Arc::new(AtomicBool::new(true)),
             heartbeat_handle: None,
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
@@ -210,12 +210,13 @@ impl RpcStrategy {
 
     fn apply_remote_metadata(&mut self, mut symbols: Vec<String>) {
         if symbols.is_empty() {
-            symbols.push(self.symbol.clone());
+            symbols.push(self.symbol.to_string());
         }
-        if let Some(primary) = symbols.first() {
-            self.symbol = primary.clone();
+        let parsed: Vec<Symbol> = symbols.into_iter().map(Symbol::from).collect();
+        if let Some(primary) = parsed.first().copied() {
+            self.symbol = primary;
         }
-        self.subscriptions = symbols;
+        self.subscriptions = parsed;
     }
 
     fn handle_signals(&mut self, signals: Vec<crate::proto::Signal>) {
@@ -229,7 +230,7 @@ impl RpcStrategy {
         self.teardown_client();
     }
 
-    fn is_symbol_allowed(&self, symbol: &str) -> bool {
+    fn is_symbol_allowed(&self, symbol: &Symbol) -> bool {
         self.subscriptions.is_empty() || self.subscriptions.iter().any(|s| s == symbol)
     }
 }
@@ -240,13 +241,13 @@ impl Strategy for RpcStrategy {
         "rpc-strategy"
     }
 
-    fn symbol(&self) -> &str {
-        &self.symbol
+    fn symbol(&self) -> Symbol {
+        self.symbol
     }
 
     fn subscriptions(&self) -> Vec<Symbol> {
         if self.subscriptions.is_empty() {
-            vec![self.symbol.clone()]
+            vec![self.symbol]
         } else {
             self.subscriptions.clone()
         }
@@ -270,12 +271,16 @@ impl Strategy for RpcStrategy {
         self.config = Some(config.clone());
         self.teardown_client();
         self.pending_signals.clear();
-        self.subscriptions = config.symbols.clone();
-        if let Some(primary) = self.subscriptions.first() {
-            self.symbol = primary.clone();
-        } else {
-            self.symbol = "UNKNOWN".to_string();
-        }
+        self.subscriptions = config
+            .symbols
+            .iter()
+            .map(|symbol| Symbol::from(symbol.as_str()))
+            .collect();
+        self.symbol = self
+            .subscriptions
+            .first()
+            .copied()
+            .unwrap_or_else(|| Symbol::from("UNKNOWN"));
         self.config_payload = serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string());
         Ok(())
     }

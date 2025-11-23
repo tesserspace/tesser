@@ -28,8 +28,8 @@ type HmacSha256 = Hmac<Sha256>;
 
 use tesser_broker::{BrokerError, BrokerErrorKind, BrokerInfo, BrokerResult, MarketStream};
 use tesser_core::{
-    Candle, Fill, Interval, LocalOrderBook, Order, OrderBook, OrderBookLevel, OrderRequest,
-    OrderType, Side, Tick,
+    Candle, ExchangeId, Fill, Interval, LocalOrderBook, Order, OrderBook, OrderBookLevel,
+    OrderRequest, OrderType, Side, Symbol, Tick,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -111,6 +111,7 @@ impl BybitMarketStream {
         base_url: &str,
         channel: PublicChannel,
         connection_status: Option<Arc<AtomicBool>>,
+        exchange: ExchangeId,
     ) -> BrokerResult<Self> {
         let endpoint = format!(
             "{}/v5/public/{}",
@@ -129,6 +130,7 @@ impl BybitMarketStream {
         let (candle_tx, candle_rx) = mpsc::channel(1024);
         let (order_book_tx, order_book_rx) = mpsc::channel(256);
         let status_for_loop = connection_status.clone();
+        let exchange_id = exchange;
         tokio::spawn(async move {
             if let Err(err) = run_ws_loop(
                 ws,
@@ -138,6 +140,7 @@ impl BybitMarketStream {
                 candle_tx,
                 order_book_tx,
                 status_for_loop,
+                exchange_id,
             )
             .await
             {
@@ -291,6 +294,7 @@ async fn run_ws_loop(
     candle_tx: mpsc::Sender<Candle>,
     order_book_tx: mpsc::Sender<OrderBook>,
     connection_status: Option<Arc<AtomicBool>>,
+    exchange: ExchangeId,
 ) -> BrokerResult<()> {
     let mut heartbeat = interval(Duration::from_secs(20));
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -299,7 +303,7 @@ async fn run_ws_loop(
         flag.store(true, Ordering::SeqCst);
     }
 
-    let mut book_manager = BookManager::new(order_book_tx.clone(), command_tx);
+    let mut book_manager = BookManager::new(exchange, order_book_tx.clone(), command_tx);
 
     loop {
         tokio::select! {
@@ -321,7 +325,16 @@ async fn run_ws_loop(
                             .await
                             .map_err(|err| BrokerError::from_display(err, BrokerErrorKind::Transport))?;
                     }
-                    Some(Ok(message)) => handle_message(message, &tick_tx, &candle_tx, &mut book_manager).await?,
+                    Some(Ok(message)) => {
+                        handle_message(
+                            message,
+                            &tick_tx,
+                            &candle_tx,
+                            &mut book_manager,
+                            exchange,
+                        )
+                        .await?
+                    }
                     Some(Err(err)) => return Err(BrokerError::from_display(err, BrokerErrorKind::Transport)),
                     None => break,
                 }
@@ -363,14 +376,15 @@ async fn handle_message(
     tick_tx: &mpsc::Sender<Tick>,
     candle_tx: &mpsc::Sender<Candle>,
     book_manager: &mut BookManager,
+    exchange: ExchangeId,
 ) -> BrokerResult<()> {
     match message {
         Message::Text(text) => {
-            process_text_message(&text, tick_tx, candle_tx, book_manager).await;
+            process_text_message(&text, tick_tx, candle_tx, book_manager, exchange).await;
         }
         Message::Binary(bytes) => {
             if let Ok(text) = String::from_utf8(bytes) {
-                process_text_message(&text, tick_tx, candle_tx, book_manager).await;
+                process_text_message(&text, tick_tx, candle_tx, book_manager, exchange).await;
             } else {
                 warn!("received non UTF-8 binary payload from Bybit ws");
             }
@@ -395,16 +409,17 @@ async fn process_text_message(
     tick_tx: &mpsc::Sender<Tick>,
     candle_tx: &mpsc::Sender<Candle>,
     book_manager: &mut BookManager,
+    exchange: ExchangeId,
 ) {
     if let Ok(value) = serde_json::from_str::<Value>(text) {
         if let Some(topic) = value.get("topic").and_then(|t| t.as_str()) {
             if topic.starts_with("publicTrade") {
                 if let Ok(payload) = serde_json::from_value::<TradeMessage>(value.clone()) {
-                    forward_trades(payload, tick_tx).await;
+                    forward_trades(exchange, payload, tick_tx).await;
                 }
             } else if topic.starts_with("kline") {
                 if let Ok(payload) = serde_json::from_value::<KlineMessage>(value.clone()) {
-                    forward_klines(payload, candle_tx).await;
+                    forward_klines(exchange, payload, candle_tx).await;
                 }
             } else if topic.starts_with("orderbook") {
                 if let Ok(payload) = serde_json::from_value::<OrderbookMessage>(value.clone()) {
@@ -522,9 +537,13 @@ pub struct BybitWsOrder {
     pub order_status: String,
 }
 
-async fn forward_trades(payload: TradeMessage, tick_tx: &mpsc::Sender<Tick>) {
+async fn forward_trades(
+    exchange: ExchangeId,
+    payload: TradeMessage,
+    tick_tx: &mpsc::Sender<Tick>,
+) {
     for trade in payload.data {
-        if let Some(tick) = build_tick(&trade) {
+        if let Some(tick) = build_tick(exchange, &trade) {
             if tick_tx.send(tick).await.is_err() {
                 warn!("dropping trade tick; downstream receiver closed");
                 break;
@@ -533,7 +552,7 @@ async fn forward_trades(payload: TradeMessage, tick_tx: &mpsc::Sender<Tick>) {
     }
 }
 
-fn build_tick(entry: &TradeEntry) -> Option<Tick> {
+fn build_tick(exchange: ExchangeId, entry: &TradeEntry) -> Option<Tick> {
     let price = entry.price.parse().ok()?;
     let size = entry.size.parse().ok()?;
     let side = match entry.side.as_str() {
@@ -543,7 +562,7 @@ fn build_tick(entry: &TradeEntry) -> Option<Tick> {
     };
     let exchange_timestamp = millis_to_datetime(entry.timestamp)?;
     Some(Tick {
-        symbol: entry.symbol.clone(),
+        symbol: Symbol::from_code(exchange, &entry.symbol),
         price,
         size,
         side,
@@ -552,12 +571,16 @@ fn build_tick(entry: &TradeEntry) -> Option<Tick> {
     })
 }
 
-async fn forward_klines(payload: KlineMessage, candle_tx: &mpsc::Sender<Candle>) {
+async fn forward_klines(
+    exchange: ExchangeId,
+    payload: KlineMessage,
+    candle_tx: &mpsc::Sender<Candle>,
+) {
     for kline in payload.data {
         if !kline.confirm {
             continue;
         }
-        if let Some(candle) = build_candle(&payload.topic, &kline) {
+        if let Some(candle) = build_candle(exchange, &payload.topic, &kline) {
             if candle_tx.send(candle).await.is_err() {
                 warn!("dropping kline; downstream receiver closed");
                 break;
@@ -566,11 +589,11 @@ async fn forward_klines(payload: KlineMessage, candle_tx: &mpsc::Sender<Candle>)
     }
 }
 
-fn build_candle(topic: &str, entry: &KlineEntry) -> Option<Candle> {
+fn build_candle(exchange: ExchangeId, topic: &str, entry: &KlineEntry) -> Option<Candle> {
     let interval = parse_interval(&entry.interval)?;
     let symbol = topic.split('.').next_back()?.to_string();
     Some(Candle {
-        symbol,
+        symbol: Symbol::from_code(exchange, &symbol),
         interval,
         open: entry.open.parse().ok()?,
         high: entry.high.parse().ok()?,
@@ -654,10 +677,12 @@ struct BookManager {
     streams: HashMap<String, SymbolBook>,
     order_book_tx: mpsc::Sender<OrderBook>,
     command_tx: mpsc::UnboundedSender<WsCommand>,
+    exchange: ExchangeId,
 }
 
 impl BookManager {
     fn new(
+        exchange: ExchangeId,
         order_book_tx: mpsc::Sender<OrderBook>,
         command_tx: mpsc::UnboundedSender<WsCommand>,
     ) -> Self {
@@ -665,6 +690,7 @@ impl BookManager {
             streams: HashMap::new(),
             order_book_tx,
             command_tx,
+            exchange,
         }
     }
 
@@ -679,7 +705,7 @@ impl BookManager {
         let stream = self
             .streams
             .entry(payload.topic.clone())
-            .or_insert_with(|| SymbolBook::new(payload.topic.clone(), symbol, depth));
+            .or_insert_with(|| SymbolBook::new(self.exchange, payload.topic.clone(), symbol, depth));
 
         match stream.ingest(payload.msg_type.as_str(), data, payload.ts) {
             BookUpdate::Pending => {}
@@ -734,6 +760,7 @@ impl PendingDelta {
 }
 
 struct SymbolBook {
+    exchange: ExchangeId,
     symbol: String,
     depth: usize,
     book: LocalOrderBook,
@@ -744,8 +771,9 @@ struct SymbolBook {
 }
 
 impl SymbolBook {
-    fn new(_topic: String, symbol: String, depth: usize) -> Self {
+    fn new(exchange: ExchangeId, _topic: String, symbol: String, depth: usize) -> Self {
         Self {
+            exchange,
             symbol,
             depth,
             book: LocalOrderBook::new(),
@@ -857,7 +885,7 @@ impl SymbolBook {
             .map(|(price, size)| OrderBookLevel { price, size })
             .collect::<Vec<_>>();
         Some(OrderBook {
-            symbol: self.symbol.clone(),
+            symbol: Symbol::from_code(self.exchange, &self.symbol),
             bids,
             asks,
             timestamp,
@@ -920,13 +948,17 @@ pub struct BybitWsExecution {
 }
 
 impl BybitWsOrder {
-    pub fn to_tesser_order(&self, existing: Option<&Order>) -> Result<Order, BrokerError> {
+    pub fn to_tesser_order(
+        &self,
+        exchange: ExchangeId,
+        existing: Option<&Order>,
+    ) -> Result<Order, BrokerError> {
         Ok(Order {
             id: self.order_id.clone(),
             request: existing
                 .map(|o| o.request.clone())
                 .unwrap_or_else(|| OrderRequest {
-                    symbol: self.symbol.clone(),
+                    symbol: Symbol::from_code(exchange, &self.symbol),
                     side: if self.side == "Buy" {
                         Side::Buy
                     } else {
@@ -952,7 +984,7 @@ impl BybitWsOrder {
 }
 
 impl BybitWsExecution {
-    pub fn to_tesser_fill(&self) -> Result<Fill, BrokerError> {
+    pub fn to_tesser_fill(&self, exchange: ExchangeId) -> Result<Fill, BrokerError> {
         let fill_price = self.exec_price.parse::<Decimal>().map_err(|e| {
             BrokerError::Serialization(format!(
                 "failed to parse exec price {}: {e}",
@@ -976,7 +1008,7 @@ impl BybitWsExecution {
 
         Ok(Fill {
             order_id: self.order_id.clone(),
-            symbol: self.symbol.clone(),
+            symbol: Symbol::from_code(exchange, &self.symbol),
             side,
             fill_price,
             fill_quantity,

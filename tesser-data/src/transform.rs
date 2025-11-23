@@ -123,7 +123,11 @@ impl Resampler {
         self.output.sort_by(|a, b| {
             let ts = a.timestamp.cmp(&b.timestamp);
             if ts == Ordering::Equal {
-                a.symbol.cmp(&b.symbol)
+                (
+                    a.symbol.exchange.as_raw(),
+                    a.symbol.market_id,
+                )
+                    .cmp(&(b.symbol.exchange.as_raw(), b.symbol.market_id))
             } else {
                 ts
             }

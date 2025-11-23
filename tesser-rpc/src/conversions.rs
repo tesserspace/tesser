@@ -4,8 +4,8 @@ use rust_decimal::Decimal;
 use serde_json::{json, Map};
 use std::str::FromStr;
 use tesser_core::{
-    Candle, Cash, ExecutionHint, Fill, Interval, Order, OrderBook, OrderBookLevel, OrderStatus,
-    OrderType, Position, Side, Signal, SignalKind, Tick,
+    AssetId, Candle, Cash, ExecutionHint, Fill, Interval, Order, OrderBook, OrderBookLevel,
+    OrderStatus, OrderType, Position, Side, Signal, SignalKind, Tick,
 };
 use tesser_portfolio::{Portfolio, PortfolioState};
 use tesser_strategy::StrategyContext;
@@ -82,7 +82,7 @@ fn order_status_to_proto(status: OrderStatus) -> proto::OrderStatus {
 impl From<Tick> for proto::Tick {
     fn from(t: Tick) -> Self {
         Self {
-            symbol: t.symbol,
+            symbol: t.symbol.to_string(),
             price: Some(to_decimal_proto(t.price)),
             size: Some(to_decimal_proto(t.size)),
             side: side_to_proto(t.side) as i32,
@@ -95,7 +95,7 @@ impl From<Tick> for proto::Tick {
 impl From<Candle> for proto::Candle {
     fn from(c: Candle) -> Self {
         Self {
-            symbol: c.symbol,
+            symbol: c.symbol.to_string(),
             interval: interval_to_proto(c.interval) as i32,
             open: Some(to_decimal_proto(c.open)),
             high: Some(to_decimal_proto(c.high)),
@@ -110,7 +110,7 @@ impl From<Candle> for proto::Candle {
 impl From<OrderBook> for proto::OrderBook {
     fn from(b: OrderBook) -> Self {
         Self {
-            symbol: b.symbol,
+            symbol: b.symbol.to_string(),
             bids: b.bids.into_iter().map(Into::into).collect(),
             asks: b.asks.into_iter().map(Into::into).collect(),
             timestamp: Some(to_timestamp_proto(b.timestamp)),
@@ -133,7 +133,7 @@ impl From<Fill> for proto::Fill {
     fn from(f: Fill) -> Self {
         Self {
             order_id: f.order_id,
-            symbol: f.symbol,
+            symbol: f.symbol.to_string(),
             side: side_to_proto(f.side) as i32,
             fill_price: Some(to_decimal_proto(f.fill_price)),
             fill_quantity: Some(to_decimal_proto(f.fill_quantity)),
@@ -151,7 +151,7 @@ impl From<&Order> for proto::OrderSnapshot {
     fn from(order: &Order) -> Self {
         Self {
             id: order.id.clone(),
-            symbol: order.request.symbol.clone(),
+            symbol: order.request.symbol.to_string(),
             side: side_to_proto(order.request.side) as i32,
             order_type: order_type_to_proto(order.request.order_type) as i32,
             quantity: Some(to_decimal_proto(order.request.quantity)),
@@ -198,7 +198,7 @@ impl From<Signal> for proto::Signal {
     fn from(signal: Signal) -> Self {
         let metadata = signal_metadata(&signal).unwrap_or_default();
         Self {
-            symbol: signal.symbol,
+            symbol: signal.symbol.to_string(),
             kind: signal_kind_to_proto(signal.kind) as i32,
             confidence: signal.confidence,
             stop_loss: signal.stop_loss.map(to_decimal_proto),
@@ -232,18 +232,18 @@ fn portfolio_state_to_proto(state: &PortfolioState) -> proto::PortfolioSnapshot 
         balances: state
             .balances
             .iter()
-            .map(|(currency, cash)| cash_to_proto(currency, cash))
+            .map(|(currency, cash)| cash_to_proto(*currency, cash))
             .collect(),
         positions: state.positions.values().cloned().map(Into::into).collect(),
         equity: Some(to_decimal_proto(equity)),
         initial_equity: Some(to_decimal_proto(state.initial_equity)),
         realized_pnl: Some(to_decimal_proto(realized)),
-        reporting_currency: state.reporting_currency.clone(),
+        reporting_currency: state.reporting_currency.to_string(),
         liquidate_only: state.liquidate_only,
     }
 }
 
-fn cash_to_proto(currency: &str, cash: &Cash) -> proto::CashBalance {
+fn cash_to_proto(currency: AssetId, cash: &Cash) -> proto::CashBalance {
     proto::CashBalance {
         currency: currency.to_string(),
         quantity: Some(to_decimal_proto(cash.quantity)),
@@ -254,7 +254,7 @@ fn cash_to_proto(currency: &str, cash: &Cash) -> proto::CashBalance {
 impl From<Position> for proto::Position {
     fn from(p: Position) -> Self {
         Self {
-            symbol: p.symbol,
+            symbol: p.symbol.to_string(),
             side: match p.side {
                 Some(Side::Buy) => proto::Side::Buy as i32,
                 Some(Side::Sell) => proto::Side::Sell as i32,

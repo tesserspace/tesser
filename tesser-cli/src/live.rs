@@ -46,8 +46,8 @@ use tesser_bybit::ws::{BybitWsExecution, BybitWsOrder, PrivateMessage};
 use tesser_bybit::{register_factory as register_bybit_factory, BybitClient, BybitCredentials};
 use tesser_config::{AlertingConfig, ExchangeConfig, PersistenceEngine, RiskManagementConfig};
 use tesser_core::{
-    AccountBalance, Candle, Fill, Interval, Order, OrderBook, OrderStatus, Position, Price,
-    Quantity, Side, Signal, Symbol, Tick,
+    AccountBalance, Candle, ExchangeId, Fill, Interval, Order, OrderBook, OrderStatus, Position,
+    Price, Quantity, Side, Signal, Symbol, Tick,
 };
 use tesser_data::recorder::{ParquetRecorder, RecorderConfig, RecorderHandle};
 use tesser_events::{
@@ -2006,6 +2006,11 @@ fn spawn_bybit_private_stream(
     metrics: Arc<LiveMetrics>,
     shutdown: ShutdownSignal,
 ) {
+    let exchange_id = exec_client
+        .as_any()
+        .downcast_ref::<BybitClient>()
+        .map(|client| client.exchange())
+        .unwrap_or(ExchangeId::UNSPECIFIED);
     tokio::spawn(async move {
         loop {
             match tesser_bybit::ws::connect_private(
@@ -2074,7 +2079,8 @@ fn spawn_bybit_private_stream(
                                                 value.clone()
                                             ) {
                                                 for update in msg.data {
-                                                    if let Ok(order) = update.to_tesser_order(None)
+                                                    if let Ok(order) =
+                                                        update.to_tesser_order(exchange_id, None)
                                                     {
                                                         if let Err(err) = private_tx
                                                             .send(BrokerEvent::OrderUpdate(order))
@@ -2095,7 +2101,9 @@ fn spawn_bybit_private_stream(
                                                 value.clone()
                                             ) {
                                                 for exec in msg.data {
-                                                    if let Ok(fill) = exec.to_tesser_fill() {
+                                                    if let Ok(fill) =
+                                                        exec.to_tesser_fill(exchange_id)
+                                                    {
                                                         if let Err(err) = private_tx
                                                             .send(BrokerEvent::Fill(fill))
                                                             .await
@@ -2151,6 +2159,7 @@ fn spawn_binance_private_stream(
                 warn!("execution client is not Binance");
                 return;
             };
+            let exchange = binance.exchange();
             let listen_key = match binance.start_user_stream().await {
                 Ok(key) => key,
                 Err(err) => {
@@ -2167,12 +2176,13 @@ fn spawn_binance_private_stream(
                     metrics.update_connection_status("private", true);
                     let (reconnect_tx, mut reconnect_rx) = mpsc::channel(1);
                     let tx_orders = private_tx.clone();
+                    let exchange_id = exchange;
                     user_stream.on_event(move |event| {
                         if let Some(update) = extract_order_update(&event) {
-                            if let Some(order) = order_from_update(update) {
+                            if let Some(order) = order_from_update(exchange_id, update) {
                                 let _ = tx_orders.blocking_send(BrokerEvent::OrderUpdate(order));
                             }
-                            if let Some(fill) = fill_from_update(update) {
+                            if let Some(fill) = fill_from_update(exchange_id, update) {
                                 let _ = tx_orders.blocking_send(BrokerEvent::Fill(fill));
                             }
                         }

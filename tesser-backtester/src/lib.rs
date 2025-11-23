@@ -15,7 +15,7 @@ use reporting::{PerformanceReport, Reporter};
 use rust_decimal::Decimal;
 use tesser_broker::MarketStream;
 use tesser_core::{
-    Candle, DepthUpdate, Fill, Order, OrderBook, Price, Quantity, Side, Symbol, Tick,
+    AssetId, Candle, DepthUpdate, Fill, Order, OrderBook, Price, Quantity, Side, Symbol, Tick,
 };
 use tesser_data::merger::{UnifiedEvent, UnifiedEventKind};
 use tesser_execution::{ExecutionEngine, RiskContext};
@@ -30,8 +30,8 @@ pub struct BacktestConfig {
     pub symbol: Symbol,
     pub order_quantity: Quantity,
     pub history: usize,
-    pub initial_balances: HashMap<Symbol, Decimal>,
-    pub reporting_currency: Symbol,
+    pub initial_balances: HashMap<AssetId, Decimal>,
+    pub reporting_currency: AssetId,
     pub execution: ExecutionModel,
     pub mode: BacktestMode,
 }
@@ -43,8 +43,8 @@ impl BacktestConfig {
             symbol,
             order_quantity: Decimal::ONE,
             history: 512,
-            initial_balances: HashMap::from([(String::from("USDT"), Decimal::new(10_000, 0))]),
-            reporting_currency: "USDT".into(),
+            initial_balances: HashMap::from([(AssetId::from("USDT"), Decimal::new(10_000, 0))]),
+            reporting_currency: AssetId::from("USDT"),
             execution: ExecutionModel::default(),
             mode: BacktestMode::Candle,
         }
@@ -472,12 +472,12 @@ impl Backtester {
         Ok(())
     }
 
-    fn last_tick_price(&self, symbol: &str) -> Option<Price> {
+    fn last_tick_price(&self, symbol: &Symbol) -> Option<Price> {
         self.strategy_ctx
             .ticks()
             .iter()
             .rev()
-            .find(|tick| tick.symbol == symbol)
+            .find(|tick| tick.symbol == *symbol)
             .map(|tick| tick.price)
     }
 
