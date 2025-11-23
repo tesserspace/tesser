@@ -59,7 +59,7 @@ use tesser_execution::{
     PreTradeRiskChecker, RiskContext, RiskLimits, SqliteAlgoStateRepository, StoredAlgoState,
 };
 use tesser_journal::LmdbJournal;
-use tesser_markets::MarketRegistry;
+use tesser_markets::{InstrumentCatalog, MarketRegistry};
 use tesser_paper::{FeeScheduleConfig, PaperExecutionClient, PaperFactory};
 use tesser_portfolio::{
     LiveState, Portfolio, PortfolioConfig, SqliteStateRepository, StateRepository,
@@ -1962,24 +1962,34 @@ async fn load_market_registry(
     client: Arc<dyn ExecutionClient>,
     settings: &LiveSessionSettings,
 ) -> Result<Arc<MarketRegistry>> {
+    let mut catalog = InstrumentCatalog::new();
     if let Some(path) = &settings.markets_file {
-        let registry = MarketRegistry::load_from_file(path)
+        catalog
+            .add_file(path)
             .with_context(|| format!("failed to load markets from {}", path.display()))?;
-        return Ok(Arc::new(registry));
     }
 
-    if settings.exec_backend.is_paper() {
+    if !settings.exec_backend.is_paper() {
+        let instruments = client
+            .list_instruments(settings.category.as_path())
+            .await
+            .context("failed to fetch instruments from execution client")?;
+        catalog
+            .add_instruments(instruments)
+            .map_err(|err| anyhow!(err.to_string()))?;
+    } else if catalog.is_empty() {
         return Err(anyhow!(
             "paper execution requires --markets-file when exchange metadata is unavailable"
         ));
     }
 
-    let instruments = client
-        .list_instruments(settings.category.as_path())
-        .await
-        .context("failed to fetch instruments from execution client")?;
-    let registry =
-        MarketRegistry::from_instruments(instruments).map_err(|err| anyhow!(err.to_string()))?;
+    if catalog.is_empty() {
+        return Err(anyhow!(
+            "no market metadata available; supply --markets-file or use a live exchange"
+        ));
+    }
+
+    let registry = catalog.build().map_err(|err| anyhow!(err.to_string()))?;
     Ok(Arc::new(registry))
 }
 
