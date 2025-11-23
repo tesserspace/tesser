@@ -135,6 +135,7 @@ impl PreTradeRiskChecker for NoopRiskChecker {
 pub struct RiskLimits {
     pub max_order_quantity: Quantity,
     pub max_position_quantity: Quantity,
+    pub max_order_notional: Option<Price>,
 }
 
 impl RiskLimits {
@@ -143,6 +144,9 @@ impl RiskLimits {
         Self {
             max_order_quantity: self.max_order_quantity.max(Decimal::ZERO),
             max_position_quantity: self.max_position_quantity.max(Decimal::ZERO),
+            max_order_notional: self
+                .max_order_notional
+                .and_then(|limit| (limit > Decimal::ZERO).then_some(limit)),
         }
     }
 }
@@ -170,6 +174,31 @@ impl PreTradeRiskChecker for BasicRiskChecker {
                 quantity: qty,
                 limit: max_order,
             });
+        }
+
+        if let Some(limit) = self.limits.max_order_notional {
+            let positive_last_price = || {
+                if ctx.last_price > Decimal::ZERO {
+                    Some(ctx.last_price)
+                } else {
+                    None
+                }
+            };
+
+            let reference_price = match request.order_type {
+                OrderType::Limit => request
+                    .price
+                    .filter(|price| *price > Decimal::ZERO)
+                    .or_else(positive_last_price),
+                _ => positive_last_price(),
+            };
+
+            if let Some(price) = reference_price {
+                let notional = qty * price;
+                if notional > limit {
+                    return Err(RiskError::MaxOrderNotional { notional, limit });
+                }
+            }
         }
 
         let projected_position = match request.side {
@@ -245,6 +274,7 @@ mod tests {
         let checker = BasicRiskChecker::new(RiskLimits {
             max_order_quantity: Decimal::ZERO,
             max_position_quantity: Decimal::ZERO,
+            max_order_notional: None,
         });
         let ctx = RiskContext {
             signed_position_qty: Decimal::from(2),
@@ -274,6 +304,7 @@ mod tests {
         let checker = BasicRiskChecker::new(RiskLimits {
             max_order_quantity: Decimal::ZERO,
             max_position_quantity: Decimal::ZERO,
+            max_order_notional: None,
         });
         let ctx = RiskContext {
             signed_position_qty: Decimal::from(2),
@@ -296,6 +327,73 @@ mod tests {
         };
         assert!(checker.check(&reduce, &ctx).is_ok());
     }
+
+    #[test]
+    fn limit_order_notional_limit_triggers_rejection() {
+        let checker = BasicRiskChecker::new(RiskLimits {
+            max_order_quantity: Decimal::ZERO,
+            max_position_quantity: Decimal::ZERO,
+            max_order_notional: Some(Decimal::from(10_000u32)),
+        });
+        let ctx = RiskContext {
+            signed_position_qty: Decimal::ZERO,
+            portfolio_equity: Decimal::from(25_000u32),
+            last_price: Decimal::from(20_000u32),
+            liquidate_only: false,
+        };
+        let order = OrderRequest {
+            symbol: "BTCUSDT".into(),
+            side: Side::Buy,
+            order_type: OrderType::Limit,
+            quantity: Decimal::ONE,
+            price: Some(Decimal::from(20_000u32)),
+            trigger_price: None,
+            time_in_force: None,
+            client_order_id: None,
+            take_profit: None,
+            stop_loss: None,
+            display_quantity: None,
+        };
+        match checker.check(&order, &ctx) {
+            Err(RiskError::MaxOrderNotional { notional, limit }) => {
+                assert_eq!(limit, Decimal::from(10_000u32));
+                assert!(notional > limit, "expected {notional} > {limit}");
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn market_order_notional_limit_uses_last_price() {
+        let checker = BasicRiskChecker::new(RiskLimits {
+            max_order_quantity: Decimal::ZERO,
+            max_position_quantity: Decimal::ZERO,
+            max_order_notional: Some(Decimal::from(5_000u32)),
+        });
+        let ctx = RiskContext {
+            signed_position_qty: Decimal::ZERO,
+            portfolio_equity: Decimal::from(50_000u32),
+            last_price: Decimal::from(25_000u32),
+            liquidate_only: false,
+        };
+        let order = OrderRequest {
+            symbol: "BTCUSDT".into(),
+            side: Side::Buy,
+            order_type: OrderType::Market,
+            quantity: Decimal::ONE,
+            price: None,
+            trigger_price: None,
+            time_in_force: None,
+            client_order_id: None,
+            take_profit: None,
+            stop_loss: None,
+            display_quantity: None,
+        };
+        assert!(matches!(
+            checker.check(&order, &ctx),
+            Err(RiskError::MaxOrderNotional { .. })
+        ));
+    }
 }
 
 /// Errors surfaced by pre-trade risk checks.
@@ -303,6 +401,8 @@ mod tests {
 pub enum RiskError {
     #[error("order quantity {quantity} exceeds limit {limit}")]
     MaxOrderSize { quantity: Quantity, limit: Quantity },
+    #[error("order notional {notional} exceeds limit {limit}")]
+    MaxOrderNotional { notional: Price, limit: Price },
     #[error("projected position {projected} exceeds limit {limit}")]
     MaxPositionExposure {
         projected: Quantity,

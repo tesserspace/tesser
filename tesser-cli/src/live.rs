@@ -205,6 +205,10 @@ impl LiveSessionSettings {
         RiskLimits {
             max_order_quantity: self.risk.max_order_quantity.max(Decimal::ZERO),
             max_position_quantity: self.risk.max_position_quantity.max(Decimal::ZERO),
+            max_order_notional: self
+                .risk
+                .max_order_notional
+                .and_then(|limit| (limit > Decimal::ZERO).then_some(limit)),
         }
     }
 }

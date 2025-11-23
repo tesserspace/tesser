@@ -998,6 +998,8 @@ pub struct LiveRunArgs {
     #[arg(long)]
     risk_max_order_qty: Option<Decimal>,
     #[arg(long)]
+    risk_max_order_notional: Option<Decimal>,
+    #[arg(long)]
     risk_max_position_qty: Option<Decimal>,
     #[arg(long)]
     risk_max_drawdown: Option<Decimal>,
@@ -1087,6 +1089,9 @@ impl LiveRunArgs {
         let mut risk = config.risk_management.clone();
         if let Some(limit) = self.risk_max_order_qty {
             risk.max_order_quantity = limit.max(Decimal::ZERO);
+        }
+        if let Some(limit) = self.risk_max_order_notional {
+            risk.max_order_notional = (limit > Decimal::ZERO).then_some(limit);
         }
         if let Some(limit) = self.risk_max_position_qty {
             risk.max_position_quantity = limit.max(Decimal::ZERO);

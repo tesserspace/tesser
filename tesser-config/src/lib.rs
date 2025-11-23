@@ -93,6 +93,8 @@ pub struct RiskManagementConfig {
     pub max_order_quantity: Decimal,
     #[serde(default = "default_max_position_quantity")]
     pub max_position_quantity: Decimal,
+    #[serde(default)]
+    pub max_order_notional: Option<Decimal>,
     #[serde(default = "default_risk_drawdown_limit")]
     pub max_drawdown: Decimal,
 }
@@ -138,6 +140,7 @@ impl Default for RiskManagementConfig {
         Self {
             max_order_quantity: default_max_order_quantity(),
             max_position_quantity: default_max_position_quantity(),
+            max_order_notional: None,
             max_drawdown: default_risk_drawdown_limit(),
         }
     }
