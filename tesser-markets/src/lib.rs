@@ -33,15 +33,9 @@ impl MarketRegistry {
 
     /// Load instrument metadata from a static TOML file.
     pub fn load_from_file(path: impl AsRef<Path>) -> Result<Self, MarketRegistryError> {
-        let path = path.as_ref();
-        let contents = fs::read_to_string(path).map_err(|err| MarketRegistryError::Io {
-            path: path.to_path_buf(),
-            source: err,
-        })?;
-        let file: MarketFile =
-            toml::from_str(&contents).map_err(MarketRegistryError::InvalidFormat)?;
-        let instruments = file.into_instruments()?;
-        Self::from_instruments(instruments)
+        let mut catalog = InstrumentCatalog::new();
+        catalog.add_file(path)?;
+        catalog.build()
     }
 
     /// Fetch market metadata from the execution client.
@@ -125,34 +119,79 @@ pub enum MarketRegistryError {
     Broker(BrokerError),
 }
 
+/// Accumulates instrument metadata from multiple sources before producing a registry.
+#[derive(Default)]
+pub struct InstrumentCatalog {
+    entries: HashMap<(ExchangeId, String), InstrumentInfo>,
+}
+
+impl InstrumentCatalog {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    pub fn add_file(&mut self, path: impl AsRef<Path>) -> Result<(), MarketRegistryError> {
+        let path = path.as_ref();
+        let contents = fs::read_to_string(path).map_err(|err| MarketRegistryError::Io {
+            path: path.to_path_buf(),
+            source: err,
+        })?;
+        let file: MarketFile =
+            toml::from_str(&contents).map_err(MarketRegistryError::InvalidFormat)?;
+        for info in file.markets {
+            self.insert(info)?;
+        }
+        Ok(())
+    }
+
+    pub fn add_instruments(
+        &mut self,
+        instruments: Vec<Instrument>,
+    ) -> Result<(), MarketRegistryError> {
+        for instrument in instruments {
+            self.insert(InstrumentInfo::from(instrument))?;
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn build(self) -> Result<MarketRegistry, MarketRegistryError> {
+        let instruments = self
+            .entries
+            .into_values()
+            .map(|info| info.into_instrument())
+            .collect::<Result<Vec<_>, _>>()?;
+        MarketRegistry::from_instruments(instruments)
+    }
+
+    fn insert(&mut self, info: InstrumentInfo) -> Result<(), MarketRegistryError> {
+        let key = info.key();
+        if let Some(existing) = self.entries.remove(&key) {
+            let merged = existing.merge(info)?;
+            self.entries.insert(key, merged);
+        } else {
+            self.entries.insert(key, info);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Deserialize)]
 struct MarketFile {
     #[serde(default)]
     markets: Vec<InstrumentInfo>,
 }
 
-impl MarketFile {
-    fn into_instruments(self) -> Result<Vec<Instrument>, MarketRegistryError> {
-        let mut merged: HashMap<(ExchangeId, String), InstrumentInfo> = HashMap::new();
-        for info in self.markets {
-            let key = info.key();
-            if let Some(existing) = merged.remove(&key) {
-                let combined = existing.merge(info)?;
-                merged.insert(key, combined);
-            } else {
-                merged.insert(key, info);
-            }
-        }
-        merged
-            .into_values()
-            .map(|info| info.into_instrument())
-            .collect()
-    }
-}
-
 #[derive(Clone, Debug, Deserialize)]
 struct InstrumentInfo {
-    exchange: String,
+    exchange: ExchangeId,
     symbol: String,
     #[serde(default)]
     base: Option<String>,
@@ -170,8 +209,7 @@ struct InstrumentInfo {
 
 impl InstrumentInfo {
     fn key(&self) -> (ExchangeId, String) {
-        let exchange = ExchangeId::from(self.exchange.as_str());
-        (exchange, self.symbol.trim().to_ascii_uppercase())
+        (self.exchange, self.symbol.trim().to_ascii_uppercase())
     }
 
     fn merge(self, other: InstrumentInfo) -> Result<InstrumentInfo, MarketRegistryError> {
@@ -185,7 +223,7 @@ impl InstrumentInfo {
             });
         }
         Ok(InstrumentInfo {
-            exchange: self.exchange,
+            exchange,
             symbol: symbol.clone(),
             base: merge_field(exchange, &symbol, "base", self.base, other.base)?,
             quote: merge_field(exchange, &symbol, "quote", self.quote, other.quote)?,
@@ -197,7 +235,13 @@ impl InstrumentInfo {
                 other.settlement_currency,
             )?,
             kind: merge_field(exchange, &symbol, "kind", self.kind, other.kind)?,
-            tick_size: merge_field(exchange, &symbol, "tick_size", self.tick_size, other.tick_size)?,
+            tick_size: merge_field(
+                exchange,
+                &symbol,
+                "tick_size",
+                self.tick_size,
+                other.tick_size,
+            )?,
             lot_size: merge_field(exchange, &symbol, "lot_size", self.lot_size, other.lot_size)?,
         })
     }
@@ -264,4 +308,19 @@ fn require_field<T>(
         symbol: symbol.to_string(),
         field,
     })
+}
+
+impl From<Instrument> for InstrumentInfo {
+    fn from(value: Instrument) -> Self {
+        Self {
+            exchange: value.symbol.exchange,
+            symbol: value.symbol.code().to_string(),
+            base: Some(value.base.code().to_string()),
+            quote: Some(value.quote.code().to_string()),
+            settlement_currency: Some(value.settlement_currency.code().to_string()),
+            kind: Some(value.kind),
+            tick_size: Some(value.tick_size),
+            lot_size: Some(value.lot_size),
+        }
+    }
 }
