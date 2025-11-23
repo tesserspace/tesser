@@ -30,9 +30,9 @@ use tesser_broker::{
     ConnectorStream, ConnectorStreamConfig, ExecutionClient, MarketStream,
 };
 use tesser_core::{
-    AccountBalance, Candle, DepthUpdate, Fill, Instrument, Interval, LocalOrderBook, Order,
-    OrderBook, OrderId, OrderRequest, OrderStatus, OrderType, OrderUpdateRequest, Position, Price,
-    Quantity, Side, Symbol, Tick, TimeInForce,
+    AccountBalance, AssetId, Candle, DepthUpdate, Fill, Instrument, Interval, LocalOrderBook,
+    Order, OrderBook, OrderId, OrderRequest, OrderStatus, OrderType, OrderUpdateRequest, Position,
+    Price, Quantity, Side, Symbol, Tick, TimeInForce,
 };
 use tokio::{
     select,
@@ -115,7 +115,15 @@ impl Default for PaperConnectorConfig {
 
 impl PaperConnectorConfig {
     fn cache_key(&self) -> String {
-        serde_json::to_string(self).unwrap_or_else(|_| self.symbol.clone())
+        serde_json::to_string(self).unwrap_or_else(|_| self.symbol.to_string())
+    }
+
+    fn balance_asset(&self) -> AssetId {
+        if let Ok(parsed) = self.balance_currency.parse::<AssetId>() {
+            parsed
+        } else {
+            AssetId::from_code(self.symbol.exchange, &self.balance_currency)
+        }
     }
 }
 
@@ -127,17 +135,19 @@ struct PaperRuntimeState {
 
 impl PaperRuntimeState {
     fn new(config: PaperConnectorConfig) -> Self {
-        let stream_name = format!("paper-{}", config.symbol.to_lowercase());
+        let stream_name = format!("paper-{}", config.symbol.code().to_lowercase());
         let fee_schedule = config
             .fee_schedule
             .clone()
             .unwrap_or_else(|| FeeScheduleConfig::flat(config.fee_bps.max(Decimal::ZERO)));
         let fee_model = fee_schedule.build_model();
-        let client = Arc::new(PaperExecutionClient::new(
+        let cash_asset = config.balance_asset();
+        let client = Arc::new(PaperExecutionClient::with_cash_asset(
             stream_name,
-            vec![config.symbol.clone()],
+            vec![config.symbol.to_string()],
             config.slippage_bps,
             fee_model,
+            cash_asset,
         ));
         Self {
             client,
@@ -151,8 +161,9 @@ impl PaperRuntimeState {
         if *guard {
             return;
         }
+        let asset = self.config.balance_asset();
         self.client
-            .initialize_balance(&self.config.balance_currency, self.config.initial_balance)
+            .initialize_balance(asset, self.config.initial_balance)
             .await;
         self.client
             .update_price(&self.config.symbol, self.config.market.initial_price());
@@ -222,7 +233,7 @@ pub fn register_factory() {
 }
 
 fn default_symbol() -> Symbol {
-    "BTCUSDT".to_string()
+    Symbol::from("BTCUSDT")
 }
 
 fn default_balance_currency() -> String {
@@ -255,13 +266,14 @@ pub struct PaperExecutionClient {
     info: BrokerInfo,
     orders: Arc<AsyncMutex<Vec<Order>>>,
     balances: Arc<AsyncMutex<Vec<AccountBalance>>>,
-    positions: Arc<AsyncMutex<Vec<Position>>>,
+    positions: Arc<AsyncMutex<HashMap<Symbol, Position>>>,
     conditional_orders: Arc<AsyncMutex<ConditionalOrderManager>>,
     /// Latest market prices for each symbol
     last_prices: Arc<Mutex<HashMap<Symbol, Price>>>,
     /// Simulation parameters
     slippage_bps: Decimal,
     fee_model: Arc<dyn FeeModel>,
+    cash_asset: Arc<Mutex<AssetId>>,
 }
 
 impl Default for PaperExecutionClient {
@@ -284,6 +296,29 @@ impl PaperExecutionClient {
         slippage_bps: Decimal,
         fee_model: Arc<dyn FeeModel>,
     ) -> Self {
+        Self::with_cash_asset(
+            name,
+            markets,
+            slippage_bps,
+            fee_model,
+            AssetId::from("USDT"),
+        )
+    }
+
+    pub fn with_cash_asset(
+        name: String,
+        markets: Vec<String>,
+        slippage_bps: Decimal,
+        fee_model: Arc<dyn FeeModel>,
+        cash_asset: AssetId,
+    ) -> Self {
+        let initial_balance = AccountBalance {
+            exchange: cash_asset.exchange,
+            asset: cash_asset,
+            total: Decimal::from(10_000),
+            available: Decimal::from(10_000),
+            updated_at: Utc::now(),
+        };
         Self {
             info: BrokerInfo {
                 name,
@@ -291,17 +326,13 @@ impl PaperExecutionClient {
                 supports_testnet: true,
             },
             orders: Arc::new(AsyncMutex::new(Vec::new())),
-            balances: Arc::new(AsyncMutex::new(vec![AccountBalance {
-                currency: "USDT".into(),
-                total: Decimal::from(10_000),
-                available: Decimal::from(10_000),
-                updated_at: Utc::now(),
-            }])),
-            positions: Arc::new(AsyncMutex::new(Vec::new())),
+            balances: Arc::new(AsyncMutex::new(vec![initial_balance])),
+            positions: Arc::new(AsyncMutex::new(HashMap::new())),
             conditional_orders: Arc::new(AsyncMutex::new(ConditionalOrderManager::new())),
             last_prices: Arc::new(Mutex::new(HashMap::new())),
             slippage_bps,
             fee_model,
+            cash_asset: Arc::new(Mutex::new(cash_asset)),
         }
     }
 
@@ -312,15 +343,17 @@ impl PaperExecutionClient {
     }
 
     /// Reset the available balance to a configured amount.
-    pub async fn initialize_balance(&self, currency: &str, amount: Decimal) {
+    pub async fn initialize_balance(&self, asset: AssetId, amount: Decimal) {
+        *self.cash_asset.lock().unwrap() = asset;
         let mut balances = self.balances.lock().await;
-        if let Some(entry) = balances.iter_mut().find(|b| b.currency == currency) {
+        if let Some(entry) = balances.iter_mut().find(|b| b.asset == asset) {
             entry.total = amount;
             entry.available = amount;
             entry.updated_at = Utc::now();
         } else {
             balances.push(AccountBalance {
-                currency: currency.into(),
+                exchange: asset.exchange,
+                asset,
                 total: amount,
                 available: amount,
                 updated_at: Utc::now(),
@@ -330,14 +363,22 @@ impl PaperExecutionClient {
 
     fn compute_fee(
         &self,
-        symbol: &str,
+        symbol: Symbol,
         side: Side,
         role: LiquidityRole,
         price: Price,
         qty: Quantity,
     ) -> Decimal {
         self.fee_model
-            .fee(FeeContext { symbol, side, role }, price, qty)
+            .fee(
+                FeeContext {
+                    symbol: symbol.code(),
+                    side,
+                    role,
+                },
+                price,
+                qty,
+            )
             .max(Decimal::ZERO)
     }
 
@@ -349,7 +390,7 @@ impl PaperExecutionClient {
         timestamp: DateTime<Utc>,
     ) -> Fill {
         let fee_amount = self.compute_fee(
-            &order.request.symbol,
+            order.request.symbol,
             order.request.side,
             LiquidityRole::Taker,
             fill_price,
@@ -500,6 +541,63 @@ impl PaperExecutionClient {
             self.enqueue_conditional(Self::build_pending_order(request))
                 .await;
         }
+    }
+
+    #[allow(dead_code)]
+    async fn apply_fill_accounting(&self, fill: &Fill) {
+        let cash_asset = *self.cash_asset.lock().unwrap();
+        let mut balances = self.balances.lock().await;
+        if let Some(balance) = balances.iter_mut().find(|b| b.asset == cash_asset) {
+            let notional = fill.fill_price * fill.fill_quantity;
+            let fee = fill.fee.unwrap_or(Decimal::ZERO);
+            match fill.side {
+                Side::Buy => balance.available -= notional + fee,
+                Side::Sell => balance.available += notional - fee,
+            }
+            balance.total = balance.available;
+            balance.updated_at = fill.timestamp;
+        }
+        drop(balances);
+
+        let mut positions = self.positions.lock().await;
+        let position = positions.entry(fill.symbol.clone()).or_insert(Position {
+            symbol: fill.symbol.clone(),
+            side: Some(fill.side),
+            quantity: Decimal::ZERO,
+            entry_price: Some(fill.fill_price),
+            unrealized_pnl: Decimal::ZERO,
+            updated_at: fill.timestamp,
+        });
+        match position.side {
+            Some(side) if side == fill.side => {
+                let total_qty = position.quantity + fill.fill_quantity;
+                let prev_cost = position
+                    .entry_price
+                    .map(|price| price * position.quantity)
+                    .unwrap_or_default();
+                let new_cost = fill.fill_price * fill.fill_quantity;
+                position.entry_price = if total_qty.is_zero() {
+                    Some(fill.fill_price)
+                } else {
+                    Some((prev_cost + new_cost) / total_qty)
+                };
+                position.quantity = total_qty;
+            }
+            Some(_) => {
+                position.quantity -= fill.fill_quantity;
+                if position.quantity <= Decimal::ZERO {
+                    position.side = None;
+                    position.entry_price = None;
+                    position.quantity = Decimal::ZERO;
+                }
+            }
+            None => {
+                position.side = Some(fill.side);
+                position.quantity = fill.fill_quantity;
+                position.entry_price = Some(fill.fill_price);
+            }
+        }
+        position.updated_at = fill.timestamp;
     }
 
     /// Inspect conditional orders and emit fills for any whose trigger price was reached.
@@ -739,6 +837,7 @@ pub struct MatchingEngine {
     clock: Arc<Mutex<Option<DateTime<Utc>>>>,
     queue_reset: Arc<AtomicBool>,
     fee_model: Arc<dyn FeeModel>,
+    cash_asset: AssetId,
 }
 
 impl MatchingEngine {
@@ -760,6 +859,7 @@ impl MatchingEngine {
         } else {
             config.latency
         };
+        let cash_asset = AssetId::from("USDT");
         Self {
             info: BrokerInfo {
                 name: name.into(),
@@ -769,7 +869,8 @@ impl MatchingEngine {
             market_depth: Arc::new(Mutex::new(LocalOrderBook::new())),
             resting_depth: Arc::new(Mutex::new(LocalOrderBook::new())),
             balances: Arc::new(AsyncMutex::new(vec![AccountBalance {
-                currency: "USDT".into(),
+                exchange: cash_asset.exchange,
+                asset: cash_asset,
                 total: initial_cash,
                 available: initial_cash,
                 updated_at: now,
@@ -783,6 +884,7 @@ impl MatchingEngine {
             clock: Arc::new(Mutex::new(None)),
             queue_reset: Arc::new(AtomicBool::new(false)),
             fee_model: config.fee_model.clone(),
+            cash_asset,
         }
     }
 
@@ -825,14 +927,22 @@ impl MatchingEngine {
 
     fn compute_fee(
         &self,
-        symbol: &str,
+        symbol: Symbol,
         side: Side,
         role: LiquidityRole,
         price: Price,
         qty: Quantity,
     ) -> Decimal {
         self.fee_model
-            .fee(FeeContext { symbol, side, role }, price, qty)
+            .fee(
+                FeeContext {
+                    symbol: symbol.code(),
+                    side,
+                    role,
+                },
+                price,
+                qty,
+            )
             .max(Decimal::ZERO)
     }
 
@@ -983,7 +1093,7 @@ impl MatchingEngine {
             resting_book.remove_order(resting.order.request.side, resting.price, quantity);
         }
         let fee_amount = self.compute_fee(
-            &resting.order.request.symbol,
+            resting.order.request.symbol,
             resting.order.request.side,
             LiquidityRole::Maker,
             price,
@@ -991,7 +1101,7 @@ impl MatchingEngine {
         );
         let fill = Self::build_fill(
             order_id,
-            &resting.order.request.symbol,
+            resting.order.request.symbol,
             resting.order.request.side,
             price,
             quantity,
@@ -1202,7 +1312,7 @@ impl MatchingEngine {
         for event in triggered {
             let qty = event.order.request.quantity;
             let fee_amount = self.compute_fee(
-                &event.order.request.symbol,
+                event.order.request.symbol,
                 event.order.request.side,
                 LiquidityRole::Taker,
                 event.fill_price,
@@ -1210,7 +1320,7 @@ impl MatchingEngine {
             );
             let fill = Self::build_fill(
                 &event.order.id,
-                &event.order.request.symbol,
+                event.order.request.symbol,
                 event.order.request.side,
                 event.fill_price,
                 qty,
@@ -1231,7 +1341,7 @@ impl MatchingEngine {
 
     fn build_fill(
         order_id: &OrderId,
-        symbol: &str,
+        symbol: Symbol,
         side: Side,
         price: Price,
         qty: Quantity,
@@ -1240,7 +1350,7 @@ impl MatchingEngine {
     ) -> Fill {
         Fill {
             order_id: order_id.clone(),
-            symbol: symbol.to_string(),
+            symbol,
             side,
             fill_price: price,
             fill_quantity: qty,
@@ -1282,8 +1392,9 @@ impl MatchingEngine {
     }
 
     async fn apply_fill_accounting(&self, fill: &Fill) {
+        let cash_asset = self.cash_asset;
         let mut balances = self.balances.lock().await;
-        if let Some(balance) = balances.iter_mut().find(|b| b.currency == "USDT") {
+        if let Some(balance) = balances.iter_mut().find(|b| b.asset == cash_asset) {
             let notional = fill.fill_price * fill.fill_quantity;
             let fee = fill.fee.unwrap_or(Decimal::ZERO);
             match fill.side {
@@ -1374,7 +1485,7 @@ impl MatchingEngine {
         let mut realized_fills = Vec::new();
         for (price, qty) in slices {
             let fee_amount = self.compute_fee(
-                &order.request.symbol,
+                order.request.symbol,
                 order.request.side,
                 LiquidityRole::Taker,
                 *price,
@@ -1382,7 +1493,7 @@ impl MatchingEngine {
             );
             let fill = Self::build_fill(
                 &order.id,
-                &order.request.symbol,
+                order.request.symbol,
                 order.request.side,
                 *price,
                 *qty,
@@ -1503,7 +1614,8 @@ impl ExecutionClient for PaperExecutionClient {
     }
 
     async fn positions(&self) -> BrokerResult<Vec<Position>> {
-        Ok(self.positions.lock().await.clone())
+        let positions = self.positions.lock().await;
+        Ok(positions.values().cloned().collect())
     }
 
     async fn list_instruments(&self, _category: &str) -> BrokerResult<Vec<Instrument>> {
@@ -1646,7 +1758,8 @@ impl Drop for LivePaperStream {
 #[async_trait]
 impl ConnectorStream for LivePaperStream {
     async fn subscribe(&mut self, symbols: &[String], interval: Interval) -> BrokerResult<()> {
-        if !symbols.is_empty() && !symbols.iter().any(|s| s == &self.symbol) {
+        let expected = self.symbol.to_string();
+        if !symbols.is_empty() && !symbols.iter().any(|s| s == &expected) {
             return Err(BrokerError::InvalidRequest(format!(
                 "paper stream only supports symbol {}",
                 self.symbol
@@ -1959,7 +2072,7 @@ impl PaperMarketStream {
             candles: candles.into(),
             info: BrokerInfo {
                 name: "paper-market".into(),
-                markets: vec![symbol],
+                markets: vec![symbol.to_string()],
                 supports_testnet: true,
             },
         }
