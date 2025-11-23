@@ -26,6 +26,26 @@ The CLI spins up three async tasks:
 
 If the process restarts it reloads everything from the SQLite snapshot and resumes from the latest offsets. Pair it with Prometheus exporters to watch latency, error rates, and per-strategy PnL in Grafana.
 
+## Real-Time Monitoring (Commander TUI)
+
+Run the monitor sub-command from another terminal to connect to the live control plane and inspect everything without digging through log files:
+
+```bash
+cargo run -p tesser-cli -- \
+    --env default \
+    monitor \
+    --control-addr 127.0.0.1:50051
+```
+
+What you get:
+
+- **Status header** showing equity, realized PnL, last data timestamp, and whether Liquidate-Only is active.
+- **Positions / Active Orders** tables that stream updates over gRPC so you instantly see fills and algo progress.
+- **Live Log** that color-codes Signals, Order events, and Fills, keeping the event bus visible while the runtime stays headless.
+- **Help & Shortcuts** footer explaining the available key bindings so on-call operators know what to do at a glance.
+
+Press `m` to open the command palette and then `c` to initiate a “Cancel All” panic action. For safety, you must type `cancel all` and hit `Enter` to confirm before the CLI contacts the control plane, making it much harder to fat-finger destructive operations.
+
 ## Connector Rate Limits
 
 Bybit and Binance connectors now enforce client-side throttling. Configure them per exchange entry in `config/{env}.toml`:
