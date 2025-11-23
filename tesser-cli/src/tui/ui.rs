@@ -272,10 +272,37 @@ fn render_log(f: &mut Frame<'_>, area: Rect, app: &MonitorApp) {
 }
 
 fn render_help(f: &mut Frame<'_>, area: Rect) {
-    let help =
-        Paragraph::new("Shortcuts: [q] Quit  [Ctrl+C] Quit  [m] Command palette (m → c → confirm)")
-            .block(Block::default().borders(Borders::ALL).title("Help"))
-            .wrap(Wrap { trim: true });
+    let lines = vec![
+        Line::from(vec![
+            key_hint("q"),
+            Span::raw(" Quit   "),
+            key_hint("Ctrl+C"),
+            Span::raw(" Immediate quit   "),
+            key_hint("m"),
+            Span::raw(" Toggle command palette"),
+        ]),
+        Line::from(vec![
+            Span::styled("In palette: ", Style::default().fg(Color::Gray)),
+            key_hint("c"),
+            Span::raw(" start Cancel-All   "),
+            key_hint("Esc"),
+            Span::raw(" close palette"),
+        ]),
+        Line::from(vec![
+            Span::styled("Confirm Cancel-All: ", Style::default().fg(Color::Gray)),
+            Span::raw("type "),
+            Span::styled("cancel all", Style::default().fg(Color::Yellow)),
+            Span::raw(" then press "),
+            key_hint("Enter"),
+        ]),
+    ];
+    let help = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Help & Shortcuts"),
+        )
+        .wrap(Wrap { trim: true });
     f.render_widget(help, area);
 }
 
@@ -426,4 +453,13 @@ fn color_for(category: LogCategory) -> Style {
         LogCategory::Info => Style::default().fg(Color::Gray),
         LogCategory::Error => Style::default().fg(Color::Red),
     }
+}
+
+fn key_hint(label: &str) -> Span<'_> {
+    Span::styled(
+        format!("[{label}]"),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )
 }
