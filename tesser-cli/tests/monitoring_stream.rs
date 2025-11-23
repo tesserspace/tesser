@@ -10,7 +10,7 @@ use anyhow::{anyhow, Result};
 use chrono::{Duration as ChronoDuration, Utc};
 use rust_decimal::Decimal;
 use tempfile::tempdir;
-use tokio::sync::Notify;
+use tokio::sync::{oneshot, Notify};
 use tokio::time::{sleep, timeout};
 use tonic::transport::Channel;
 
@@ -215,22 +215,39 @@ async fn monitor_streams_signal_events_and_records() -> Result<()> {
     let mut stream = client.monitor(MonitorRequest {}).await?.into_inner();
     ready.notify_waiters();
 
-    let signal = timeout(Duration::from_secs(10), async {
+    let (signal_tx, signal_rx) = oneshot::channel();
+    let monitor_handle = tokio::spawn(async move {
         loop {
-            match stream.message().await? {
-                Some(event) => match event.payload {
+            match stream.message().await {
+                Ok(Some(event)) => match event.payload {
                     Some(Payload::Signal(sig)) => {
-                        println!("monitor received signal id={} symbol={} confidence={}", sig.id, sig.symbol, sig.confidence);
-                        return Ok::<_, tonic::Status>(sig);
+                        println!(
+                            "monitor received signal id={} symbol={} confidence={}",
+                            sig.id, sig.symbol, sig.confidence
+                        );
+                        let _ = signal_tx.send(Ok(sig));
+                        break;
                     }
-                    Some(other) => {
-                        println!("received monitor event: {:?}", other);
-                    }
+                    Some(other) => println!("received monitor event: {:?}", other),
                     None => println!("received monitor event with empty payload"),
                 },
-                None => return Err(tonic::Status::unknown("stream closed")),
+                Ok(None) => {
+                    let _ = signal_tx.send(Err(tonic::Status::unknown("monitor stream closed")));
+                    break;
+                }
+                Err(status) => {
+                    let _ = signal_tx.send(Err(status));
+                    break;
+                }
             }
         }
+    });
+
+    let signal = timeout(Duration::from_secs(10), async {
+        signal_rx
+            .await
+            .map_err(|_| anyhow!("monitor task dropped"))
+            .and_then(|res| res.map_err(|status| anyhow!(status.to_string())))
     })
     .await
     .map_err(|_| anyhow!("timed out waiting for monitor signal"))??;
@@ -239,7 +256,10 @@ async fn monitor_streams_signal_events_and_records() -> Result<()> {
     assert_eq!(signal.note, "integration-monitor");
 
     shutdown.trigger();
-    run_handle.await??;
+    let _ = monitor_handle.await;
+    let _ = timeout(Duration::from_secs(10), run_handle)
+        .await
+        .map_err(|_| anyhow!("live run did not shut down in time"))??;
     exchange.shutdown().await;
 
     let mut found_signal_file = false;
