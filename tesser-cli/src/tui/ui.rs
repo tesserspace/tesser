@@ -34,7 +34,7 @@ pub fn draw(f: &mut Frame<'_>, app: &MonitorApp) {
 
     let footer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(5), Constraint::Length(2)])
+        .constraints([Constraint::Min(5), Constraint::Length(5)])
         .split(layout[2]);
 
     render_log(f, footer[0], app);
