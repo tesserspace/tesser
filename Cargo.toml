@@ -51,7 +51,7 @@ http = "0.2"
 num-traits = "0.2"
 ndarray = { version = "0.16", features = ["std"] }
 prometheus = { version = "0.13", default-features = false, features = ["process"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "stream"] }
 rust_decimal = { version = "1.35", features = ["serde", "maths"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }

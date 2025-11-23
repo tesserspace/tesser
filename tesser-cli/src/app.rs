@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
+use chrono::{DateTime, Days, Duration, NaiveDate, NaiveDateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use csv::Writer;
 use futures::StreamExt;
@@ -38,8 +38,10 @@ use tesser_broker::ExecutionClient;
 use tesser_config::{load_config, AppConfig, PersistenceEngine, RiskManagementConfig};
 use tesser_core::{Candle, DepthUpdate, Interval, OrderBook, OrderBookLevel, Side, Symbol, Tick};
 use tesser_data::analytics::ExecutionAnalysisRequest;
-use tesser_data::download::{BinanceDownloader, BybitDownloader, KlineRequest};
-use tesser_data::io::{self, DatasetFormat as IoDatasetFormat};
+use tesser_data::download::{
+    BinanceDownloader, BybitDownloader, KlineRequest, NormalizedTrade, TradeRequest, TradeSource,
+};
+use tesser_data::io::{self, DatasetFormat as IoDatasetFormat, TicksWriter};
 use tesser_data::merger::UnifiedEventStream;
 use tesser_data::parquet::ParquetMarketStream;
 use tesser_data::transform::Resampler;
@@ -103,6 +105,8 @@ pub enum Commands {
 pub enum DataCommand {
     /// Download historical market data
     Download(DataDownloadArgs),
+    /// Download historical trade ticks
+    DownloadTrades(DataDownloadTradesArgs),
     /// Validate and optionally repair a local data set
     Validate(DataValidateArgs),
     /// Resample existing data (placeholder)
@@ -165,6 +169,70 @@ pub struct DataDownloadArgs {
     /// Allowed divergence between primary and reference closes (fractional)
     #[arg(long, default_value_t = 0.002)]
     validation_reference_tolerance: f64,
+}
+
+#[derive(Args)]
+pub struct DataDownloadTradesArgs {
+    #[arg(long, default_value = "bybit")]
+    exchange: String,
+    #[arg(long)]
+    symbol: String,
+    /// Bybit market category (e.g., linear, inverse, option, spot)
+    #[arg(long, default_value = "linear")]
+    category: String,
+    #[arg(long)]
+    start: String,
+    #[arg(long)]
+    end: Option<String>,
+    #[arg(long)]
+    output: Option<PathBuf>,
+    /// Partition parquet output by trading day
+    #[arg(long)]
+    partition_by_day: bool,
+    /// Per-request REST chunk size (max 1000)
+    #[arg(long, default_value_t = 1000)]
+    limit: usize,
+    /// Trade data source (Bybit only)
+    #[arg(long, value_enum, default_value_t = TradeSourceArg::Rest)]
+    source: TradeSourceArg,
+    /// Skip partitions that already exist
+    #[arg(long)]
+    resume: bool,
+    /// Override Bybit public archive base URL
+    #[arg(long)]
+    bybit_public_url: Option<String>,
+    /// Binance public archive market (spot/futures)
+    #[arg(long, value_enum, default_value_t = BinanceMarketArg::FuturesUm)]
+    binance_market: BinanceMarketArg,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum TradeSourceArg {
+    Rest,
+    #[value(name = "bybit-public")]
+    BybitPublic,
+    #[value(name = "binance-public")]
+    BinancePublic,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum BinanceMarketArg {
+    #[value(name = "spot")]
+    Spot,
+    #[value(name = "futures-um")]
+    FuturesUm,
+    #[value(name = "futures-cm")]
+    FuturesCm,
+}
+
+impl BinanceMarketArg {
+    fn base_path(self) -> &'static str {
+        match self {
+            Self::Spot => "https://data.binance.vision/data/spot/daily/aggTrades",
+            Self::FuturesUm => "https://data.binance.vision/data/futures/um/daily/aggTrades",
+            Self::FuturesCm => "https://data.binance.vision/data/futures/cm/daily/aggTrades",
+        }
+    }
 }
 
 #[derive(Args)]
@@ -317,6 +385,227 @@ impl DataDownloadArgs {
             candles.len(),
             output_path.display()
         );
+        Ok(())
+    }
+}
+
+impl DataDownloadTradesArgs {
+    async fn run(&self, config: &AppConfig) -> Result<()> {
+        let exchange_cfg = config
+            .exchange
+            .get(&self.exchange)
+            .ok_or_else(|| anyhow!("exchange profile '{}' not found in config", self.exchange))?;
+        let start = parse_datetime(&self.start)?;
+        let end = match &self.end {
+            Some(value) => parse_datetime(value)?,
+            None => Utc::now(),
+        };
+        if start >= end {
+            return Err(anyhow!("start time must be earlier than end time"));
+        }
+
+        info!(
+            "Downloading trades for {} on {} ({} -> {})",
+            self.symbol, self.exchange, start, end
+        );
+
+        let cache_dir = config
+            .data_path
+            .join("ticks")
+            .join("cache")
+            .join(&self.exchange)
+            .join(&self.symbol);
+        let mut base_request = TradeRequest::new(&self.symbol, start, end)
+            .with_limit(self.limit)
+            .with_archive_cache_dir(cache_dir)
+            .with_resume_archives(self.resume);
+        let driver = exchange_cfg.driver.as_str();
+        match driver {
+            "bybit" | "" => {
+                if self.source == TradeSourceArg::BinancePublic {
+                    bail!("Binance public archives are not available for Bybit");
+                }
+                base_request = base_request.with_category(&self.category);
+                if self.source == TradeSourceArg::BybitPublic {
+                    base_request = base_request.with_source(TradeSource::BybitPublicArchive);
+                    if let Some(url) = &self.bybit_public_url {
+                        base_request = base_request.with_public_data_url(url);
+                    }
+                }
+            }
+            "binance" => match self.source {
+                TradeSourceArg::Rest => {}
+                TradeSourceArg::BinancePublic => {
+                    base_request = base_request
+                        .with_source(TradeSource::BinancePublicArchive)
+                        .with_public_data_url(self.binance_market.base_path());
+                }
+                TradeSourceArg::BybitPublic => {
+                    bail!("Bybit public archives are not available for Binance");
+                }
+            },
+            other => bail!("unknown exchange driver '{other}' for {}", self.exchange),
+        }
+
+        if self.partition_by_day {
+            self.download_partitioned(config, exchange_cfg, base_request, start, end)
+                .await
+        } else {
+            let trades = self
+                .fetch_trades(driver, &exchange_cfg.rest_url, base_request)
+                .await?;
+            if trades.is_empty() {
+                info!("No trades returned for {}", self.symbol);
+                return Ok(());
+            }
+            self.write_single(config, trades, start, end)
+        }
+    }
+
+    async fn download_partitioned(
+        &self,
+        config: &AppConfig,
+        exchange_cfg: &tesser_config::ExchangeConfig,
+        base_request: TradeRequest<'_>,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<()> {
+        let base_dir = self
+            .output
+            .clone()
+            .unwrap_or_else(|| default_tick_partition_dir(config, &self.exchange, &self.symbol));
+        let mut current = start.date_naive();
+        let final_date = end.date_naive();
+        let mut total = 0usize;
+        let mut files_written = 0usize;
+
+        while current <= final_date {
+            let next_date = current.checked_add_days(Days::new(1)).unwrap_or(current);
+            let day_start = DateTime::<Utc>::from_naive_utc_and_offset(
+                current
+                    .and_hms_opt(0, 0, 0)
+                    .ok_or_else(|| anyhow!("invalid date {}", current))?,
+                Utc,
+            )
+            .max(start);
+            let day_end = DateTime::<Utc>::from_naive_utc_and_offset(
+                next_date
+                    .and_hms_opt(0, 0, 0)
+                    .ok_or_else(|| anyhow!("invalid date {}", next_date))?,
+                Utc,
+            )
+            .min(end);
+
+            if day_start >= day_end {
+                if next_date == current {
+                    break;
+                }
+                current = next_date;
+                continue;
+            }
+
+            let partition_path = partition_path(&base_dir, current);
+            if self.resume && partition_path.exists() {
+                info!(
+                    "Skipping {} because {} already exists",
+                    current,
+                    partition_path.display()
+                );
+                if next_date == current {
+                    break;
+                }
+                current = next_date;
+                continue;
+            }
+
+            let mut day_request = base_request.clone();
+            day_request.start = day_start;
+            day_request.end = day_end;
+            let trades = self
+                .fetch_trades(
+                    exchange_cfg.driver.as_str(),
+                    &exchange_cfg.rest_url,
+                    day_request,
+                )
+                .await?;
+
+            if trades.is_empty() {
+                info!("No trades returned for {}", current);
+                if next_date == current {
+                    break;
+                }
+                current = next_date;
+                continue;
+            }
+
+            let mut writer = TicksWriter::new(&partition_path);
+            let count = trades.len();
+            writer.extend(trades.into_iter().map(|trade| (trade.trade_id, trade.tick)));
+            writer.finish()?;
+            total += count;
+            files_written += 1;
+            info!(
+                "Saved {} raw trades for {} to {}",
+                count,
+                current,
+                partition_path.display()
+            );
+
+            if next_date == current {
+                break;
+            }
+            current = next_date;
+        }
+
+        info!(
+            "Partitioned {} raw trades across {} file(s) under {}",
+            total,
+            files_written,
+            base_dir.display()
+        );
+        Ok(())
+    }
+
+    async fn fetch_trades(
+        &self,
+        driver: &str,
+        rest_url: &str,
+        request: TradeRequest<'_>,
+    ) -> Result<Vec<NormalizedTrade>> {
+        match driver {
+            "bybit" | "" => {
+                let downloader = BybitDownloader::new(rest_url);
+                downloader
+                    .download_trades(&request)
+                    .await
+                    .with_context(|| "failed to download trades from Bybit")
+            }
+            "binance" => {
+                let downloader = BinanceDownloader::new(rest_url);
+                downloader
+                    .download_trades(&request)
+                    .await
+                    .with_context(|| "failed to download trades from Binance")
+            }
+            other => bail!("unknown exchange driver '{other}' for {}", self.exchange),
+        }
+    }
+
+    fn write_single(
+        &self,
+        config: &AppConfig,
+        trades: Vec<NormalizedTrade>,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<()> {
+        let output_path = self.output.clone().unwrap_or_else(|| {
+            default_tick_output_path(config, &self.exchange, &self.symbol, start, end)
+        });
+        let total = trades.len();
+        let mut writer = TicksWriter::new(&output_path);
+        writer.extend(trades.into_iter().map(|trade| (trade.trade_id, trade.tick)));
+        writer.finish()?;
+        info!("Saved {} raw trades to {}", total, output_path.display());
         Ok(())
     }
 }
@@ -833,6 +1122,9 @@ pub async fn run() -> Result<()> {
 async fn handle_data(cmd: DataCommand, config: &AppConfig) -> Result<()> {
     match cmd {
         DataCommand::Download(args) => {
+            args.run(config).await?;
+        }
+        DataCommand::DownloadTrades(args) => {
             args.run(config).await?;
         }
         DataCommand::Validate(args) => {
@@ -1620,6 +1912,30 @@ fn default_output_path(
         .join(exchange)
         .join(symbol)
         .join(format!("{}_{}-{}.csv", interval_part, start_part, end_part))
+}
+
+fn default_tick_output_path(
+    config: &AppConfig,
+    exchange: &str,
+    symbol: &str,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> PathBuf {
+    let start_part = start.format("%Y%m%dT%H%M%S").to_string();
+    let end_part = end.format("%Y%m%dT%H%M%S").to_string();
+    config
+        .data_path
+        .join("ticks")
+        .join(exchange)
+        .join(format!("{symbol}_{start_part}-{end_part}.parquet"))
+}
+
+fn default_tick_partition_dir(config: &AppConfig, exchange: &str, symbol: &str) -> PathBuf {
+    config.data_path.join("ticks").join(exchange).join(symbol)
+}
+
+fn partition_path(base_dir: &Path, date: NaiveDate) -> PathBuf {
+    base_dir.join(format!("{}.parquet", date.format("%Y-%m-%d")))
 }
 
 fn interval_label(interval: Interval) -> &'static str {

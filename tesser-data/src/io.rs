@@ -1,5 +1,6 @@
+use std::collections::HashSet;
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::{anyhow, Context, Result};
@@ -13,9 +14,9 @@ use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use rust_decimal::Decimal;
 
-use tesser_core::{Candle, Interval};
+use tesser_core::{Candle, Interval, Tick};
 
-use crate::encoding::candles_to_batch;
+use crate::encoding::{candles_to_batch, ticks_to_batch};
 
 /// Canonical formats supported by `read_dataset`/`write_dataset`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,6 +64,67 @@ pub fn write_dataset(path: &Path, format: DatasetFormat, candles: &[Candle]) -> 
     match format {
         DatasetFormat::Csv => write_csv(path, candles),
         DatasetFormat::Parquet => write_parquet(path, candles),
+    }
+}
+
+/// Helper for normalizing and persisting tick data to parquet files.
+pub struct TicksWriter {
+    path: PathBuf,
+    rows: Vec<Tick>,
+    seen_ids: HashSet<String>,
+}
+
+impl TicksWriter {
+    /// Build a writer bound to the provided destination path.
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            rows: Vec::new(),
+            seen_ids: HashSet::new(),
+        }
+    }
+
+    /// Current number of buffered ticks (before final dedupe).
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Returns true when no ticks have been appended.
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Append a single tick, skipping duplicates that reuse the same trade identifier.
+    pub fn push(&mut self, trade_id: Option<String>, tick: Tick) {
+        if let Some(id) = trade_id.filter(|value| !value.is_empty()) {
+            if !self.seen_ids.insert(id) {
+                return;
+            }
+        }
+        self.rows.push(tick);
+    }
+
+    /// Extend the writer with one or more `(trade_id, tick)` tuples.
+    pub fn extend<I>(&mut self, trades: I)
+    where
+        I: IntoIterator<Item = (Option<String>, Tick)>,
+    {
+        for (trade_id, tick) in trades {
+            self.push(trade_id, tick);
+        }
+    }
+
+    /// Finalize the parquet file once all ticks have been queued.
+    pub fn finish(mut self) -> Result<()> {
+        self.rows
+            .sort_by_key(|tick| tick.exchange_timestamp.timestamp_millis());
+        self.rows.dedup_by(|a, b| {
+            a.exchange_timestamp == b.exchange_timestamp
+                && a.price == b.price
+                && a.size == b.size
+                && a.side == b.side
+        });
+        write_ticks_parquet(&self.path, &self.rows)
     }
 }
 
@@ -165,6 +227,23 @@ fn write_parquet(path: &Path, candles: &[Candle]) -> Result<()> {
             .with_context(|| format!("failed to create directory {}", parent.display()))?;
     }
     let batch = candles_to_batch(candles)?;
+    let file =
+        File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
+    let props = WriterProperties::builder()
+        .set_compression(Compression::ZSTD(ZstdLevel::default()))
+        .build();
+    let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))?;
+    writer.write(&batch)?;
+    writer.close()?;
+    Ok(())
+}
+
+fn write_ticks_parquet(path: &Path, ticks: &[Tick]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create directory {}", parent.display()))?;
+    }
+    let batch = ticks_to_batch(ticks)?;
     let file =
         File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
     let props = WriterProperties::builder()
@@ -307,9 +386,12 @@ fn timestamp_value(batch: &RecordBatch, column: usize, row: usize) -> Result<Dat
 
 #[cfg(test)]
 mod tests {
-    use chrono::{Duration, Utc};
-    use rust_decimal::Decimal;
+    use std::fs::File;
+
+    use chrono::{Duration, TimeZone, Utc};
+    use rust_decimal::{prelude::FromPrimitive, Decimal};
     use tempfile::tempdir;
+    use tesser_core::{Side, Symbol};
 
     use super::*;
 
@@ -349,5 +431,55 @@ mod tests {
         let dataset = read_dataset(&path)?;
         assert_eq!(dataset.candles.len(), candles.len());
         Ok(())
+    }
+
+    #[test]
+    fn ticks_writer_dedupes_trade_ids_and_payloads() -> Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("ticks.parquet");
+        let mut writer = TicksWriter::new(&path);
+        writer.push(
+            Some("trade-1".to_string()),
+            sample_tick(1_000, 100.0, 1.0, Side::Buy),
+        );
+        // Duplicate ID should be skipped.
+        writer.push(
+            Some("trade-1".to_string()),
+            sample_tick(1_000, 100.0, 1.0, Side::Buy),
+        );
+        // Same payload without ID should dedupe during finish.
+        writer.extend([
+            (None, sample_tick(2_000, 101.0, 2.0, Side::Sell)),
+            (None, sample_tick(2_000, 101.0, 2.0, Side::Sell)),
+        ]);
+        writer.finish()?;
+
+        let file = File::open(&path)?;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)?
+            .with_batch_size(8)
+            .build()?;
+        let mut rows = 0;
+        for batch in reader {
+            rows += batch?.num_rows();
+        }
+        assert_eq!(rows, 2);
+        Ok(())
+    }
+
+    fn sample_tick(ts_ms: i64, price: f64, size: f64, side: Side) -> Tick {
+        let price = Decimal::from_f64(price).expect("valid price");
+        let size = Decimal::from_f64(size).expect("valid size");
+        let timestamp = Utc
+            .timestamp_millis_opt(ts_ms)
+            .single()
+            .expect("valid timestamp");
+        Tick {
+            symbol: Symbol::from("BTCUSDT"),
+            price,
+            size,
+            side,
+            exchange_timestamp: timestamp,
+            received_at: timestamp,
+        }
     }
 }
