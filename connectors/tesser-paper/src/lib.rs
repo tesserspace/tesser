@@ -30,8 +30,8 @@ use tesser_broker::{
 };
 use tesser_core::{
     AccountBalance, Candle, DepthUpdate, Fill, Instrument, Interval, LocalOrderBook, Order,
-    OrderBook, OrderId, OrderRequest, OrderStatus, OrderType, Position, Price, Quantity, Side,
-    Symbol, Tick, TimeInForce,
+    OrderBook, OrderId, OrderRequest, OrderStatus, OrderType, OrderUpdateRequest, Position, Price,
+    Quantity, Side, Symbol, Tick, TimeInForce,
 };
 use tokio::{
     select,
@@ -559,6 +559,58 @@ impl ExecutionClient for MatchingEngine {
         }
     }
 
+    async fn amend_order(&self, request: OrderUpdateRequest) -> BrokerResult<Order> {
+        let mut open = self.open_orders.lock().await;
+        let resting = open.get_mut(&request.order_id).ok_or_else(|| {
+            BrokerError::InvalidRequest(format!("order {} not found", request.order_id))
+        })?;
+        if resting.order.request.symbol != request.symbol {
+            return Err(BrokerError::InvalidRequest(
+                "symbol mismatch for amend".into(),
+            ));
+        }
+        if resting.order.request.side != request.side {
+            return Err(BrokerError::InvalidRequest(
+                "side mismatch for amend".into(),
+            ));
+        }
+        {
+            let mut book = self.resting_depth.lock().unwrap();
+            book.remove_order(resting.order.request.side, resting.price, resting.remaining);
+        }
+        if let Some(price) = request.new_price {
+            resting.price = price;
+            resting.order.request.price = Some(price);
+        }
+        if let Some(quantity) = request.new_quantity {
+            if quantity < resting.order.filled_quantity {
+                return Err(BrokerError::InvalidRequest(
+                    "new quantity below filled amount".into(),
+                ));
+            }
+            resting.order.request.quantity = quantity;
+            resting.remaining = (quantity - resting.order.filled_quantity).max(Decimal::ZERO);
+        } else {
+            resting.remaining =
+                (resting.order.request.quantity - resting.order.filled_quantity).max(Decimal::ZERO);
+        }
+        if resting.remaining <= Decimal::ZERO {
+            resting.order.status = OrderStatus::Filled;
+        } else if resting.order.filled_quantity > Decimal::ZERO {
+            resting.order.status = OrderStatus::PartiallyFilled;
+        } else {
+            resting.order.status = OrderStatus::Accepted;
+        }
+        resting.order.updated_at = Utc::now();
+        {
+            let mut book = self.resting_depth.lock().unwrap();
+            if resting.remaining > Decimal::ZERO {
+                book.add_order(resting.order.request.side, resting.price, resting.remaining);
+            }
+        }
+        Ok(resting.order.clone())
+    }
+
     async fn list_open_orders(&self, _symbol: &str) -> BrokerResult<Vec<Order>> {
         let open = self.open_orders.lock().await;
         Ok(open.values().map(|resting| resting.order.clone()).collect())
@@ -1078,6 +1130,34 @@ impl ExecutionClient for PaperExecutionClient {
 
     async fn cancel_order(&self, _order_id: OrderId, _symbol: &str) -> BrokerResult<()> {
         Ok(())
+    }
+
+    async fn amend_order(&self, request: OrderUpdateRequest) -> BrokerResult<Order> {
+        let mut orders = self.orders.lock().await;
+        if let Some(order) = orders.iter_mut().find(|o| o.id == request.order_id) {
+            if order.request.symbol != request.symbol {
+                return Err(BrokerError::InvalidRequest(
+                    "symbol mismatch for amend".into(),
+                ));
+            }
+            if order.request.side != request.side {
+                return Err(BrokerError::InvalidRequest(
+                    "side mismatch for amend".into(),
+                ));
+            }
+            if let Some(price) = request.new_price {
+                order.request.price = Some(price);
+            }
+            if let Some(quantity) = request.new_quantity {
+                order.request.quantity = quantity;
+            }
+            order.updated_at = Utc::now();
+            return Ok(order.clone());
+        }
+        Err(BrokerError::InvalidRequest(format!(
+            "order {} not found",
+            request.order_id
+        )))
     }
 
     async fn list_open_orders(&self, _symbol: &str) -> BrokerResult<Vec<Order>> {

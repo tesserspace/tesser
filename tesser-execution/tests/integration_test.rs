@@ -4,8 +4,9 @@ use std::sync::Arc;
 use tempfile::NamedTempFile;
 use tesser_core::{ExecutionHint, Signal, SignalKind};
 use tesser_execution::{
-    algorithm::TwapAlgorithm, AlgoStatus, ExecutionAlgorithm, ExecutionEngine, FixedOrderSizer,
-    NoopRiskChecker, OrderOrchestrator, RiskContext, SqliteAlgoStateRepository,
+    algorithm::{ChildOrderAction, TwapAlgorithm},
+    AlgoStatus, ExecutionAlgorithm, ExecutionEngine, FixedOrderSizer, NoopRiskChecker,
+    OrderOrchestrator, RiskContext, SqliteAlgoStateRepository,
 };
 use tesser_paper::PaperExecutionClient;
 
@@ -36,7 +37,12 @@ async fn test_twap_algorithm_basic() {
     // Trigger timer event to get first slice
     let orders = twap.on_timer().unwrap();
     assert_eq!(orders.len(), 1);
-    assert_eq!(orders[0].order_request.quantity, Decimal::new(5, 1)); // 0.5
+    match &orders[0].action {
+        ChildOrderAction::Place(request) => {
+            assert_eq!(request.quantity, Decimal::new(5, 1));
+        }
+        other => panic!("unexpected order action: {other:?}"),
+    }
 
     // Wait for the next slice interval (1 second for 2 slices over 2 seconds)
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
@@ -45,7 +51,10 @@ async fn test_twap_algorithm_basic() {
     // the second slice gets all remaining quantity
     let orders = twap.on_timer().unwrap();
     assert_eq!(orders.len(), 1);
-    assert_eq!(orders[0].order_request.quantity, Decimal::ONE); // All remaining quantity
+    match &orders[0].action {
+        ChildOrderAction::Place(request) => assert_eq!(request.quantity, Decimal::ONE),
+        other => panic!("unexpected order action: {other:?}"),
+    }
 
     // After all slices are executed, no more orders should be generated
     let orders = twap.on_timer().unwrap();

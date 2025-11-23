@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tesser_core::{Order, OrderRequest, OrderType, Quantity, Signal, Tick};
 use uuid::Uuid;
 
-use super::{AlgoStatus, ChildOrderRequest, ExecutionAlgorithm};
+use super::{AlgoStatus, ChildOrderAction, ChildOrderRequest, ExecutionAlgorithm};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct VwapState {
@@ -92,7 +92,7 @@ impl VwapAlgorithm {
         self.state.next_child_seq += 1;
         ChildOrderRequest {
             parent_algo_id: self.state.id,
-            order_request: OrderRequest {
+            action: ChildOrderAction::Place(OrderRequest {
                 symbol: self.state.parent_signal.symbol.clone(),
                 side: self.state.parent_signal.kind.side(),
                 order_type: OrderType::Market,
@@ -107,7 +107,7 @@ impl VwapAlgorithm {
                 take_profit: None,
                 stop_loss: None,
                 display_quantity: None,
-            },
+            }),
         }
     }
 

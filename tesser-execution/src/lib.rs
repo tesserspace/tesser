@@ -14,7 +14,8 @@ use rust_decimal::Decimal;
 use std::sync::Arc;
 use tesser_broker::{BrokerError, BrokerResult, ExecutionClient};
 use tesser_core::{
-    Order, OrderRequest, OrderType, Price, Quantity, Side, Signal, SignalKind, Symbol,
+    Order, OrderRequest, OrderType, OrderUpdateRequest, Price, Quantity, Side, Signal, SignalKind,
+    Symbol,
 };
 use thiserror::Error;
 use tracing::{info, warn};
@@ -457,6 +458,16 @@ impl ExecutionEngine {
             order_id = %order.id,
             qty = %order.request.quantity,
             "order sent to broker"
+        );
+        Ok(order)
+    }
+
+    pub async fn amend_order(&self, request: OrderUpdateRequest) -> BrokerResult<Order> {
+        let order = self.client.amend_order(request).await?;
+        info!(
+            order_id = %order.id,
+            qty = %order.request.quantity,
+            "order amended via broker"
         );
         Ok(order)
     }

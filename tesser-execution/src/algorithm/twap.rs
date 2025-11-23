@@ -6,7 +6,7 @@ use rust_decimal::{prelude::FromPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{AlgoStatus, ChildOrderRequest, ExecutionAlgorithm};
+use super::{AlgoStatus, ChildOrderAction, ChildOrderRequest, ExecutionAlgorithm};
 use tesser_core::{Fill, Order, OrderRequest, OrderStatus, OrderType, Quantity, Signal, Tick};
 
 /// Persistent state for the TWAP algorithm.
@@ -113,7 +113,7 @@ impl TwapAlgorithm {
     fn create_slice_order(&self, slice_qty: Quantity) -> ChildOrderRequest {
         ChildOrderRequest {
             parent_algo_id: self.state.id,
-            order_request: OrderRequest {
+            action: ChildOrderAction::Place(OrderRequest {
                 symbol: self.state.parent_signal.symbol.clone(),
                 side: self.state.parent_signal.kind.side(),
                 order_type: OrderType::Market,
@@ -129,7 +129,7 @@ impl TwapAlgorithm {
                 take_profit: None,
                 stop_loss: None,
                 display_quantity: None,
-            },
+            }),
         }
     }
 

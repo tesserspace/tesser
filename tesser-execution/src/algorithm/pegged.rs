@@ -3,11 +3,12 @@ use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use tesser_core::{
-    Order, OrderRequest, OrderStatus, OrderType, Quantity, Signal, Tick, TimeInForce,
+    Order, OrderId, OrderRequest, OrderStatus, OrderType, OrderUpdateRequest, Quantity, Signal,
+    Tick, TimeInForce,
 };
 use uuid::Uuid;
 
-use super::{AlgoStatus, ChildOrderRequest, ExecutionAlgorithm};
+use super::{AlgoStatus, ChildOrderAction, ChildOrderRequest, ExecutionAlgorithm};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct PeggedState {
@@ -22,6 +23,25 @@ struct PeggedState {
     last_order_time: Option<DateTime<Utc>>,
     last_peg_price: Option<Decimal>,
     next_child_seq: u32,
+    #[serde(default)]
+    min_chase_distance: Decimal,
+    #[serde(default)]
+    active_child: Option<ActiveChildOrder>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ActiveChildOrder {
+    order_id: OrderId,
+    client_order_id: Option<String>,
+    total_quantity: Quantity,
+    filled_quantity: Quantity,
+    working_price: Option<Decimal>,
+}
+
+impl ActiveChildOrder {
+    fn remaining(&self) -> Quantity {
+        (self.total_quantity - self.filled_quantity).max(Decimal::ZERO)
+    }
 }
 
 /// Algorithm that repeatedly submits IOC limit orders pegged to the top of book.
@@ -36,6 +56,7 @@ impl PeggedBestAlgorithm {
         offset_bps: Decimal,
         clip_size: Option<Quantity>,
         refresh: Duration,
+        min_chase_distance: Option<Decimal>,
     ) -> Result<Self> {
         if total_quantity <= Decimal::ZERO {
             return Err(anyhow!("pegged algorithm requires positive quantity"));
@@ -67,6 +88,10 @@ impl PeggedBestAlgorithm {
                 last_order_time: None,
                 last_peg_price: None,
                 next_child_seq: 0,
+                min_chase_distance: min_chase_distance
+                    .unwrap_or(Decimal::ZERO)
+                    .max(Decimal::ZERO),
+                active_child: None,
             },
         })
     }
@@ -89,8 +114,20 @@ impl PeggedBestAlgorithm {
         }
         self.state
             .last_peg_price
-            .map(|prev| (prev - price).abs() > Decimal::ZERO)
+            .map(|prev| (prev - price).abs() > self.state.min_chase_distance)
             .unwrap_or(true)
+    }
+
+    fn should_chase(&self, price: Decimal, now: DateTime<Utc>) -> bool {
+        if self.last_emit_elapsed(now) < self.state.refresh {
+            return false;
+        }
+        if let Some(prev) = self.state.last_peg_price {
+            if (prev - price).abs() < self.state.min_chase_distance {
+                return false;
+            }
+        }
+        true
     }
 
     fn last_emit_elapsed(&self, now: DateTime<Utc>) -> Duration {
@@ -104,14 +141,14 @@ impl PeggedBestAlgorithm {
         self.state.next_child_seq += 1;
         ChildOrderRequest {
             parent_algo_id: self.state.id,
-            order_request: OrderRequest {
+            action: ChildOrderAction::Place(OrderRequest {
                 symbol: self.state.parent_signal.symbol.clone(),
                 side: self.state.parent_signal.kind.side(),
                 order_type: OrderType::Limit,
                 quantity: qty,
                 price: Some(price),
                 trigger_price: None,
-                time_in_force: Some(TimeInForce::ImmediateOrCancel),
+                time_in_force: Some(TimeInForce::GoodTilCanceled),
                 client_order_id: Some(format!(
                     "peg-{}-{}",
                     self.state.id, self.state.next_child_seq
@@ -119,7 +156,7 @@ impl PeggedBestAlgorithm {
                 take_profit: None,
                 stop_loss: None,
                 display_quantity: None,
-            },
+            }),
         }
     }
 
@@ -168,12 +205,30 @@ impl ExecutionAlgorithm for PeggedBestAlgorithm {
         Ok(Vec::new())
     }
 
-    fn on_child_order_placed(&mut self, _order: &Order) {
+    fn on_child_order_placed(&mut self, order: &Order) {
         self.state.last_order_time = Some(Utc::now());
+        if let Some(price) = order.request.price {
+            self.state.last_peg_price = Some(price);
+        }
+        self.state.active_child = Some(ActiveChildOrder {
+            order_id: order.id.clone(),
+            client_order_id: order.request.client_order_id.clone(),
+            total_quantity: order.request.quantity,
+            filled_quantity: order.filled_quantity,
+            working_price: order.request.price,
+        });
     }
 
     fn on_fill(&mut self, fill: &tesser_core::Fill) -> Result<Vec<ChildOrderRequest>> {
         self.state.filled_quantity += fill.fill_quantity;
+        if let Some(active) = self.state.active_child.as_mut() {
+            if active.order_id == fill.order_id {
+                active.filled_quantity += fill.fill_quantity;
+                if active.remaining() <= Decimal::ZERO {
+                    self.state.active_child = None;
+                }
+            }
+        }
         self.mark_completed();
         Ok(Vec::new())
     }
@@ -189,11 +244,35 @@ impl ExecutionAlgorithm for PeggedBestAlgorithm {
         }
         let now = Utc::now();
         let price = self.peg_price(tick.price.max(Decimal::ZERO));
+        if let Some(active) = &self.state.active_child {
+            if !self.should_chase(price, now) {
+                return Ok(Vec::new());
+            }
+            if active.remaining() <= Decimal::ZERO {
+                return Ok(Vec::new());
+            }
+            self.state.last_peg_price = Some(price);
+            self.state.last_order_time = Some(now);
+            let request = OrderUpdateRequest {
+                order_id: active.order_id.clone(),
+                symbol: self.state.parent_signal.symbol.clone(),
+                side: self.state.parent_signal.kind.side(),
+                new_price: Some(price),
+                new_quantity: Some(active.total_quantity),
+            };
+            return Ok(vec![ChildOrderRequest {
+                parent_algo_id: self.state.id,
+                action: ChildOrderAction::Amend(request),
+            }]);
+        }
         if !self.should_refresh(price, now) {
             return Ok(Vec::new());
         }
         self.state.last_peg_price = Some(price);
         let qty = remaining.min(self.state.clip_size);
+        if qty <= Decimal::ZERO {
+            return Ok(Vec::new());
+        }
         Ok(vec![self.build_child(price, qty)])
     }
 
@@ -221,6 +300,13 @@ impl ExecutionAlgorithm for PeggedBestAlgorithm {
         if let Some(price) = order.request.price {
             self.state.last_peg_price = Some(price);
         }
+        self.state.active_child = Some(ActiveChildOrder {
+            order_id: order.id.clone(),
+            client_order_id: order.request.client_order_id.clone(),
+            total_quantity: order.request.quantity,
+            filled_quantity: order.filled_quantity,
+            working_price: order.request.price,
+        });
         if !matches!(self.status(), AlgoStatus::Working) {
             self.state.status = "Working".into();
         }
@@ -254,6 +340,7 @@ mod tests {
             Decimal::new(5, 1),
             None,
             Duration::seconds(1),
+            Some(Decimal::new(1, 2)),
         )
         .unwrap();
         let tick = Tick {
@@ -266,6 +353,9 @@ mod tests {
         };
         let orders = algo.on_tick(&tick).unwrap();
         assert_eq!(orders.len(), 1);
-        assert!(orders[0].order_request.quantity > Decimal::ZERO);
+        match &orders[0].action {
+            ChildOrderAction::Place(request) => assert!(request.quantity > Decimal::ZERO),
+            other => panic!("unexpected action: {other:?}"),
+        }
     }
 }

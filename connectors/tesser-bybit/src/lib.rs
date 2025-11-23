@@ -20,7 +20,7 @@ use tesser_broker::{
 };
 use tesser_core::{
     AccountBalance, Candle, Fill, Instrument, InstrumentKind, Order, OrderBook, OrderRequest,
-    OrderStatus, Position, Quantity, Side, TimeInForce,
+    OrderStatus, OrderType, OrderUpdateRequest, Position, Quantity, Side, TimeInForce,
 };
 use tracing::warn;
 
@@ -406,6 +406,57 @@ impl ExecutionClient for BybitClient {
         self.signed_request::<serde_json::Value>(Method::POST, "/v5/order/cancel", payload, None)
             .await?;
         Ok(())
+    }
+
+    async fn amend_order(&self, request: OrderUpdateRequest) -> BrokerResult<Order> {
+        let mut payload = serde_json::json!({
+            "category": self.config.category,
+            "symbol": request.symbol,
+            "orderId": request.order_id,
+        });
+        if let Some(price) = request.new_price {
+            payload["price"] = serde_json::json!(price);
+        }
+        if let Some(quantity) = request.new_quantity {
+            payload["qty"] = serde_json::json!(Self::qty_string(quantity));
+        }
+        if payload.get("price").is_none() && payload.get("qty").is_none() {
+            return Err(BrokerError::InvalidRequest(
+                "amend requires price or quantity".into(),
+            ));
+        }
+        let resp: ApiResponse<CreateOrderResult> = self
+            .signed_request(Method::POST, "/v5/order/amend", payload, None)
+            .await?;
+        if let Ok(mut open_orders) = self.list_open_orders(&request.symbol).await {
+            if let Some(order) = open_orders
+                .into_iter()
+                .find(|order| order.id == resp.result.order_id)
+            {
+                return Ok(order);
+            }
+        }
+        Ok(Order {
+            id: resp.result.order_id,
+            request: OrderRequest {
+                symbol: request.symbol,
+                side: request.side,
+                order_type: OrderType::Limit,
+                quantity: request.new_quantity.unwrap_or(Decimal::ZERO),
+                price: request.new_price,
+                trigger_price: None,
+                time_in_force: None,
+                client_order_id: None,
+                take_profit: None,
+                stop_loss: None,
+                display_quantity: None,
+            },
+            status: OrderStatus::PendingNew,
+            filled_quantity: Decimal::ZERO,
+            avg_fill_price: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
     }
 
     async fn list_open_orders(&self, symbol: &str) -> BrokerResult<Vec<Order>> {

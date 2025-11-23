@@ -507,11 +507,13 @@ fn execution_hint_metadata(hint: &ExecutionHint) -> serde_json::Value {
             offset_bps,
             clip_size,
             refresh_secs,
+            min_chase_distance,
         } => json!({
             "type": "pegged_best",
             "offset_bps": offset_bps.to_string(),
             "clip_size": clip_size.as_ref().map(|d| d.to_string()),
             "refresh_secs": refresh_secs,
+            "min_chase_distance": min_chase_distance.as_ref().map(|d| d.to_string()),
         }),
         ExecutionHint::Sniper {
             trigger_price,

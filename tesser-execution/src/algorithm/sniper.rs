@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tesser_core::{Order, OrderRequest, OrderType, Price, Quantity, Signal, SignalKind, Tick};
 use uuid::Uuid;
 
-use super::{AlgoStatus, ChildOrderRequest, ExecutionAlgorithm};
+use super::{AlgoStatus, ChildOrderAction, ChildOrderRequest, ExecutionAlgorithm};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct SniperState {
@@ -68,7 +68,7 @@ impl SniperAlgorithm {
     fn build_child(&mut self, qty: Quantity) -> ChildOrderRequest {
         ChildOrderRequest {
             parent_algo_id: self.state.id,
-            order_request: OrderRequest {
+            action: ChildOrderAction::Place(OrderRequest {
                 symbol: self.state.parent_signal.symbol.clone(),
                 side: self.state.parent_signal.kind.side(),
                 order_type: OrderType::Market,
@@ -80,7 +80,7 @@ impl SniperAlgorithm {
                 take_profit: None,
                 stop_loss: None,
                 display_quantity: None,
-            },
+            }),
         }
     }
 
@@ -185,6 +185,11 @@ mod tests {
         };
         let orders = algo.on_tick(&tick).unwrap();
         assert_eq!(orders.len(), 1);
-        assert!(orders[0].order_request.order_type == OrderType::Market);
+        match &orders[0].action {
+            ChildOrderAction::Place(request) => {
+                assert_eq!(request.order_type, OrderType::Market);
+            }
+            other => panic!("unexpected action: {other:?}"),
+        }
     }
 }

@@ -135,6 +135,8 @@ pub enum ExecutionHint {
         clip_size: Option<Quantity>,
         #[serde(default)]
         refresh_secs: Option<u64>,
+        #[serde(default)]
+        min_chase_distance: Option<Price>,
     },
     /// Sits on the sidelines until a target price is reached, then fires aggressively.
     Sniper {
@@ -579,6 +581,16 @@ pub struct OrderRequest {
     pub take_profit: Option<Price>,
     pub stop_loss: Option<Price>,
     pub display_quantity: Option<Quantity>,
+}
+
+/// Order amendment intent allowing connectors to update existing orders in-place.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct OrderUpdateRequest {
+    pub order_id: OrderId,
+    pub symbol: Symbol,
+    pub side: Side,
+    pub new_price: Option<Price>,
+    pub new_quantity: Option<Quantity>,
 }
 
 /// High-level order status maintained inside the framework.

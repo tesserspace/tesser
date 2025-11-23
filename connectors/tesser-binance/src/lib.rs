@@ -21,7 +21,7 @@ use tesser_broker::{
 };
 use tesser_core::{
     AccountBalance, Candle, Fill, Instrument, InstrumentKind, Order, OrderBook, OrderRequest,
-    OrderStatus, OrderType, Position, Side, TimeInForce,
+    OrderStatus, OrderType, OrderUpdateRequest, Position, Side, TimeInForce,
 };
 use tokio::time::sleep;
 use uuid::Uuid;
@@ -270,6 +270,35 @@ impl ExecutionClient for BinanceClient {
         Ok(())
     }
 
+    async fn amend_order(&self, request: OrderUpdateRequest) -> BrokerResult<Order> {
+        self.throttle_weight(ORDER_WEIGHT).await?;
+        let new_price = request.new_price.ok_or_else(|| {
+            BrokerError::InvalidRequest("amend requires new price for Binance".into())
+        })?;
+        let new_qty = request.new_quantity.ok_or_else(|| {
+            BrokerError::InvalidRequest("amend requires new quantity for Binance".into())
+        })?;
+        let mut builder = rest_api::ModifyOrderParams::builder(
+            request.symbol.clone(),
+            map_modify_side(request.side),
+            new_qty,
+            new_price,
+        )
+        .recv_window(Some(self.config.recv_window as i64));
+        if let Ok(id) = request.order_id.parse::<i64>() {
+            builder = builder.order_id(Some(id));
+        } else {
+            builder = builder.orig_client_order_id(Some(request.order_id.clone()));
+        }
+        let params = builder
+            .build()
+            .map_err(|err| BrokerError::InvalidRequest(err.to_string()))?;
+        let response = self
+            .parse_response(self.rest.modify_order(params).await)
+            .await?;
+        Ok(build_order_from_modify_response(response, &request))
+    }
+
     async fn list_open_orders(&self, symbol: &str) -> BrokerResult<Vec<Order>> {
         self.throttle_weight(QUERY_WEIGHT).await?;
         let params = rest_api::CurrentAllOpenOrdersParams::builder()
@@ -351,6 +380,59 @@ fn build_order_from_response(response: rest_api::NewOrderResponse, request: Orde
             .unwrap_or_else(|| Utc::now().timestamp_millis().to_string()),
         request,
         status,
+        filled_quantity: parse_decimal_opt(response.executed_qty.as_deref())
+            .unwrap_or(Decimal::ZERO),
+        avg_fill_price: parse_decimal_opt(response.avg_price.as_deref()),
+        created_at: timestamp_from_ms(response.update_time),
+        updated_at: timestamp_from_ms(response.update_time),
+    }
+}
+
+fn build_order_from_modify_response(
+    response: rest_api::ModifyOrderResponse,
+    update: &OrderUpdateRequest,
+) -> Order {
+    let symbol = response
+        .symbol
+        .clone()
+        .unwrap_or_else(|| update.symbol.clone());
+    let order_type = response
+        .r#type
+        .as_deref()
+        .map(map_order_type_from_str)
+        .unwrap_or(OrderType::Limit);
+    let quantity = parse_decimal_opt(response.orig_qty.as_deref())
+        .or(update.new_quantity)
+        .unwrap_or(Decimal::ZERO);
+    let price = parse_decimal_opt(response.price.as_deref()).or(update.new_price);
+    let request = OrderRequest {
+        symbol,
+        side: response
+            .side
+            .as_deref()
+            .map(map_order_side)
+            .unwrap_or(update.side),
+        order_type,
+        quantity,
+        price,
+        trigger_price: parse_decimal_opt(response.stop_price.as_deref()),
+        time_in_force: response.time_in_force.as_deref().and_then(map_tif_from_str),
+        client_order_id: response.client_order_id.clone(),
+        take_profit: None,
+        stop_loss: None,
+        display_quantity: None,
+    };
+    Order {
+        id: response
+            .order_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| update.order_id.clone()),
+        request,
+        status: response
+            .status
+            .as_deref()
+            .map(map_order_status)
+            .unwrap_or(OrderStatus::PendingNew),
         filled_quantity: parse_decimal_opt(response.executed_qty.as_deref())
             .unwrap_or(Decimal::ZERO),
         avg_fill_price: parse_decimal_opt(response.avg_price.as_deref()),
@@ -494,6 +576,13 @@ fn map_side(value: Side) -> NewOrderSideEnum {
     match value {
         Side::Buy => NewOrderSideEnum::Buy,
         Side::Sell => NewOrderSideEnum::Sell,
+    }
+}
+
+fn map_modify_side(value: Side) -> rest_api::ModifyOrderSideEnum {
+    match value {
+        Side::Buy => rest_api::ModifyOrderSideEnum::Buy,
+        Side::Sell => rest_api::ModifyOrderSideEnum::Sell,
     }
 }
 

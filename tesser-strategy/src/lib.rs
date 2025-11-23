@@ -1549,6 +1549,7 @@ impl Strategy for OrderBookScalper {
                         offset_bps: self.cfg.peg_offset_bps,
                         clip_size: Some(self.cfg.clip_size.max(Decimal::ONE)),
                         refresh_secs: Some(self.cfg.refresh_secs),
+                        min_chase_distance: None,
                     });
                     self.signals.push(signal);
                 }

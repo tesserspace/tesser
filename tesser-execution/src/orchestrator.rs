@@ -9,8 +9,8 @@ use std::time::{Duration as StdDuration, Instant};
 use uuid::Uuid;
 
 use crate::algorithm::{
-    AlgoStatus, ChildOrderRequest, ExecutionAlgorithm, IcebergAlgorithm, PeggedBestAlgorithm,
-    SniperAlgorithm, TwapAlgorithm, VwapAlgorithm,
+    AlgoStatus, ChildOrderAction, ChildOrderRequest, ExecutionAlgorithm, IcebergAlgorithm,
+    PeggedBestAlgorithm, SniperAlgorithm, TwapAlgorithm, VwapAlgorithm,
 };
 use crate::repository::{AlgoStateRepository, StoredAlgoState};
 use crate::{ExecutionEngine, RiskContext};
@@ -283,12 +283,14 @@ impl OrderOrchestrator {
                 offset_bps,
                 clip_size,
                 refresh_secs,
+                min_chase_distance,
             }) => {
                 self.handle_pegged_signal(
                     signal.clone(),
                     *offset_bps,
                     *clip_size,
                     *refresh_secs,
+                    *min_chase_distance,
                     ctx,
                 )
                 .await
@@ -471,6 +473,7 @@ impl OrderOrchestrator {
         offset_bps: Decimal,
         clip_size: Option<Quantity>,
         refresh_secs: Option<u64>,
+        min_chase_distance: Option<Price>,
         ctx: &RiskContext,
     ) -> Result<()> {
         self.update_risk_context(signal.symbol.clone(), *ctx);
@@ -484,13 +487,20 @@ impl OrderOrchestrator {
         }
         let secs = refresh_secs.unwrap_or(1).max(1) as i64;
         let refresh = Duration::seconds(secs);
-        let mut algo =
-            PeggedBestAlgorithm::new(signal, total_quantity, offset_bps, clip_size, refresh)?;
+        let mut algo = PeggedBestAlgorithm::new(
+            signal,
+            total_quantity,
+            offset_bps,
+            clip_size,
+            refresh,
+            min_chase_distance,
+        )?;
         let algo_id = *algo.id();
         tracing::info!(
             id = %algo_id,
             qty = %total_quantity,
             offset = %offset_bps,
+            chase = ?min_chase_distance,
             "Starting new PeggedBest algorithm"
         );
         let initial_orders = algo.start()?;
@@ -542,39 +552,37 @@ impl OrderOrchestrator {
         child_req: ChildOrderRequest,
         ctx: Option<RiskContext>,
     ) -> Result<Order> {
-        let ChildOrderRequest {
-            parent_algo_id,
-            order_request,
-        } = child_req;
-        let symbol = order_request.symbol.clone();
-        let resolved_ctx = ctx
-            .or_else(|| self.cached_risk_context(&symbol))
-            .ok_or_else(|| anyhow!("missing risk context for symbol {}", symbol))?;
-        // Keep cache warm with the latest context.
-        self.update_risk_context(symbol.clone(), resolved_ctx);
+        let parent_algo_id = child_req.parent_algo_id;
+        match child_req.action {
+            ChildOrderAction::Place(order_request) => {
+                let symbol = order_request.symbol.clone();
+                let resolved_ctx = ctx
+                    .or_else(|| self.cached_risk_context(&symbol))
+                    .ok_or_else(|| anyhow!("missing risk context for symbol {}", symbol))?;
+                // Keep cache warm with the latest context.
+                self.update_risk_context(symbol.clone(), resolved_ctx);
 
-        let order = self
-            .execution_engine
-            .send_order(order_request, &resolved_ctx)
-            .await?;
+                let order = self
+                    .execution_engine
+                    .send_order(order_request, &resolved_ctx)
+                    .await?;
 
-        // Track the mapping from order ID to parent algorithm
-        {
-            let mut mapping = self.order_mapping.lock().unwrap();
-            mapping.insert(order.id.clone(), parent_algo_id);
-        }
-        self.register_pending(&order);
-
-        // Notify the algorithm that the order was placed
-        {
-            let mut algorithms = self.algorithms.lock().unwrap();
-            if let Some(algo) = algorithms.get_mut(&parent_algo_id) {
-                algo.on_child_order_placed(&order);
-                // Note: We don't persist state here as it's not critical
+                {
+                    let mut mapping = self.order_mapping.lock().unwrap();
+                    mapping.insert(order.id.clone(), parent_algo_id);
+                }
+                self.register_pending(&order);
+                self.notify_algo_child(parent_algo_id, &order);
+                Ok(order)
+            }
+            ChildOrderAction::Amend(update_request) => {
+                let order = self.execution_engine.amend_order(update_request).await?;
+                self.refresh_pending(&order);
+                self.ensure_order_mapping(&order.id, parent_algo_id);
+                self.notify_algo_child(parent_algo_id, &order);
+                Ok(order)
             }
         }
-
-        Ok(order)
     }
 
     /// Handle a fill from the execution engine.
@@ -969,9 +977,35 @@ impl OrderOrchestrator {
         pending.remove(order_id);
     }
 
+    fn refresh_pending(&self, order: &Order) {
+        let mut pending = self.pending_orders.lock().unwrap();
+        pending
+            .entry(order.id.clone())
+            .and_modify(|entry| {
+                entry.request = order.request.clone();
+                entry.placed_at = Instant::now();
+            })
+            .or_insert(PendingOrder {
+                request: order.request.clone(),
+                placed_at: Instant::now(),
+            });
+    }
+
     fn clear_order_mapping(&self, order_id: &str) {
         let mut mapping = self.order_mapping.lock().unwrap();
         mapping.remove(order_id);
+    }
+
+    fn ensure_order_mapping(&self, order_id: &str, algo_id: Uuid) {
+        let mut mapping = self.order_mapping.lock().unwrap();
+        mapping.entry(order_id.to_string()).or_insert(algo_id);
+    }
+
+    fn notify_algo_child(&self, algo_id: Uuid, order: &Order) {
+        let mut algorithms = self.algorithms.lock().unwrap();
+        if let Some(algo) = algorithms.get_mut(&algo_id) {
+            algo.on_child_order_placed(order);
+        }
     }
 }
 
