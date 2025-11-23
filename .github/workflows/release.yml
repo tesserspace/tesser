@@ -4,20 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release Level'
+        description: 'Release level keyword (patch/minor/alpha/etc.) or explicit version (e.g., 0.2.0-alpha)'
         required: true
-        type: choice
-        options:
-          # Standard semantic version bumps
-          - patch
-          - minor
-          - major
-          # Pre-release bumps
-          - alpha
-          - beta
-          - rc
-          # Promote pre-release to official (e.g., 1.0.0-rc.1 -> 1.0.0)
-          - release
         default: patch
 
 env:
@@ -48,9 +36,24 @@ jobs:
         with:
           tool: cargo-release
 
+      - name: Determine release target
+        id: release_target
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_INPUT="${{ github.event.inputs.version }}"
+          if [[ -z "$RELEASE_INPUT" ]]; then
+            echo "::error::Release version input is empty."
+            exit 1
+          fi
+          if [[ "$RELEASE_INPUT" == v* ]]; then
+            RELEASE_INPUT="${RELEASE_INPUT#v}"
+          fi
+          echo "value=$RELEASE_INPUT" >> "$GITHUB_OUTPUT"
+
       - name: Check cargo publish (Dry Run)
         # 'cargo release' handles keywords like 'alpha', 'beta' natively
-        run: cargo release ${{ github.event.inputs.version }} --dry-run --no-push --no-tag --no-publish
+        run: cargo release ${{ steps.release_target.outputs.value }} --dry-run --no-push --no-tag --no-publish
 
       - name: Check compilation
         run: cargo check --release
@@ -94,10 +97,25 @@ jobs:
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor }}@users.noreply.github.com"
 
+      - name: Determine release target
+        id: release_target
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_INPUT="${{ github.event.inputs.version }}"
+          if [[ -z "$RELEASE_INPUT" ]]; then
+            echo "::error::Release version input is empty."
+            exit 1
+          fi
+          if [[ "$RELEASE_INPUT" == v* ]]; then
+            RELEASE_INPUT="${RELEASE_INPUT#v}"
+          fi
+          echo "value=$RELEASE_INPUT" >> "$GITHUB_OUTPUT"
+
       - name: Bump version and commit
         # --no-tag: We create the tag manually to ensure it is unique
         # --no-confirm: Crucial for CI automation
-        run: cargo release ${{ github.event.inputs.version }} --execute --no-publish --no-push --no-confirm --no-tag
+        run: cargo release ${{ steps.release_target.outputs.value }} --execute --no-publish --no-push --no-confirm --no-tag
 
       - name: Capture release metadata
         id: metadata

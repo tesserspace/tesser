@@ -4,10 +4,10 @@ header = """
 All notable changes to this project will be documented in this file.
 """
 body = """
-{% if version %}\
-    ## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% if timestamp %}\
+    ## What's Changed - {{ timestamp | date(format="%Y-%m-%d") }}
 {% else %}\
-    ## [unreleased]
+    ## What's Changed
 {% endif %}\
 {% for group, commits in commits | group_by(attribute="group") %}\
     ### {{ group | upper_first }}
