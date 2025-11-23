@@ -11,12 +11,14 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+mod identifiers;
+
+pub use identifiers::{AssetId, ExchangeId, IdentifierParseError, Symbol};
+
 /// Alias for price precision.
 pub type Price = Decimal;
 /// Alias for quantity precision.
 pub type Quantity = Decimal;
-/// Alias used for human-readable market symbols (e.g., `BTCUSDT`).
-pub type Symbol = String;
 
 /// Unique identifier assigned to orders (exchange or client provided).
 pub type OrderId = String;
@@ -34,10 +36,10 @@ pub enum InstrumentKind {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Instrument {
     pub symbol: Symbol,
-    pub base: Symbol,
-    pub quote: Symbol,
+    pub base: AssetId,
+    pub quote: AssetId,
     pub kind: InstrumentKind,
-    pub settlement_currency: Symbol,
+    pub settlement_currency: AssetId,
     pub tick_size: Price,
     pub lot_size: Quantity,
 }
@@ -45,7 +47,7 @@ pub struct Instrument {
 /// Represents a currency balance and its current conversion rate to the reporting currency.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Cash {
-    pub currency: Symbol,
+    pub currency: AssetId,
     pub quantity: Quantity,
     pub conversion_rate: Price,
 }
@@ -60,7 +62,7 @@ impl Cash {
 
 /// Multi-currency ledger keyed by currency symbol.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct CashBook(pub HashMap<Symbol, Cash>);
+pub struct CashBook(pub HashMap<AssetId, Cash>);
 
 impl CashBook {
     #[must_use]
@@ -69,12 +71,13 @@ impl CashBook {
     }
 
     pub fn upsert(&mut self, cash: Cash) {
-        self.0.insert(cash.currency.clone(), cash);
+        self.0.insert(cash.currency, cash);
     }
 
-    pub fn adjust(&mut self, currency: &str, delta: Quantity) -> Quantity {
-        let entry = self.0.entry(currency.to_string()).or_insert(Cash {
-            currency: currency.to_string(),
+    pub fn adjust(&mut self, currency: impl Into<AssetId>, delta: Quantity) -> Quantity {
+        let currency = currency.into();
+        let entry = self.0.entry(currency).or_insert(Cash {
+            currency,
             quantity: Decimal::ZERO,
             conversion_rate: Decimal::ZERO,
         });
@@ -82,9 +85,10 @@ impl CashBook {
         entry.quantity
     }
 
-    pub fn update_conversion_rate(&mut self, currency: &str, rate: Price) {
-        let entry = self.0.entry(currency.to_string()).or_insert(Cash {
-            currency: currency.to_string(),
+    pub fn update_conversion_rate(&mut self, currency: impl Into<AssetId>, rate: Price) {
+        let currency = currency.into();
+        let entry = self.0.entry(currency).or_insert(Cash {
+            currency,
             quantity: Decimal::ZERO,
             conversion_rate: Decimal::ZERO,
         });
@@ -97,16 +101,18 @@ impl CashBook {
     }
 
     #[must_use]
-    pub fn get(&self, currency: &str) -> Option<&Cash> {
-        self.0.get(currency)
+    pub fn get(&self, currency: impl Into<AssetId>) -> Option<&Cash> {
+        let currency = currency.into();
+        self.0.get(&currency)
     }
 
     #[must_use]
-    pub fn get_mut(&mut self, currency: &str) -> Option<&mut Cash> {
-        self.0.get_mut(currency)
+    pub fn get_mut(&mut self, currency: impl Into<AssetId>) -> Option<&mut Cash> {
+        let currency = currency.into();
+        self.0.get_mut(&currency)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&Symbol, &Cash)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&AssetId, &Cash)> {
         self.0.iter()
     }
 }
@@ -679,10 +685,13 @@ impl Position {
     }
 }
 
-/// Simple representation of an account balance by currency.
+/// Simple representation of an account balance scoped to a specific exchange asset.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AccountBalance {
-    pub currency: String,
+    #[serde(default)]
+    pub exchange: ExchangeId,
+    #[serde(alias = "currency")]
+    pub asset: AssetId,
     pub total: Price,
     pub available: Price,
     pub updated_at: DateTime<Utc>,

@@ -24,7 +24,7 @@ impl MarketRegistry {
         }
         let mut map = HashMap::new();
         for instrument in instruments {
-            map.insert(instrument.symbol.clone(), instrument);
+            map.insert(instrument.symbol, instrument);
         }
         Ok(Self {
             inner: Arc::new(RwLock::new(map)),
@@ -56,25 +56,28 @@ impl MarketRegistry {
     }
 
     /// Retrieve instrument metadata for a symbol.
-    pub fn get(&self, symbol: &str) -> Option<Instrument> {
+    pub fn get(&self, symbol: impl Into<Symbol>) -> Option<Instrument> {
+        let symbol = symbol.into();
         self.inner
             .read()
             .ok()
-            .and_then(|map| map.get(symbol).cloned())
+            .and_then(|map| map.get(&symbol).cloned())
     }
 
     /// Validate that each supplied symbol exists.
-    pub fn validate_symbols<'a, I>(&self, symbols: I) -> Result<(), MarketRegistryError>
+    pub fn validate_symbols<I, S>(&self, symbols: I) -> Result<(), MarketRegistryError>
     where
-        I: IntoIterator<Item = &'a str>,
+        I: IntoIterator<Item = S>,
+        S: Into<Symbol>,
     {
         let map = self
             .inner
             .read()
             .map_err(|_| MarketRegistryError::Poisoned)?;
         for symbol in symbols {
-            if !map.contains_key(symbol) {
-                return Err(MarketRegistryError::UnknownSymbol(symbol.to_string()));
+            let symbol = symbol.into();
+            if !map.contains_key(&symbol) {
+                return Err(MarketRegistryError::UnknownSymbol(symbol));
             }
         }
         Ok(())

@@ -122,13 +122,15 @@ impl StrategyContext {
 
     /// Find the position for a specific symbol, if any.
     #[must_use]
-    pub fn position(&self, symbol: &str) -> Option<&Position> {
+    pub fn position(&self, symbol: impl Into<Symbol>) -> Option<&Position> {
+        let symbol = symbol.into();
         self.positions.iter().find(|p| p.symbol == symbol)
     }
 
     /// Returns the latest order book snapshot for the specified symbol.
     #[must_use]
-    pub fn order_book(&self, symbol: &str) -> Option<&OrderBook> {
+    pub fn order_book(&self, symbol: impl Into<Symbol>) -> Option<&OrderBook> {
+        let symbol = symbol.into();
         self.recent_order_books
             .iter()
             .rev()
@@ -149,11 +151,11 @@ pub trait Strategy: Send + Sync {
     fn name(&self) -> &str;
 
     /// The primary symbol operated on by the strategy.
-    fn symbol(&self) -> &str;
+    fn symbol(&self) -> Symbol;
 
     /// Return the set of symbols that should be routed to this strategy (defaults to the primary).
     fn subscriptions(&self) -> Vec<Symbol> {
-        vec![self.symbol().to_string()]
+        vec![self.symbol()]
     }
 
     /// Called once before the strategy is registered, allowing it to parse parameters.
@@ -325,7 +327,7 @@ fn normalize_name(name: &str) -> String {
 // Helpers
 // -------------------------------------------------------------------------------------------------
 
-fn collect_symbol_closes(candles: &VecDeque<Candle>, symbol: &str, limit: usize) -> Vec<Decimal> {
+fn collect_symbol_closes(candles: &VecDeque<Candle>, symbol: Symbol, limit: usize) -> Vec<Decimal> {
     let mut values: Vec<Decimal> = candles
         .iter()
         .rev()
@@ -378,7 +380,7 @@ pub struct SmaCrossConfig {
 impl Default for SmaCrossConfig {
     fn default() -> Self {
         Self {
-            symbol: "BTCUSDT".to_string(),
+            symbol: "BTCUSDT".into(),
             fast_period: 5,
             slow_period: 20,
             min_samples: 25,
@@ -500,8 +502,8 @@ impl Strategy for SmaCross {
         "sma-cross"
     }
 
-    fn symbol(&self) -> &str {
-        &self.cfg.symbol
+    fn symbol(&self) -> Symbol {
+        self.cfg.symbol
     }
 
     fn configure(&mut self, params: toml::Value) -> StrategyResult<()> {
@@ -551,7 +553,7 @@ pub struct RsiReversionConfig {
 impl Default for RsiReversionConfig {
     fn default() -> Self {
         Self {
-            symbol: "BTCUSDT".to_string(),
+            symbol: "BTCUSDT".into(),
             period: 14,
             oversold: Decimal::from(30),
             overbought: Decimal::from(70),
@@ -631,8 +633,8 @@ impl Strategy for RsiReversion {
         "rsi-reversion"
     }
 
-    fn symbol(&self) -> &str {
-        &self.cfg.symbol
+    fn symbol(&self) -> Symbol {
+        self.cfg.symbol
     }
 
     fn configure(&mut self, params: toml::Value) -> StrategyResult<()> {
@@ -683,7 +685,7 @@ pub struct BollingerBreakoutConfig {
 impl Default for BollingerBreakoutConfig {
     fn default() -> Self {
         Self {
-            symbol: "BTCUSDT".to_string(),
+            symbol: "BTCUSDT".into(),
             period: 20,
             std_multiplier: Decimal::from(2),
             lookback: 200,
@@ -774,8 +776,8 @@ impl Strategy for BollingerBreakout {
         "bollinger-breakout"
     }
 
-    fn symbol(&self) -> &str {
-        &self.cfg.symbol
+    fn symbol(&self) -> Symbol {
+        self.cfg.symbol
     }
 
     fn configure(&mut self, params: toml::Value) -> StrategyResult<()> {
@@ -837,7 +839,7 @@ pub struct MlClassifierConfig {
 impl Default for MlClassifierConfig {
     fn default() -> Self {
         Self {
-            symbol: "BTCUSDT".to_string(),
+            symbol: "BTCUSDT".into(),
             model_path: "./model.toml".to_string(),
             lookback: 20,
             threshold_long: 0.25,
@@ -857,7 +859,7 @@ impl MlClassifier {
     fn score(&self, ctx: &StrategyContext) -> Option<f64> {
         let model = self.model.as_ref()?;
         let raw_closes =
-            collect_symbol_closes(ctx.candles(), &self.cfg.symbol, self.cfg.lookback + 1);
+            collect_symbol_closes(ctx.candles(), self.cfg.symbol, self.cfg.lookback + 1);
         if raw_closes.len() < self.cfg.lookback + 1 {
             return None;
         }
@@ -892,8 +894,8 @@ impl Strategy for MlClassifier {
         "ml-classifier"
     }
 
-    fn symbol(&self) -> &str {
-        &self.cfg.symbol
+    fn symbol(&self) -> Symbol {
+        self.cfg.symbol
     }
 
     fn configure(&mut self, params: toml::Value) -> StrategyResult<()> {
@@ -977,7 +979,7 @@ pub struct LstmCortexConfig {
 impl Default for LstmCortexConfig {
     fn default() -> Self {
         Self {
-            symbol: "BTCUSDT".to_string(),
+            symbol: "BTCUSDT".into(),
             model_path: "research/models/lstm_v1.onnx".to_string(),
             input_name: "input".to_string(),
             window: 10,
@@ -1057,8 +1059,8 @@ impl Strategy for LstmCortex {
         "lstm-cortex"
     }
 
-    fn symbol(&self) -> &str {
-        &self.cfg.symbol
+    fn symbol(&self) -> Symbol {
+        self.cfg.symbol
     }
 
     fn configure(&mut self, params: toml::Value) -> StrategyResult<()> {
@@ -1145,7 +1147,7 @@ pub struct PairsTradingConfig {
 impl Default for PairsTradingConfig {
     fn default() -> Self {
         Self {
-            symbols: ["BTCUSDT".to_string(), "ETHUSDT".to_string()],
+            symbols: ["BTCUSDT".into(), "ETHUSDT".into()],
             lookback: 200,
             entry_z: Decimal::from(2),
             exit_z: Decimal::new(5, 1),
@@ -1192,9 +1194,9 @@ impl PairsTradingArbitrage {
 
     fn spreads(&self, ctx: &StrategyContext) -> Option<Vec<Decimal>> {
         let closes_a =
-            collect_symbol_closes(ctx.candles(), &self.cfg.symbols[0], self.cfg.lookback);
+            collect_symbol_closes(ctx.candles(), self.cfg.symbols[0], self.cfg.lookback);
         let closes_b =
-            collect_symbol_closes(ctx.candles(), &self.cfg.symbols[1], self.cfg.lookback);
+            collect_symbol_closes(ctx.candles(), self.cfg.symbols[1], self.cfg.lookback);
         if closes_a.len() < self.cfg.lookback || closes_b.len() < self.cfg.lookback {
             return None;
         }
@@ -1215,8 +1217,8 @@ impl Strategy for PairsTradingArbitrage {
         "pairs-trading"
     }
 
-    fn symbol(&self) -> &str {
-        &self.cfg.symbols[0]
+    fn symbol(&self) -> Symbol {
+        self.cfg.symbols[0]
     }
 
     fn subscriptions(&self) -> Vec<Symbol> {
@@ -1314,7 +1316,7 @@ pub struct OrderBookImbalanceConfig {
 impl Default for OrderBookImbalanceConfig {
     fn default() -> Self {
         Self {
-            symbol: "BTCUSDT".to_string(),
+            symbol: "BTCUSDT".into(),
             depth: 5,
             long_threshold: 0.2,
             short_threshold: -0.2,
@@ -1335,8 +1337,8 @@ impl Strategy for OrderBookImbalance {
         "orderbook-imbalance"
     }
 
-    fn symbol(&self) -> &str {
-        &self.cfg.symbol
+    fn symbol(&self) -> Symbol {
+        self.cfg.symbol
     }
 
     fn configure(&mut self, params: toml::Value) -> StrategyResult<()> {
@@ -1430,7 +1432,7 @@ pub struct OrderBookScalperConfig {
 impl Default for OrderBookScalperConfig {
     fn default() -> Self {
         Self {
-            symbol: "BTCUSDT".to_string(),
+            symbol: "BTCUSDT".into(),
             depth: 10,
             imbalance_threshold: 0.25,
             neutral_zone: 0.05,
@@ -1489,8 +1491,8 @@ impl Strategy for OrderBookScalper {
         "orderbook-scalper"
     }
 
-    fn symbol(&self) -> &str {
-        &self.cfg.symbol
+    fn symbol(&self) -> Symbol {
+        self.cfg.symbol
     }
 
     fn configure(&mut self, params: toml::Value) -> StrategyResult<()> {
@@ -1661,8 +1663,8 @@ impl Strategy for CrossExchangeArb {
         "cross-exchange-arb"
     }
 
-    fn symbol(&self) -> &str {
-        &self.cfg.symbol_a
+    fn symbol(&self) -> Symbol {
+        self.cfg.symbol_a
     }
 
     fn subscriptions(&self) -> Vec<Symbol> {
@@ -1802,12 +1804,12 @@ impl Strategy for VolatilitySkew {
         "volatility-skew"
     }
 
-    fn symbol(&self) -> &str {
-        &self.cfg.underlying
+    fn symbol(&self) -> Symbol {
+        self.cfg.underlying
     }
 
     fn subscriptions(&self) -> Vec<Symbol> {
-        vec![self.cfg.underlying.clone(), self.cfg.vol_symbol.clone()]
+        vec![self.cfg.underlying, self.cfg.vol_symbol]
     }
 
     fn configure(&mut self, params: toml::Value) -> StrategyResult<()> {

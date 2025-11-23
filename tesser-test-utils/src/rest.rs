@@ -239,7 +239,7 @@ async fn handle_positions(parts: http::request::Parts, state: MockExchangeState)
                 .into_iter()
                 .map(|position| {
                     json!({
-                        "symbol": position.symbol,
+                        "symbol": position.symbol.to_string(),
                         "side": side_label(position.side),
                         "size": decimal_to_string(position.quantity),
                         "avgPrice": position.entry_price.map(decimal_to_string).unwrap_or_else(|| "0".into()),
@@ -269,7 +269,7 @@ async fn handle_wallet_balance(
                 .into_iter()
                 .map(|balance| {
                     json!({
-                        "coin": balance.currency,
+                        "coin": balance.asset.as_ref(),
                         "walletBalance": decimal_to_string(balance.total),
                         "availableToWithdraw": decimal_to_string(balance.available),
                     })
@@ -309,7 +309,7 @@ async fn handle_execution_list(
                 .into_iter()
                 .map(|fill| {
                     json!({
-                        "symbol": fill.symbol,
+                        "symbol": fill.symbol.to_string(),
                         "orderId": fill.order_id,
                         "side": map_side(fill.side),
                         "execPrice": decimal_to_string(fill.fill_price),
@@ -396,7 +396,7 @@ async fn create_order(
     };
 
     let request = OrderRequest {
-        symbol: payload.symbol.clone(),
+        symbol: payload.symbol.clone().into(),
         side,
         order_type,
         quantity,

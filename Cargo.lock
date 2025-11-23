@@ -4186,6 +4186,8 @@ version = "0.9.0"
 dependencies = [
  "chrono",
  "crc32fast",
+ "once_cell",
+ "parking_lot",
  "rust_decimal",
  "serde",
  "uuid",
