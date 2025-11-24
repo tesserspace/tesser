@@ -286,6 +286,7 @@ impl MarketStream for BybitMarketStream {
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+#[allow(clippy::too_many_arguments)]
 async fn run_ws_loop(
     mut socket: WsStream,
     mut commands: mpsc::UnboundedReceiver<WsCommand>,

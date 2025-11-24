@@ -295,6 +295,7 @@ pub struct NamedExchange {
 struct ExchangeRoute {
     name: String,
     driver: String,
+    #[cfg(feature = "binance")]
     ws_url: String,
     execution: Arc<dyn ExecutionClient>,
 }
@@ -555,6 +556,7 @@ async fn build_exchange_routes(
         routes.push(ExchangeRoute {
             name: exchange.name.clone(),
             driver,
+            #[cfg(feature = "binance")]
             ws_url: exchange.config.ws_url.clone(),
             execution: execution_client.clone(),
         });

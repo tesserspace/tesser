@@ -439,9 +439,11 @@ mod tests {
             .cancel_order(order_a.id.clone(), "BTCUSDT")
             .await
             .unwrap();
-        let canceled = client_a.canceled.lock().unwrap();
-        assert_eq!(canceled.len(), 1);
-        assert_ne!(canceled[0].0, order_a.id);
+        {
+            let canceled = client_a.canceled.lock().unwrap();
+            assert_eq!(canceled.len(), 1);
+            assert_ne!(canceled[0].0, order_a.id);
+        }
 
         let symbol_b = Symbol::from_code(binance, "ETHUSDT");
         let order_b = router

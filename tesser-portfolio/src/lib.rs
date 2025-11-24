@@ -701,7 +701,7 @@ mod tests {
         assert!(!portfolio.liquidate_only());
         // Price crash reduces equity by more than 2%
         portfolio
-            .update_market_data(&buy.symbol, Decimal::ZERO)
+            .update_market_data(buy.symbol, Decimal::ZERO)
             .unwrap();
         assert!(portfolio.liquidate_only());
     }

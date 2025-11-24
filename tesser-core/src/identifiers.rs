@@ -9,9 +9,10 @@ use std::str::FromStr;
 const UNSPECIFIED_EXCHANGE_ID: u16 = 0;
 
 static EXCHANGES: Lazy<RwLock<ExchangeRegistry>> = Lazy::new(|| {
-    let mut registry = ExchangeRegistry::default();
-    registry.next_id = 1;
-    RwLock::new(registry)
+    RwLock::new(ExchangeRegistry {
+        next_id: 1,
+        ..ExchangeRegistry::default()
+    })
 });
 
 static ASSETS: Lazy<RwLock<AssetRegistry>> = Lazy::new(|| RwLock::new(AssetRegistry::default()));

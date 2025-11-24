@@ -2146,7 +2146,7 @@ mod tests {
         assert_eq!(order.status, OrderStatus::Accepted);
         let update = OrderUpdateRequest {
             order_id: order.id.clone(),
-            symbol: order.request.symbol.clone(),
+            symbol: order.request.symbol,
             side: order.request.side,
             new_price: Some(Decimal::from(25_500)),
             new_quantity: Some(Decimal::from(3)),

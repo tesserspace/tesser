@@ -691,7 +691,7 @@ mod tests {
 
         let fill_one = Fill {
             order_id: order_id.clone(),
-            symbol: order.request.symbol.clone(),
+            symbol: order.request.symbol,
             side: order.request.side,
             fill_price: Decimal::from_f64(101.0).unwrap(),
             fill_quantity: Decimal::ONE,
@@ -700,7 +700,7 @@ mod tests {
         };
         let fill_two = Fill {
             order_id: order_id.clone(),
-            symbol: order.request.symbol.clone(),
+            symbol: order.request.symbol,
             side: order.request.side,
             fill_price: Decimal::from_f64(102.0).unwrap(),
             fill_quantity: Decimal::ONE,
@@ -711,7 +711,7 @@ mod tests {
         write_partition(root, "fills", created_at, &fills_batch)?;
 
         let tick = Tick {
-            symbol: order.request.symbol.clone(),
+            symbol: order.request.symbol,
             price: Decimal::from_f64(100.0).unwrap(),
             size: Decimal::ONE,
             side: Side::Buy,
