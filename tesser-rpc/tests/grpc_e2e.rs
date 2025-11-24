@@ -3,7 +3,9 @@ use std::net::SocketAddr;
 use chrono::Utc;
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
-use tesser_core::{Candle, Fill, Interval, OrderBook, OrderBookLevel, Side, SignalKind, Tick};
+use tesser_core::{
+    Candle, Fill, Interval, OrderBook, OrderBookLevel, Side, SignalKind, Symbol, Tick,
+};
 use tesser_rpc::proto::strategy_service_server::{StrategyService, StrategyServiceServer};
 use tesser_rpc::proto::{
     self, CandleRequest, FillRequest, InitRequest, InitResponse, OrderBookRequest, Signal,
@@ -119,7 +121,7 @@ async fn spawn_server() -> (SocketAddr, oneshot::Sender<()>) {
 
 fn build_tick() -> Tick {
     Tick {
-        symbol: "BTC-USD".to_string(),
+        symbol: Symbol::from("BTC-USD"),
         price: Decimal::from(50_000),
         size: Decimal::from_f64(0.1).unwrap(),
         side: Side::Buy,
@@ -130,7 +132,7 @@ fn build_tick() -> Tick {
 
 fn build_candle() -> Candle {
     Candle {
-        symbol: "BTC-USD".to_string(),
+        symbol: Symbol::from("BTC-USD"),
         interval: Interval::OneMinute,
         open: Decimal::from(49_900),
         high: Decimal::from(50_100),
@@ -143,7 +145,7 @@ fn build_candle() -> Candle {
 
 fn build_book() -> OrderBook {
     OrderBook {
-        symbol: "BTC-USD".to_string(),
+        symbol: Symbol::from("BTC-USD"),
         bids: vec![OrderBookLevel {
             price: Decimal::from(50_000),
             size: Decimal::from_f64(1.2).unwrap(),
@@ -161,7 +163,7 @@ fn build_book() -> OrderBook {
 fn build_fill() -> Fill {
     Fill {
         order_id: "order-123".to_string(),
-        symbol: "BTC-USD".to_string(),
+        symbol: Symbol::from("BTC-USD"),
         side: Side::Sell,
         fill_price: Decimal::from(50_020),
         fill_quantity: Decimal::from_f64(0.2).unwrap(),
@@ -201,8 +203,8 @@ async fn rpc_strategy_handles_grpc_events() {
     strategy.on_fill(&ctx, &build_fill()).await.unwrap();
     signals = strategy.drain_signals();
     assert_eq!(signals[0].kind, SignalKind::Flatten);
-    assert_eq!(strategy.symbol(), "BTC-USD");
-    assert_eq!(strategy.subscriptions(), vec!["BTC-USD".to_string()]);
+    assert_eq!(strategy.symbol(), Symbol::from("BTC-USD"));
+    assert_eq!(strategy.subscriptions(), vec![Symbol::from("BTC-USD")]);
 
     let _ = shutdown_tx.send(());
 }

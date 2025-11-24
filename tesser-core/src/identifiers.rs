@@ -215,7 +215,7 @@ impl Serialize for AssetId {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&self.to_string())
+        serializer.serialize_str(self.as_ref())
     }
 }
 
@@ -329,7 +329,7 @@ impl Serialize for Symbol {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&self.to_string())
+        serializer.serialize_str(self.as_ref())
     }
 }
 

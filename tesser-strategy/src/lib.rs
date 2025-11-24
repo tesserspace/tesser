@@ -484,11 +484,8 @@ impl SmaCross {
                 }
                 self.signals.push(signal);
             } else if fast_prev >= slow_prev && fast_curr < slow_curr {
-                self.signals.push(Signal::new(
-                    self.cfg.symbol,
-                    SignalKind::ExitLong,
-                    0.75,
-                ));
+                self.signals
+                    .push(Signal::new(self.cfg.symbol, SignalKind::ExitLong, 0.75));
             }
         }
 
@@ -610,17 +607,11 @@ impl RsiReversion {
         }
         if let Some(rsi_value) = value {
             if rsi_value <= self.oversold_level {
-                self.signals.push(Signal::new(
-                    self.cfg.symbol,
-                    SignalKind::EnterLong,
-                    0.8,
-                ));
+                self.signals
+                    .push(Signal::new(self.cfg.symbol, SignalKind::EnterLong, 0.8));
             } else if rsi_value >= self.overbought_level {
-                self.signals.push(Signal::new(
-                    self.cfg.symbol,
-                    SignalKind::ExitLong,
-                    0.8,
-                ));
+                self.signals
+                    .push(Signal::new(self.cfg.symbol, SignalKind::ExitLong, 0.8));
             }
         }
         Ok(())
@@ -748,23 +739,14 @@ impl BollingerBreakout {
         }
         let price = candle.close;
         if price > bands.upper {
-            self.signals.push(Signal::new(
-                self.cfg.symbol,
-                SignalKind::EnterLong,
-                0.7,
-            ));
+            self.signals
+                .push(Signal::new(self.cfg.symbol, SignalKind::EnterLong, 0.7));
         } else if price < bands.lower {
-            self.signals.push(Signal::new(
-                self.cfg.symbol,
-                SignalKind::EnterShort,
-                0.7,
-            ));
+            self.signals
+                .push(Signal::new(self.cfg.symbol, SignalKind::EnterShort, 0.7));
         } else if (price - bands.middle).abs() <= self.neutral_band {
-            self.signals.push(Signal::new(
-                self.cfg.symbol,
-                SignalKind::Flatten,
-                0.6,
-            ));
+            self.signals
+                .push(Signal::new(self.cfg.symbol, SignalKind::Flatten, 0.6));
         }
         Ok(())
     }
@@ -934,17 +916,11 @@ impl Strategy for MlClassifier {
         }
         if let Some(score) = self.score(ctx) {
             if score >= self.cfg.threshold_long {
-                self.signals.push(Signal::new(
-                    self.cfg.symbol,
-                    SignalKind::EnterLong,
-                    0.85,
-                ));
+                self.signals
+                    .push(Signal::new(self.cfg.symbol, SignalKind::EnterLong, 0.85));
             } else if score <= self.cfg.threshold_short {
-                self.signals.push(Signal::new(
-                    self.cfg.symbol,
-                    SignalKind::EnterShort,
-                    0.85,
-                ));
+                self.signals
+                    .push(Signal::new(self.cfg.symbol, SignalKind::EnterShort, 0.85));
             }
         }
         Ok(())
@@ -1272,11 +1248,8 @@ impl Strategy for PairsTradingArbitrage {
                         ));
                     } else if z.abs() <= self.exit_z_level {
                         for symbol in &self.cfg.symbols {
-                            self.signals.push(Signal::new(
-                                *symbol,
-                                SignalKind::Flatten,
-                                0.6,
-                            ));
+                            self.signals
+                                .push(Signal::new(*symbol, SignalKind::Flatten, 0.6));
                         }
                     }
                 }
@@ -1377,23 +1350,14 @@ impl Strategy for OrderBookImbalance {
         if let Some(imbalance) = book.imbalance(self.cfg.depth) {
             if let Some(imbalance_f64) = imbalance.to_f64() {
                 if imbalance_f64 >= self.cfg.long_threshold {
-                    self.signals.push(Signal::new(
-                        self.cfg.symbol,
-                        SignalKind::EnterLong,
-                        0.9,
-                    ));
+                    self.signals
+                        .push(Signal::new(self.cfg.symbol, SignalKind::EnterLong, 0.9));
                 } else if imbalance_f64 <= self.cfg.short_threshold {
-                    self.signals.push(Signal::new(
-                        self.cfg.symbol,
-                        SignalKind::EnterShort,
-                        0.9,
-                    ));
+                    self.signals
+                        .push(Signal::new(self.cfg.symbol, SignalKind::EnterShort, 0.9));
                 } else if imbalance_f64.abs() <= self.cfg.neutral_zone {
-                    self.signals.push(Signal::new(
-                        self.cfg.symbol,
-                        SignalKind::Flatten,
-                        0.6,
-                    ));
+                    self.signals
+                        .push(Signal::new(self.cfg.symbol, SignalKind::Flatten, 0.6));
                 }
             }
         }
@@ -1713,16 +1677,10 @@ impl Strategy for CrossExchangeArb {
             } else if spread <= -(self.cfg.spread_bps / Decimal::from(10_000)) {
                 self.emit_pair_trade(true);
             } else if spread.abs() <= self.cfg.exit_bps / Decimal::from(10_000) {
-                self.signals.push(Signal::new(
-                    self.cfg.symbol_a,
-                    SignalKind::Flatten,
-                    0.6,
-                ));
-                self.signals.push(Signal::new(
-                    self.cfg.symbol_b,
-                    SignalKind::Flatten,
-                    0.6,
-                ));
+                self.signals
+                    .push(Signal::new(self.cfg.symbol_a, SignalKind::Flatten, 0.6));
+                self.signals
+                    .push(Signal::new(self.cfg.symbol_b, SignalKind::Flatten, 0.6));
             }
         }
         Ok(())
@@ -1845,16 +1803,14 @@ impl Strategy for VolatilitySkew {
                     threshold * (Decimal::ONE - self.cfg.implied_premium / Decimal::from(100));
                 let timeout = Some(Duration::seconds(self.cfg.sniper_timeout_secs as i64));
                 if implied >= premium {
-                    let mut signal =
-                        Signal::new(self.cfg.underlying, SignalKind::EnterShort, 0.8);
+                    let mut signal = Signal::new(self.cfg.underlying, SignalKind::EnterShort, 0.8);
                     signal.execution_hint = Some(ExecutionHint::Sniper {
                         trigger_price: candle.close,
                         timeout,
                     });
                     self.signals.push(signal);
                 } else if implied <= discount {
-                    let mut signal =
-                        Signal::new(self.cfg.underlying, SignalKind::EnterLong, 0.8);
+                    let mut signal = Signal::new(self.cfg.underlying, SignalKind::EnterLong, 0.8);
                     signal.execution_hint = Some(ExecutionHint::Sniper {
                         trigger_price: candle.close,
                         timeout,

@@ -603,6 +603,7 @@ mod tests {
             .build()
             .expect("failed to build http client");
         let (tx, rx) = mpsc::channel(8);
+        let exchange = ExchangeId::from("binance_perp");
         let task = DiffDepthTask::new(
             "BTCUSDT".into(),
             depth,
@@ -610,6 +611,7 @@ mod tests {
             "wss://example.com".into(),
             client,
             tx,
+            exchange,
         );
         (task, rx)
     }
@@ -632,7 +634,7 @@ mod tests {
         .to_string();
         task.process_message(&message).await.expect("diff applied");
         let book = rx.recv().await.expect("order book emitted");
-        assert_eq!(book.symbol, "BTCUSDT");
+        assert_eq!(book.symbol, Symbol::from_code(task.exchange, "BTCUSDT"));
         assert_eq!(book.bids[0].price, Decimal::from(9));
         assert_eq!(book.asks[0].price, Decimal::from(11));
     }

@@ -777,7 +777,7 @@ mod tests {
     #[test]
     fn position_mark_price_updates_unrealized_pnl() {
         let mut position = Position {
-            symbol: "BTCUSDT".to_string(),
+            symbol: Symbol::from("BTCUSDT"),
             side: Some(Side::Buy),
             quantity: Decimal::from_f64(0.5).unwrap(),
             entry_price: Some(Decimal::from(60_000)),

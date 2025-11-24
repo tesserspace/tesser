@@ -312,8 +312,10 @@ impl PaperExecutionClient {
         fee_model: Arc<dyn FeeModel>,
         cash_asset: AssetId,
     ) -> Self {
-        let broker_markets: Vec<String> =
-            markets.iter().map(|symbol| symbol.code().to_string()).collect();
+        let broker_markets: Vec<String> = markets
+            .iter()
+            .map(|symbol| symbol.code().to_string())
+            .collect();
         let initial_balance = AccountBalance {
             exchange: cash_asset.exchange,
             asset: cash_asset,
@@ -862,8 +864,10 @@ impl MatchingEngine {
             config.latency
         };
         let cash_asset = AssetId::from("USDT");
-        let broker_markets: Vec<String> =
-            markets.iter().map(|symbol| symbol.code().to_string()).collect();
+        let broker_markets: Vec<String> = markets
+            .iter()
+            .map(|symbol| symbol.code().to_string())
+            .collect();
         Self {
             info: BrokerInfo {
                 name: name.into(),
@@ -1876,7 +1880,7 @@ async fn run_random_walk(
         let now = Utc::now();
         let size = Decimal::ONE;
         let tick = Tick {
-            symbol: symbol,
+            symbol,
             price: price_decimal,
             size,
             side: if delta >= 1.0 { Side::Buy } else { Side::Sell },
@@ -1937,7 +1941,7 @@ async fn run_replay(
         }
         exec_client.update_price(&symbol, sample.price);
         let tick = Tick {
-            symbol: symbol,
+            symbol,
             price: sample.price,
             size: sample.size,
             side: sample.side,

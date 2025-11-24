@@ -1050,7 +1050,8 @@ mod tests {
     async fn book_manager_applies_snapshot_and_deltas() {
         let (book_tx, mut book_rx) = mpsc::channel(8);
         let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
-        let mut manager = BookManager::new(book_tx, cmd_tx);
+        let exchange = ExchangeId::from("bybit_linear");
+        let mut manager = BookManager::new(exchange, book_tx, cmd_tx);
 
         let snapshot = OrderbookMessage {
             topic: "orderbook.2.BTCUSDT".into(),
@@ -1092,7 +1093,8 @@ mod tests {
     async fn book_manager_requests_resub_on_gap() {
         let (book_tx, mut book_rx) = mpsc::channel(8);
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
-        let mut manager = BookManager::new(book_tx, cmd_tx.clone());
+        let exchange = ExchangeId::from("bybit_linear");
+        let mut manager = BookManager::new(exchange, book_tx, cmd_tx.clone());
 
         let snapshot = OrderbookMessage {
             topic: "orderbook.1.BTCUSDT".into(),

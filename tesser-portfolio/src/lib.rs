@@ -145,23 +145,20 @@ impl Portfolio {
         let instrument = self
             .market_registry
             .get(fill.symbol)
-            .ok_or_else(|| PortfolioError::UnknownSymbol(fill.symbol))?;
+            .ok_or(PortfolioError::UnknownSymbol(fill.symbol))?;
         self.ensure_currency(instrument.settlement_currency);
         self.ensure_currency(instrument.base);
         self.ensure_currency(instrument.quote);
         let mut realized_delta = Decimal::ZERO;
         {
-            let entry = self
-                .positions
-                .entry(fill.symbol)
-                .or_insert(Position {
-                    symbol: fill.symbol,
-                    side: Some(fill.side),
-                    quantity: Decimal::ZERO,
-                    entry_price: Some(fill.fill_price),
-                    unrealized_pnl: Decimal::ZERO,
-                    updated_at: fill.timestamp,
-                });
+            let entry = self.positions.entry(fill.symbol).or_insert(Position {
+                symbol: fill.symbol,
+                side: Some(fill.side),
+                quantity: Decimal::ZERO,
+                entry_price: Some(fill.fill_price),
+                unrealized_pnl: Decimal::ZERO,
+                updated_at: fill.timestamp,
+            });
 
             if entry.side.is_none() {
                 entry.side = Some(fill.side);
@@ -436,8 +433,7 @@ impl Portfolio {
         if instrument.quote == self.reporting_currency {
             self.ensure_currency(instrument.base);
             self.ensure_currency(instrument.quote);
-            self.balances
-                .update_conversion_rate(instrument.base, price);
+            self.balances.update_conversion_rate(instrument.base, price);
             self.balances
                 .update_conversion_rate(instrument.quote, Decimal::ONE);
             return;

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use rust_decimal::Decimal;
-use tesser_core::{Side, Tick};
+use tesser_core::{Side, Symbol, Tick};
 use tesser_rpc::proto::strategy_service_server::{StrategyService, StrategyServiceServer};
 use tesser_rpc::proto::{
     self, CandleRequest, FillRequest, HeartbeatRequest, HeartbeatResponse, InitRequest,
@@ -168,7 +168,7 @@ impl TestServerController {
 
 fn build_tick() -> Tick {
     Tick {
-        symbol: "BTC-USD".to_string(),
+        symbol: Symbol::from("BTC-USD"),
         price: Decimal::from(100),
         size: Decimal::from(1),
         side: Side::Buy,
@@ -243,13 +243,13 @@ async fn filters_symbols_locally() {
     let ctx = StrategyContext::default();
 
     let mut btc_tick = build_tick();
-    btc_tick.symbol = "BTC-USD".to_string();
+    btc_tick.symbol = Symbol::from("BTC-USD");
     strategy.on_tick(&ctx, &btc_tick).await.unwrap();
     assert!(strategy.drain_signals().is_empty());
     assert_eq!(controller.init_counter.load(Ordering::SeqCst), 0);
 
     let mut eth_tick = build_tick();
-    eth_tick.symbol = "ETH-USD".to_string();
+    eth_tick.symbol = Symbol::from("ETH-USD");
     strategy.on_tick(&ctx, &eth_tick).await.unwrap();
     let signals = strategy.drain_signals();
     assert_eq!(signals.len(), 1);

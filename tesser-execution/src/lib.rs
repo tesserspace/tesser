@@ -452,12 +452,9 @@ impl ExecutionEngine {
 
         let client_order_id = signal.id.to_string();
         let request = match signal.kind {
-            SignalKind::EnterLong => self.build_request(
-                signal.symbol,
-                Side::Buy,
-                qty,
-                Some(client_order_id.clone()),
-            ),
+            SignalKind::EnterLong => {
+                self.build_request(signal.symbol, Side::Buy, qty, Some(client_order_id.clone()))
+            }
             SignalKind::ExitLong | SignalKind::Flatten => self.build_request(
                 signal.symbol,
                 Side::Sell,
@@ -470,12 +467,9 @@ impl ExecutionEngine {
                 qty,
                 Some(client_order_id.clone()),
             ),
-            SignalKind::ExitShort => self.build_request(
-                signal.symbol,
-                Side::Buy,
-                qty,
-                Some(client_order_id.clone()),
-            ),
+            SignalKind::ExitShort => {
+                self.build_request(signal.symbol, Side::Buy, qty, Some(client_order_id.clone()))
+            }
         };
 
         let order = self.send_order(request, &ctx).await?;

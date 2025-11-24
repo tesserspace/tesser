@@ -85,12 +85,7 @@ impl Resampler {
                         // Out-of-order candle; flush the existing bucket before rewinding.
                         let finished = mem::replace(
                             entry,
-                            Bucket::from_candle(
-                                symbol,
-                                bucket_start,
-                                self.interval,
-                                &candle,
-                            ),
+                            Bucket::from_candle(symbol, bucket_start, self.interval, &candle),
                         );
                         self.output.push(finished.into_candle());
                     }
@@ -101,12 +96,7 @@ impl Resampler {
                         // Finalize the previous bucket and start a new one.
                         let finished = mem::replace(
                             entry,
-                            Bucket::from_candle(
-                                symbol,
-                                bucket_start,
-                                self.interval,
-                                &candle,
-                            ),
+                            Bucket::from_candle(symbol, bucket_start, self.interval, &candle),
                         );
                         self.output.push(finished.into_candle());
                     }

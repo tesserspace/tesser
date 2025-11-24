@@ -1137,7 +1137,7 @@ mod tests {
     fn parses_public_trade_line() {
         let line = "1585180700.0647,BTCUSDT,Buy,0.042,6698.5,PlusTick,08ff9568-cb50-55d6-b497-13727eec09dc,28133700000.0,0.042,281.337";
         let trade = parse_bybit_public_line("BTCUSDT", line).expect("trade");
-        assert_eq!(trade.tick.symbol.as_str(), "BTCUSDT");
+        assert_eq!(trade.tick.symbol.code(), "BTCUSDT");
         assert_eq!(
             trade.trade_id.as_deref(),
             Some("08ff9568-cb50-55d6-b497-13727eec09dc")
