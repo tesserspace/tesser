@@ -35,10 +35,11 @@ use tesser_backtester::{
     stream_from_events, BacktestConfig, BacktestMode, BacktestStream, Backtester, MarketEvent,
     MarketEventKind, MarketEventStream,
 };
-use tesser_broker::ExecutionClient;
+use tesser_broker::{ExecutionClient, RouterExecutionClient};
 use tesser_config::{load_config, AppConfig, PersistenceEngine, RiskManagementConfig};
 use tesser_core::{
-    AssetId, Candle, DepthUpdate, Interval, OrderBook, OrderBookLevel, Side, Symbol, Tick,
+    AssetId, Candle, DepthUpdate, ExchangeId, Interval, OrderBook, OrderBookLevel, Side, Symbol,
+    Tick,
 };
 use tesser_data::analytics::ExecutionAnalysisRequest;
 use tesser_data::download::{
@@ -54,7 +55,7 @@ use tesser_execution::{
 };
 use tesser_markets::MarketRegistry;
 use tesser_paper::{
-    FeeScheduleConfig, MatchingEngine, MatchingEngineConfig, PaperExecutionClient,
+    FeeModel, FeeScheduleConfig, MatchingEngine, MatchingEngineConfig, PaperExecutionClient,
     PaperMarketStream, QueueModel,
 };
 use tesser_strategy::{builtin_strategy_names, load_strategy};
@@ -1230,16 +1231,22 @@ impl BacktestRunArgs {
             })?,
         );
         let fee_schedule = self.resolve_fee_schedule()?;
+        let fee_model_template = fee_schedule.build_model();
+        let reporting_currency = AssetId::from(config.backtest.reporting_currency.as_str());
+        let initial_balances = clone_initial_balances(&config.backtest);
 
         let (market_stream, event_stream, execution_client, matching_engine) = match mode {
             BacktestMode::Candle => {
                 let stream = self.build_candle_stream(&symbols)?;
-                let exec_client: Arc<dyn ExecutionClient> = Arc::new(PaperExecutionClient::new(
-                    "paper-backtest".to_string(),
-                    symbols.clone(),
+                let exec_client = build_sim_execution_client(
+                    "paper-backtest",
+                    &symbols,
                     self.slippage_bps,
-                    fee_schedule.build_model(),
-                ));
+                    fee_model_template.clone(),
+                    &initial_balances,
+                    reporting_currency,
+                )
+                .await;
                 (Some(stream), None, exec_client, None)
             }
             BacktestMode::Tick => {
@@ -1248,7 +1255,7 @@ impl BacktestRunArgs {
                 }
                 let source = self.detect_lob_source()?;
                 let latency_ms = self.sim_latency_ms.min(i64::MAX as u64);
-                let fee_model = fee_schedule.build_model();
+                let fee_model = fee_model_template.clone();
                 let engine = Arc::new(MatchingEngine::with_config(
                     "matching-engine",
                     symbols.clone(),
@@ -1286,8 +1293,8 @@ impl BacktestRunArgs {
 
         let mut cfg = BacktestConfig::new(symbols[0]);
         cfg.order_quantity = order_quantity;
-        cfg.initial_balances = clone_initial_balances(&config.backtest);
-        cfg.reporting_currency = AssetId::from(config.backtest.reporting_currency.as_str());
+        cfg.initial_balances = initial_balances.clone();
+        cfg.reporting_currency = reporting_currency;
         cfg.execution.slippage_bps = self.slippage_bps.max(Decimal::ZERO);
         cfg.execution.fee_bps = self.fee_bps.max(Decimal::ZERO);
         cfg.execution.latency_candles = self.latency_candles.max(1);
@@ -1419,6 +1426,8 @@ impl BacktestBatchArgs {
                 self.fee_bps.max(Decimal::ZERO),
             )
         };
+        let reporting_currency = AssetId::from(config.backtest.reporting_currency.as_str());
+        let initial_balances = clone_initial_balances(&config.backtest);
         for config_path in &self.config_paths {
             let contents = std::fs::read_to_string(config_path).with_context(|| {
                 format!("failed to read strategy config {}", config_path.display())
@@ -1444,18 +1453,21 @@ impl BacktestBatchArgs {
                 }
                 DataFormat::Parquet => parquet_market_stream(&symbols, self.data_paths.clone()),
             };
-            let execution_client: Arc<dyn ExecutionClient> = Arc::new(PaperExecutionClient::new(
-                format!("paper-batch-{}", def.name),
-                symbols.clone(),
+            let execution_client = build_sim_execution_client(
+                &format!("paper-batch-{}", def.name),
+                &symbols,
                 self.slippage_bps,
                 fee_schedule.build_model(),
-            ));
+                &initial_balances,
+                reporting_currency,
+            )
+            .await;
             let execution =
                 ExecutionEngine::new(execution_client, sizer, Arc::new(NoopRiskChecker));
             let mut cfg = BacktestConfig::new(symbols[0]);
             cfg.order_quantity = order_quantity;
-            cfg.initial_balances = clone_initial_balances(&config.backtest);
-            cfg.reporting_currency = AssetId::from(config.backtest.reporting_currency.as_str());
+            cfg.initial_balances = initial_balances.clone();
+            cfg.reporting_currency = reporting_currency;
             cfg.execution.slippage_bps = self.slippage_bps.max(Decimal::ZERO);
             cfg.execution.fee_bps = self.fee_bps.max(Decimal::ZERO);
             cfg.execution.latency_candles = self.latency_candles.max(1);
@@ -1489,6 +1501,139 @@ impl BacktestBatchArgs {
             return Err(anyhow!("no batch jobs executed"));
         }
         Ok(())
+    }
+}
+
+async fn build_sim_execution_client(
+    name_prefix: &str,
+    symbols: &[Symbol],
+    slippage_bps: Decimal,
+    fee_model: Arc<dyn FeeModel>,
+    initial_balances: &HashMap<AssetId, Decimal>,
+    reporting_currency: AssetId,
+) -> Arc<dyn ExecutionClient> {
+    let mut grouped: HashMap<ExchangeId, Vec<Symbol>> = HashMap::new();
+    for symbol in symbols {
+        grouped.entry(symbol.exchange).or_default().push(*symbol);
+    }
+    if grouped.len() <= 1 {
+        let (exchange, group) = grouped
+            .into_iter()
+            .next()
+            .unwrap_or((ExchangeId::UNSPECIFIED, symbols.to_vec()));
+        return build_paper_client_for_exchange(
+            name_prefix,
+            exchange,
+            group,
+            slippage_bps,
+            fee_model,
+            initial_balances,
+            reporting_currency,
+        )
+        .await;
+    }
+    let mut routes = HashMap::new();
+    for (exchange, group) in grouped {
+        let client = build_paper_client_for_exchange(
+            name_prefix,
+            exchange,
+            group,
+            slippage_bps,
+            fee_model.clone(),
+            initial_balances,
+            reporting_currency,
+        )
+        .await;
+        routes.insert(exchange, client);
+    }
+    Arc::new(RouterExecutionClient::new(routes))
+}
+
+async fn build_paper_client_for_exchange(
+    name_prefix: &str,
+    exchange: ExchangeId,
+    symbols: Vec<Symbol>,
+    slippage_bps: Decimal,
+    fee_model: Arc<dyn FeeModel>,
+    initial_balances: &HashMap<AssetId, Decimal>,
+    reporting_currency: AssetId,
+) -> Arc<dyn ExecutionClient> {
+    let cash_asset = cash_asset_for_exchange(reporting_currency, exchange);
+    let client = Arc::new(PaperExecutionClient::with_cash_asset(
+        format!("{name_prefix}-{}", exchange),
+        symbols,
+        slippage_bps,
+        fee_model,
+        cash_asset,
+    ));
+    let balance = initial_balance_for_asset(initial_balances, cash_asset);
+    client.initialize_balance(cash_asset, balance).await;
+    let exec: Arc<dyn ExecutionClient> = client;
+    exec
+}
+
+fn cash_asset_for_exchange(reporting: AssetId, exchange: ExchangeId) -> AssetId {
+    if reporting.exchange.is_specified() {
+        if reporting.exchange == exchange {
+            reporting
+        } else {
+            AssetId::from_code(exchange, reporting.code())
+        }
+    } else if exchange.is_specified() {
+        AssetId::from_code(exchange, reporting.code())
+    } else {
+        reporting
+    }
+}
+
+fn initial_balance_for_asset(balances: &HashMap<AssetId, Decimal>, target: AssetId) -> Decimal {
+    if let Some(amount) = balances
+        .iter()
+        .find(|(asset, _)| asset.exchange == target.exchange && asset.code() == target.code())
+        .map(|(_, amount)| *amount)
+    {
+        return amount;
+    }
+    if target.exchange.is_specified() {
+        if let Some(amount) = balances
+            .iter()
+            .find(|(asset, _)| !asset.exchange.is_specified() && asset.code() == target.code())
+            .map(|(_, amount)| *amount)
+        {
+            return amount;
+        }
+    }
+    Decimal::from(10_000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_balance_prefers_exchange_specific_entry() {
+        let mut balances = HashMap::new();
+        let exchange = ExchangeId::from("bybit_linear");
+        let global = AssetId::from("USDT");
+        let target = AssetId::from_code(exchange, "USDT");
+        balances.insert(global, Decimal::new(5_000, 0));
+        balances.insert(target, Decimal::new(2_500, 0));
+        assert_eq!(
+            initial_balance_for_asset(&balances, target),
+            Decimal::new(2_500, 0)
+        );
+    }
+
+    #[test]
+    fn initial_balance_falls_back_to_unspecified_exchange() {
+        let mut balances = HashMap::new();
+        balances.insert(AssetId::from("USDT"), Decimal::new(7_500, 0));
+        let exchange = ExchangeId::from("binance_perp");
+        let target = AssetId::from_code(exchange, "USDT");
+        assert_eq!(
+            initial_balance_for_asset(&balances, target),
+            Decimal::new(7_500, 0)
+        );
     }
 }
 

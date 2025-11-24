@@ -11,7 +11,7 @@ use parquet::file::properties::WriterProperties;
 use rust_decimal::Decimal;
 use tempfile::tempdir;
 
-use tesser_core::{Candle, Interval};
+use tesser_core::{Candle, Interval, Symbol};
 use tesser_data::encoding::candles_to_batch;
 
 const STRATEGY_CONFIG: &str = r#"
@@ -22,6 +22,19 @@ symbol = "BTCUSDT"
 fast_period = 3
 slow_period = 5
 min_samples = 5
+"#;
+
+const MULTI_STRATEGY_CONFIG: &str = r#"
+strategy_name = "CrossExchangeArb"
+
+[params]
+symbol_a = "bybit_linear:BTCUSDT"
+symbol_b = "binance_perp:BTCUSDT"
+spread_bps = 0.10
+exit_bps = 0.05
+ichimoku_conversion = 2
+ichimoku_base = 4
+ichimoku_span_b = 4
 "#;
 
 #[test]
@@ -39,6 +52,18 @@ fn backtest_runs_with_csv_and_parquet_inputs() -> Result<()> {
 
     run_backtest(&strategy_path, &csv_path)?;
     run_backtest(&strategy_path, &parquet_path)?;
+    Ok(())
+}
+
+#[test]
+fn backtest_routes_multi_exchange_strategies() -> Result<()> {
+    let temp = tempdir()?;
+    let strategy_path = temp.path().join("multi.toml");
+    fs::write(&strategy_path, MULTI_STRATEGY_CONFIG)?;
+
+    let csv_path = temp.path().join("spreads.csv");
+    write_csv(&csv_path, &dual_exchange_candles())?;
+    run_backtest(&strategy_path, &csv_path)?;
     Ok(())
 }
 
@@ -111,4 +136,37 @@ fn sample_candles() -> Vec<Candle> {
             timestamp: base + Duration::minutes(idx as i64),
         })
         .collect()
+}
+
+fn dual_exchange_candles() -> Vec<Candle> {
+    let base = Utc::now() - Duration::minutes(10);
+    let symbol_a = Symbol::from("bybit_linear:BTCUSDT");
+    let symbol_b = Symbol::from("binance_perp:BTCUSDT");
+    let mut candles = Vec::new();
+    for idx in 0..8 {
+        let ts = base + Duration::minutes(idx as i64);
+        let price_a = Decimal::new(20_000 + idx as i64 * 5, 0);
+        let price_b = Decimal::new(19_900 - idx as i64 * 3, 0);
+        candles.push(Candle {
+            symbol: symbol_a,
+            interval: Interval::OneMinute,
+            open: price_a,
+            high: price_a + Decimal::ONE,
+            low: price_a - Decimal::ONE,
+            close: price_a,
+            volume: Decimal::ONE,
+            timestamp: ts,
+        });
+        candles.push(Candle {
+            symbol: symbol_b,
+            interval: Interval::OneMinute,
+            open: price_b,
+            high: price_b + Decimal::ONE,
+            low: price_b - Decimal::ONE,
+            close: price_b,
+            volume: Decimal::ONE,
+            timestamp: ts,
+        });
+    }
+    candles
 }
