@@ -114,6 +114,7 @@ pub const fn default_order_book_depth() -> usize {
 }
 const STRATEGY_LOCK_WARN_THRESHOLD: Duration = Duration::from_millis(25);
 const STRATEGY_CALL_WARN_THRESHOLD: Duration = Duration::from_millis(250);
+const MARKET_EVENT_TIMEOUT: Duration = Duration::from_millis(10);
 
 #[async_trait::async_trait]
 trait LiveMarketStream: Send {
@@ -167,17 +168,23 @@ impl RouterMarketStream {
             let shutdown = shutdown.clone();
             tasks.push(tokio::spawn(async move {
                 loop {
+                    if shutdown.triggered() {
+                        break;
+                    }
+                    let mut emitted = false;
+
                     let tick = tokio::select! {
                         res = stream.next_tick() => res,
                         _ = shutdown.wait() => break,
                     };
                     match tick {
                         Ok(Some(event)) => {
+                            emitted = true;
                             if tick_tx.send(event).await.is_err() {
                                 break;
                             }
                         }
-                        Ok(None) => break,
+                        Ok(None) => {}
                         Err(err) => {
                             warn!(exchange = %name, error = %err, "market stream tick failed");
                             break;
@@ -190,11 +197,12 @@ impl RouterMarketStream {
                     };
                     match candle {
                         Ok(Some(event)) => {
+                            emitted = true;
                             if candle_tx.send(event).await.is_err() {
                                 break;
                             }
                         }
-                        Ok(None) => break,
+                        Ok(None) => {}
                         Err(err) => {
                             warn!(exchange = %name, error = %err, "market stream candle failed");
                             break;
@@ -207,18 +215,19 @@ impl RouterMarketStream {
                     };
                     match book {
                         Ok(Some(event)) => {
+                            emitted = true;
                             if book_tx.send(event).await.is_err() {
                                 break;
                             }
                         }
-                        Ok(None) => break,
+                        Ok(None) => {}
                         Err(err) => {
                             warn!(exchange = %name, error = %err, "market stream order book failed");
                             break;
                         }
                     }
 
-                    if shutdown.triggered() {
+                    if !emitted && !shutdown.sleep(Duration::from_millis(5)).await {
                         break;
                     }
                 }
@@ -959,46 +968,49 @@ impl LiveRuntime {
             let mut progressed = false;
 
             let tick = tokio::select! {
-                res = self.market.next_tick() => Some(res),
+                res = tokio::time::timeout(MARKET_EVENT_TIMEOUT, self.market.next_tick()) => Some(res),
                 _ = self.shutdown.wait() => None,
             };
             match tick {
-                Some(res) => {
-                    if let Some(tick) = res? {
-                        progressed = true;
-                        self.event_bus.publish(Event::Tick(TickEvent { tick }));
-                    }
+                Some(Ok(Ok(Some(tick)))) => {
+                    progressed = true;
+                    self.event_bus.publish(Event::Tick(TickEvent { tick }));
                 }
+                Some(Ok(Ok(None))) => {}
+                Some(Ok(Err(err))) => return Err(err.into()),
+                Some(Err(_)) => {}
                 None => break 'run,
             }
 
             let candle = tokio::select! {
-                res = self.market.next_candle() => Some(res),
+                res = tokio::time::timeout(MARKET_EVENT_TIMEOUT, self.market.next_candle()) => Some(res),
                 _ = self.shutdown.wait() => None,
             };
             match candle {
-                Some(res) => {
-                    if let Some(candle) = res? {
-                        progressed = true;
-                        self.event_bus
-                            .publish(Event::Candle(CandleEvent { candle }));
-                    }
+                Some(Ok(Ok(Some(candle)))) => {
+                    progressed = true;
+                    self.event_bus
+                        .publish(Event::Candle(CandleEvent { candle }));
                 }
+                Some(Ok(Ok(None))) => {}
+                Some(Ok(Err(err))) => return Err(err.into()),
+                Some(Err(_)) => {}
                 None => break 'run,
             }
 
             let book = tokio::select! {
-                res = self.market.next_order_book() => Some(res),
+                res = tokio::time::timeout(MARKET_EVENT_TIMEOUT, self.market.next_order_book()) => Some(res),
                 _ = self.shutdown.wait() => None,
             };
             match book {
-                Some(res) => {
-                    if let Some(book) = res? {
-                        progressed = true;
-                        self.event_bus
-                            .publish(Event::OrderBook(OrderBookEvent { order_book: book }));
-                    }
+                Some(Ok(Ok(Some(book)))) => {
+                    progressed = true;
+                    self.event_bus
+                        .publish(Event::OrderBook(OrderBookEvent { order_book: book }));
                 }
+                Some(Ok(Ok(None))) => {}
+                Some(Ok(Err(err))) => return Err(err.into()),
+                Some(Err(_)) => {}
                 None => break 'run,
             }
 
