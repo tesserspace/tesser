@@ -18,13 +18,13 @@ use tokio::time::{sleep, timeout};
 use tonic::transport::Channel;
 
 use tesser_cli::live::{
-    run_live_with_shutdown, ExecutionBackend, LiveSessionSettings, PersistenceSettings,
-    ShutdownSignal,
+    run_live_with_shutdown, ExecutionBackend, LiveSessionSettings, NamedExchange,
+    PersistenceSettings, ShutdownSignal,
 };
 use tesser_cli::PublicChannel;
 use tesser_config::{AlertingConfig, ExchangeConfig, PersistenceEngine, RiskManagementConfig};
 use tesser_core::{
-    AccountBalance, AssetId, Candle, ExecutionHint, ExchangeId, Interval, OrderBook,
+    AccountBalance, AssetId, Candle, ExchangeId, ExecutionHint, Interval, OrderBook,
     OrderBookLevel, Side, Signal, SignalKind, Symbol, Tick,
 };
 use tesser_data::recorder::{ParquetRecorder, RecorderConfig};
@@ -487,8 +487,11 @@ impl LiveTestHarness {
         let state_path = temp.path().join("live_state.db");
         let record_root = temp.path().join("flight_recorder");
         let ready = Arc::new(Notify::new());
-        let strategy: Box<dyn Strategy> =
-            Box::new(SignalStrategy::new(test_symbol(), ready.clone(), emit_signal));
+        let strategy: Box<dyn Strategy> = Box::new(SignalStrategy::new(
+            test_symbol(),
+            ready.clone(),
+            emit_signal,
+        ));
 
         let exchange_cfg = ExchangeConfig {
             rest_url: exchange.rest_url(),
@@ -518,17 +521,20 @@ impl LiveTestHarness {
             risk: RiskManagementConfig::default(),
             reconciliation_interval: Duration::from_secs(5),
             reconciliation_threshold: Decimal::new(1, 3),
-            driver: "bybit".into(),
             orderbook_depth: 50,
             record_path: record_data.then(|| record_root.clone()),
             control_addr,
         };
 
         let shutdown = ShutdownSignal::new();
+        let exchanges = vec![NamedExchange {
+            name: "bybit_linear".into(),
+            config: exchange_cfg,
+        }];
         let run_handle = tokio::spawn(run_live_with_shutdown(
             strategy,
             vec![Symbol::from(SYMBOL)],
-            exchange_cfg,
+            exchanges,
             settings,
             shutdown.clone(),
         ));

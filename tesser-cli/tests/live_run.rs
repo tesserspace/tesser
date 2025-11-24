@@ -25,8 +25,8 @@ use tonic::transport::Channel;
 
 use async_trait::async_trait;
 use tesser_cli::live::{
-    run_live_with_shutdown, ExecutionBackend, LiveSessionSettings, PersistenceSettings,
-    ShutdownSignal,
+    run_live_with_shutdown, ExecutionBackend, LiveSessionSettings, NamedExchange,
+    PersistenceSettings, ShutdownSignal,
 };
 use tesser_cli::PublicChannel;
 use tesser_config::{AlertingConfig, ExchangeConfig, PersistenceEngine, RiskManagementConfig};
@@ -89,8 +89,11 @@ fn spawn_live_runtime(
     shutdown: ShutdownSignal,
 ) -> JoinHandle<Result<()>> {
     tokio::spawn(async move {
-        let result = run_live_with_shutdown(strategy, symbols, exchange_cfg, settings, shutdown)
-            .await;
+        let exchanges = vec![NamedExchange {
+            name: "bybit_linear".into(),
+            config: exchange_cfg,
+        }];
+        let result = run_live_with_shutdown(strategy, symbols, exchanges, settings, shutdown).await;
         if let Err(err) = &result {
             eprintln!("live runtime exited with error: {err:?}");
         }
@@ -234,7 +237,6 @@ async fn live_run_executes_round_trip() -> Result<()> {
         risk: RiskManagementConfig::default(),
         reconciliation_interval: Duration::from_secs(1),
         reconciliation_threshold: Decimal::new(1, 3),
-        driver: "bybit".into(),
         orderbook_depth: 50,
         record_path: None,
         control_addr: "127.0.0.1:0".parse().unwrap(),
@@ -291,10 +293,7 @@ async fn live_run_executes_round_trip() -> Result<()> {
         .account_balances("test-key")
         .await
         .expect("balances");
-    let usdt = balances
-        .iter()
-        .find(|b| b.asset == usdt_asset())
-        .unwrap();
+    let usdt = balances.iter().find(|b| b.asset == usdt_asset()).unwrap();
     assert_eq!(usdt.available, Decimal::new(10_001, 0));
 
     exchange.shutdown().await;
@@ -351,7 +350,6 @@ async fn control_plane_reports_status() -> Result<()> {
         risk: RiskManagementConfig::default(),
         reconciliation_interval: Duration::from_secs(1),
         reconciliation_threshold: Decimal::new(1, 3),
-        driver: "bybit".into(),
         orderbook_depth: 50,
         record_path: None,
         control_addr,
@@ -461,7 +459,6 @@ async fn reconciliation_enters_liquidate_only_on_divergence() -> Result<()> {
         risk: RiskManagementConfig::default(),
         reconciliation_interval: Duration::from_millis(200),
         reconciliation_threshold: Decimal::new(1, 4),
-        driver: "bybit".into(),
         orderbook_depth: 50,
         record_path: None,
         control_addr: "127.0.0.1:0".parse().unwrap(),
@@ -605,7 +602,6 @@ async fn alerts_on_rejected_order() -> Result<()> {
         risk: RiskManagementConfig::default(),
         reconciliation_interval: Duration::from_secs(1),
         reconciliation_threshold: Decimal::new(1, 3),
-        driver: "bybit".into(),
         orderbook_depth: 50,
         record_path: None,
         control_addr: "127.0.0.1:0".parse().unwrap(),
@@ -806,12 +802,12 @@ impl Strategy for ScriptedStrategy {
 
     async fn on_candle(&mut self, _ctx: &StrategyContext, _candle: &Candle) -> StrategyResult<()> {
         if self.stage == 0 {
-                self.pending
-                    .push(Signal::new(self.symbol, SignalKind::EnterLong, 1.0));
+            self.pending
+                .push(Signal::new(self.symbol, SignalKind::EnterLong, 1.0));
             self.stage = 1;
         } else if self.stage == 1 {
-                self.pending
-                    .push(Signal::new(self.symbol, SignalKind::ExitLong, 1.0));
+            self.pending
+                .push(Signal::new(self.symbol, SignalKind::ExitLong, 1.0));
             self.stage = 2;
         }
         Ok(())

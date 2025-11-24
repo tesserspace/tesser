@@ -12,8 +12,8 @@ use tokio::time::sleep;
 use tesser_broker::ExecutionClient;
 use tesser_bybit::{BybitClient, BybitConfig, BybitCredentials};
 use tesser_core::{
-    AccountBalance, AssetId, Candle, ExecutionHint, ExchangeId, Interval, Order, OrderStatus,
-    Side, Signal, SignalKind, Symbol, Tick,
+    AccountBalance, AssetId, Candle, ExchangeId, ExecutionHint, Interval, Order, OrderStatus, Side,
+    Signal, SignalKind, Symbol, Tick,
 };
 use tesser_execution::{
     ExecutionEngine, FixedOrderSizer, NoopRiskChecker, OrderOrchestrator, RiskContext,
@@ -114,8 +114,8 @@ async fn twap_orders_adopt_after_restart() -> Result<()> {
 
     let orchestrator = OrderOrchestrator::new(engine.clone(), repo.clone(), Vec::new()).await?;
 
-    let signal = Signal::new(test_symbol(), SignalKind::EnterLong, 0.8)
-        .with_hint(ExecutionHint::Twap {
+    let signal =
+        Signal::new(test_symbol(), SignalKind::EnterLong, 0.8).with_hint(ExecutionHint::Twap {
             duration: ChronoDuration::seconds(4),
         });
     let ctx = RiskContext {
@@ -146,7 +146,10 @@ async fn twap_orders_adopt_after_restart() -> Result<()> {
     drop(orchestrator);
     sleep(Duration::from_millis(10)).await;
 
-    let open_orders = raw_client.list_open_orders(SYMBOL).await?;
+    let mut open_orders = raw_client.list_open_orders(SYMBOL).await?;
+    for order in &mut open_orders {
+        order.request.symbol = test_symbol();
+    }
     assert_eq!(open_orders.len(), 1);
     let adopted = open_orders[0].clone();
 
@@ -158,7 +161,8 @@ async fn twap_orders_adopt_after_restart() -> Result<()> {
         Arc::new(NoopRiskChecker),
     ));
     let restored = OrderOrchestrator::new(restarted_engine, repo.clone(), open_orders).await?;
-    restored.update_risk_context(test_symbol(), ctx);
+    restored.update_risk_context(adopted.request.symbol, ctx);
+    restored.update_risk_context(Symbol::from(SYMBOL), ctx);
     assert_eq!(restored.active_algorithms_count(), 1);
 
     let state = exchange.state();

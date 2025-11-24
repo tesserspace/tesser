@@ -38,7 +38,7 @@ use tesser_binance::{
 };
 use tesser_broker::{
     get_connector_factory, register_connector_factory, BrokerResult, ConnectorFactory,
-    ConnectorStream, ConnectorStreamConfig, ExecutionClient,
+    ConnectorStream, ConnectorStreamConfig, ExecutionClient, RouterExecutionClient,
 };
 #[cfg(feature = "bybit")]
 use tesser_bybit::ws::{BybitWsExecution, BybitWsOrder, PrivateMessage};
@@ -147,6 +147,115 @@ impl LiveMarketStream for FactoryStreamAdapter {
     }
 }
 
+struct RouterMarketStream {
+    tick_rx: mpsc::Receiver<Tick>,
+    candle_rx: mpsc::Receiver<Candle>,
+    book_rx: mpsc::Receiver<OrderBook>,
+    tasks: Vec<JoinHandle<()>>,
+}
+
+impl RouterMarketStream {
+    fn new(streams: Vec<(String, Box<dyn LiveMarketStream>)>, shutdown: ShutdownSignal) -> Self {
+        let (tick_tx, tick_rx) = mpsc::channel(512);
+        let (candle_tx, candle_rx) = mpsc::channel(512);
+        let (book_tx, book_rx) = mpsc::channel(512);
+        let mut tasks = Vec::new();
+        for (name, mut stream) in streams {
+            let tick_tx = tick_tx.clone();
+            let candle_tx = candle_tx.clone();
+            let book_tx = book_tx.clone();
+            let shutdown = shutdown.clone();
+            tasks.push(tokio::spawn(async move {
+                loop {
+                    let tick = tokio::select! {
+                        res = stream.next_tick() => res,
+                        _ = shutdown.wait() => break,
+                    };
+                    match tick {
+                        Ok(Some(event)) => {
+                            if tick_tx.send(event).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(err) => {
+                            warn!(exchange = %name, error = %err, "market stream tick failed");
+                            break;
+                        }
+                    }
+
+                    let candle = tokio::select! {
+                        res = stream.next_candle() => res,
+                        _ = shutdown.wait() => break,
+                    };
+                    match candle {
+                        Ok(Some(event)) => {
+                            if candle_tx.send(event).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(err) => {
+                            warn!(exchange = %name, error = %err, "market stream candle failed");
+                            break;
+                        }
+                    }
+
+                    let book = tokio::select! {
+                        res = stream.next_order_book() => res,
+                        _ = shutdown.wait() => break,
+                    };
+                    match book {
+                        Ok(Some(event)) => {
+                            if book_tx.send(event).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(err) => {
+                            warn!(exchange = %name, error = %err, "market stream order book failed");
+                            break;
+                        }
+                    }
+
+                    if shutdown.triggered() {
+                        break;
+                    }
+                }
+            }));
+        }
+        Self {
+            tick_rx,
+            candle_rx,
+            book_rx,
+            tasks,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LiveMarketStream for RouterMarketStream {
+    async fn next_tick(&mut self) -> BrokerResult<Option<Tick>> {
+        Ok(self.tick_rx.recv().await)
+    }
+
+    async fn next_candle(&mut self) -> BrokerResult<Option<Candle>> {
+        Ok(self.candle_rx.recv().await)
+    }
+
+    async fn next_order_book(&mut self) -> BrokerResult<Option<OrderBook>> {
+        Ok(self.book_rx.recv().await)
+    }
+}
+
+impl Drop for RouterMarketStream {
+    fn drop(&mut self) {
+        for handle in &self.tasks {
+            handle.abort();
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct PersistenceSettings {
     pub engine: PersistenceEngine,
@@ -177,6 +286,25 @@ struct PersistenceHandles {
     algo: Arc<dyn AlgoStateRepository<State = StoredAlgoState>>,
 }
 
+#[derive(Clone)]
+pub struct NamedExchange {
+    pub name: String,
+    pub config: ExchangeConfig,
+}
+
+struct ExchangeRoute {
+    name: String,
+    driver: String,
+    ws_url: String,
+    execution: Arc<dyn ExecutionClient>,
+}
+
+struct ExchangeBuildResult {
+    execution_client: Arc<dyn ExecutionClient>,
+    market_stream: Box<dyn LiveMarketStream>,
+    routes: Vec<ExchangeRoute>,
+}
+
 pub struct LiveSessionSettings {
     pub category: PublicChannel,
     pub interval: Interval,
@@ -194,7 +322,6 @@ pub struct LiveSessionSettings {
     pub risk: RiskManagementConfig,
     pub reconciliation_interval: Duration,
     pub reconciliation_threshold: Decimal,
-    pub driver: String,
     pub orderbook_depth: usize,
     pub record_path: Option<PathBuf>,
     pub control_addr: SocketAddr,
@@ -244,17 +371,24 @@ fn build_persistence_handles(settings: &LiveSessionSettings) -> Result<Persisten
 pub async fn run_live(
     strategy: Box<dyn Strategy>,
     symbols: Vec<Symbol>,
-    exchange: ExchangeConfig,
+    exchanges: Vec<NamedExchange>,
     settings: LiveSessionSettings,
 ) -> Result<()> {
-    run_live_with_shutdown(strategy, symbols, exchange, settings, ShutdownSignal::new()).await
+    run_live_with_shutdown(
+        strategy,
+        symbols,
+        exchanges,
+        settings,
+        ShutdownSignal::new(),
+    )
+    .await
 }
 
 /// Variant of [`run_live`] that accepts a manually controlled shutdown signal.
 pub async fn run_live_with_shutdown(
     strategy: Box<dyn Strategy>,
     symbols: Vec<Symbol>,
-    exchange: ExchangeConfig,
+    exchanges: Vec<NamedExchange>,
     settings: LiveSessionSettings,
     shutdown: ShutdownSignal,
 ) -> Result<()> {
@@ -272,43 +406,35 @@ pub async fn run_live_with_shutdown(
         None
     };
     ensure_builtin_connectors_registered();
-    let connector_payload = build_exchange_payload(&exchange, &settings);
-    let connector_factory = get_connector_factory(&settings.driver)
-        .ok_or_else(|| anyhow!("driver {} is not registered", settings.driver))?;
+    if exchanges.is_empty() {
+        return Err(anyhow!("no exchange profiles supplied"));
+    }
     let symbol_codes: Vec<String> = symbols
         .iter()
         .map(|symbol| symbol.code().to_string())
         .collect();
-    let stream_config = ConnectorStreamConfig {
-        ws_url: Some(exchange.ws_url.clone()),
-        metadata: json!({
-            "category": settings.category.as_path(),
-            "symbols": symbol_codes.clone(),
-            "orderbook_depth": settings.orderbook_depth,
-        }),
-        connection_status: Some(public_connection.clone()),
-    };
-    let mut connector_stream = connector_factory
-        .create_market_stream(&connector_payload, stream_config)
-        .await
-        .map_err(|err| anyhow!("failed to create market stream: {err}"))?;
-    connector_stream
-        .subscribe(&symbol_codes, settings.interval)
-        .await
-        .map_err(|err| anyhow!("failed to subscribe via connector: {err}"))?;
-    let market_stream: Box<dyn LiveMarketStream> =
-        Box::new(FactoryStreamAdapter::new(connector_stream));
+    let driver_label = exchanges
+        .iter()
+        .map(|ex| ex.config.driver.clone())
+        .collect::<Vec<_>>()
+        .join(",");
 
-    let execution_client =
-        build_execution_client(&settings, connector_factory.clone(), &connector_payload).await?;
+    let ExchangeBuildResult {
+        execution_client,
+        market_stream,
+        routes,
+    } = build_exchange_routes(
+        &settings,
+        &exchanges,
+        &symbols,
+        &symbol_codes,
+        public_connection.clone(),
+        shutdown.clone(),
+    )
+    .await?;
     let market_registry = load_market_registry(execution_client.clone(), &settings).await?;
     if matches!(settings.exec_backend, ExecutionBackend::Live) {
-        info!(
-            rest = %exchange.rest_url,
-            driver = ?settings.driver,
-            "live execution enabled via {:?} REST",
-            settings.driver
-        );
+        info!(drivers = %driver_label, "live execution enabled");
     }
     let risk_checker: Arc<dyn PreTradeRiskChecker> =
         Arc::new(BasicRiskChecker::new(settings.risk_limits()));
@@ -364,10 +490,10 @@ pub async fn run_live_with_shutdown(
         market_stream,
         strategy,
         symbols,
+        routes,
         orchestrator,
         persistence.state,
         settings,
-        exchange.ws_url.clone(),
         market_registry,
         shutdown,
         public_connection,
@@ -378,22 +504,99 @@ pub async fn run_live_with_shutdown(
     runtime.run().await
 }
 
-async fn build_execution_client(
+async fn build_exchange_routes(
     settings: &LiveSessionSettings,
+    exchanges: &[NamedExchange],
+    symbols: &[Symbol],
+    symbol_codes: &[String],
+    connection_flag: Arc<AtomicBool>,
+    shutdown: ShutdownSignal,
+) -> Result<ExchangeBuildResult> {
+    let mut stream_sources: Vec<(String, Box<dyn LiveMarketStream>)> = Vec::new();
+    let mut router_inputs: HashMap<ExchangeId, Arc<dyn ExecutionClient>> = HashMap::new();
+    let mut routes = Vec::new();
+
+    for exchange in exchanges {
+        let payload = build_exchange_payload(&exchange.config, settings, &exchange.name);
+        let driver = exchange.config.driver.clone();
+        let factory = get_connector_factory(&driver)
+            .ok_or_else(|| anyhow!("driver {} is not registered", driver))?;
+        let stream_config = ConnectorStreamConfig {
+            ws_url: Some(exchange.config.ws_url.clone()),
+            metadata: json!({
+                "category": settings.category.as_path(),
+                "symbols": symbol_codes,
+                "orderbook_depth": settings.orderbook_depth,
+            }),
+            connection_status: Some(connection_flag.clone()),
+        };
+        let mut connector_stream = factory
+            .create_market_stream(&payload, stream_config)
+            .await
+            .map_err(|err| {
+                anyhow!(
+                    "failed to create market stream for {}: {err}",
+                    exchange.name
+                )
+            })?;
+        connector_stream
+            .subscribe(symbol_codes, settings.interval)
+            .await
+            .map_err(|err| anyhow!("failed to subscribe {}: {err}", exchange.name))?;
+        stream_sources.push((
+            exchange.name.clone(),
+            Box::new(FactoryStreamAdapter::new(connector_stream)),
+        ));
+
+        let execution_client =
+            build_single_execution_client(settings, &driver, factory, &payload, symbols).await?;
+        let exchange_id = ExchangeId::from(exchange.name.as_str());
+        router_inputs.insert(exchange_id, execution_client.clone());
+        routes.push(ExchangeRoute {
+            name: exchange.name.clone(),
+            driver,
+            ws_url: exchange.config.ws_url.clone(),
+            execution: execution_client.clone(),
+        });
+    }
+
+    let execution_client = if router_inputs.len() == 1 {
+        router_inputs.into_values().next().unwrap()
+    } else {
+        Arc::new(RouterExecutionClient::new(router_inputs))
+    };
+
+    let market_stream: Box<dyn LiveMarketStream> = if stream_sources.len() == 1 {
+        stream_sources.into_iter().next().unwrap().1
+    } else {
+        Box::new(RouterMarketStream::new(stream_sources, shutdown))
+    };
+
+    Ok(ExchangeBuildResult {
+        execution_client,
+        market_stream,
+        routes,
+    })
+}
+
+async fn build_single_execution_client(
+    settings: &LiveSessionSettings,
+    driver: &str,
     connector_factory: Arc<dyn ConnectorFactory>,
     connector_payload: &Value,
+    symbols: &[Symbol],
 ) -> Result<Arc<dyn ExecutionClient>> {
     match settings.exec_backend {
         ExecutionBackend::Paper => {
-            if settings.driver == "paper" {
+            if driver == "paper" {
                 return connector_factory
                     .create_execution_client(connector_payload)
                     .await
                     .map_err(|err| anyhow!("failed to create execution client: {err}"));
             }
             Ok(Arc::new(PaperExecutionClient::new(
-                "paper".to_string(),
-                vec![Symbol::from("BTCUSDT")],
+                format!("paper-{driver}"),
+                symbols.to_vec(),
                 settings.slippage_bps,
                 FeeScheduleConfig::with_defaults(
                     settings.fee_bps.max(Decimal::ZERO),
@@ -445,10 +648,10 @@ impl LiveRuntime {
         market: Box<dyn LiveMarketStream>,
         mut strategy: Box<dyn Strategy>,
         symbols: Vec<Symbol>,
+        exchanges: Vec<ExchangeRoute>,
         orchestrator: OrderOrchestrator,
         state_repo: Arc<dyn StateRepository<Snapshot = LiveState>>,
         settings: LiveSessionSettings,
-        #[cfg_attr(not(feature = "binance"), allow(unused_variables))] exchange_ws_url: String,
         market_registry: Arc<MarketRegistry>,
         shutdown: ShutdownSignal,
         public_connection: Arc<AtomicBool>,
@@ -456,7 +659,6 @@ impl LiveRuntime {
         bootstrap: Option<LiveBootstrap>,
     ) -> Result<Self> {
         let mut strategy_ctx = StrategyContext::new(settings.history);
-        let driver = Arc::new(settings.driver.clone());
         let mut persisted = match tokio::task::spawn_blocking({
             let repo = state_repo.clone();
             move || repo.load()
@@ -552,57 +754,60 @@ impl LiveRuntime {
         }
 
         if !settings.exec_backend.is_paper() {
-            let execution_engine = orchestrator.execution_engine();
-            let exec_client = execution_engine.client();
-            match settings.driver.as_str() {
-                "bybit" | "" => {
-                    #[cfg(feature = "bybit")]
-                    {
-                        let bybit = exec_client
-                            .as_ref()
-                            .as_any()
-                            .downcast_ref::<BybitClient>()
-                            .ok_or_else(|| anyhow!("execution client is not Bybit"))?;
-                        let creds = bybit
-                            .get_credentials()
-                            .ok_or_else(|| anyhow!("live execution requires Bybit credentials"))?;
-                        spawn_bybit_private_stream(
-                            creds,
-                            bybit.get_ws_url(),
-                            private_event_tx.clone(),
-                            exec_client.clone(),
-                            symbols.clone(),
-                            last_private_sync.clone(),
-                            private_connection.clone(),
-                            metrics.clone(),
-                            shutdown.clone(),
-                        );
+            for route in &exchanges {
+                match route.driver.as_str() {
+                    "bybit" | "" => {
+                        #[cfg(feature = "bybit")]
+                        {
+                            let bybit = route
+                                .execution
+                                .as_ref()
+                                .as_any()
+                                .downcast_ref::<BybitClient>()
+                                .ok_or_else(|| {
+                                    anyhow!("execution client for {} is not Bybit", route.name)
+                                })?;
+                            let creds = bybit.get_credentials().ok_or_else(|| {
+                                anyhow!("live execution requires Bybit credentials")
+                            })?;
+                            spawn_bybit_private_stream(
+                                creds,
+                                bybit.get_ws_url(),
+                                private_event_tx.clone(),
+                                route.execution.clone(),
+                                symbols.clone(),
+                                last_private_sync.clone(),
+                                private_connection.clone(),
+                                metrics.clone(),
+                                shutdown.clone(),
+                            );
+                        }
+                        #[cfg(not(feature = "bybit"))]
+                        {
+                            bail!("driver 'bybit' is unavailable without the 'bybit' feature");
+                        }
                     }
-                    #[cfg(not(feature = "bybit"))]
-                    {
-                        bail!("driver 'bybit' is unavailable without the 'bybit' feature");
+                    "binance" => {
+                        #[cfg(feature = "binance")]
+                        {
+                            spawn_binance_private_stream(
+                                route.execution.clone(),
+                                route.ws_url.clone(),
+                                private_event_tx.clone(),
+                                private_connection.clone(),
+                                metrics.clone(),
+                                shutdown.clone(),
+                            );
+                        }
+                        #[cfg(not(feature = "binance"))]
+                        {
+                            bail!("driver 'binance' is unavailable without the 'binance' feature");
+                        }
                     }
-                }
-                "binance" => {
-                    #[cfg(feature = "binance")]
-                    {
-                        spawn_binance_private_stream(
-                            exec_client.clone(),
-                            exchange_ws_url.clone(),
-                            private_event_tx.clone(),
-                            private_connection.clone(),
-                            metrics.clone(),
-                            shutdown.clone(),
-                        );
+                    "paper" => {}
+                    other => {
+                        bail!("private stream unsupported for driver '{other}'");
                     }
-                    #[cfg(not(feature = "binance"))]
-                    {
-                        bail!("driver 'binance' is unavailable without the 'binance' feature");
-                    }
-                }
-                "paper" => {}
-                other => {
-                    bail!("private stream unsupported for driver '{other}'");
                 }
             }
         }
@@ -667,6 +872,15 @@ impl LiveRuntime {
                 settings.reconciliation_interval,
             )
         });
+        let driver_summary = Arc::new(if exchanges.is_empty() {
+            "unknown".to_string()
+        } else {
+            exchanges
+                .iter()
+                .map(|route| route.driver.clone())
+                .collect::<Vec<_>>()
+                .join(",")
+        });
         let subscriber_handles = spawn_event_subscribers(
             event_bus.clone(),
             strategy.clone(),
@@ -681,7 +895,7 @@ impl LiveRuntime {
             settings.exec_backend,
             recorder_handle.clone(),
             last_data_timestamp.clone(),
-            driver.clone(),
+            driver_summary.clone(),
         );
         let order_timeout_task = spawn_order_timeout_monitor(
             orchestrator.clone(),
@@ -1078,7 +1292,11 @@ fn normalize_diff(diff: Decimal, reference: Decimal) -> Decimal {
     }
 }
 
-fn build_exchange_payload(exchange: &ExchangeConfig, settings: &LiveSessionSettings) -> Value {
+fn build_exchange_payload(
+    exchange: &ExchangeConfig,
+    settings: &LiveSessionSettings,
+    name: &str,
+) -> Value {
     let mut payload = serde_json::Map::new();
     payload.insert("rest_url".into(), Value::String(exchange.rest_url.clone()));
     payload.insert("ws_url".into(), Value::String(exchange.ws_url.clone()));
@@ -1091,6 +1309,7 @@ fn build_exchange_payload(exchange: &ExchangeConfig, settings: &LiveSessionSetti
         "category".into(),
         Value::String(settings.category.as_path().to_string()),
     );
+    payload.insert("exchange".into(), Value::String(name.to_string()));
     payload.insert(
         "orderbook_depth".into(),
         Value::Number(serde_json::Number::from(settings.orderbook_depth as u64)),
@@ -1580,9 +1799,7 @@ async fn process_candle_event(
     {
         let mut snapshot = persisted.lock().await;
         snapshot.last_candle_ts = Some(candle.timestamp);
-        snapshot
-            .last_prices
-            .insert(candle.symbol, candle.close);
+        snapshot.last_prices.insert(candle.symbol, candle.close);
     }
     persist_state(
         state_repo.clone(),
@@ -2248,4 +2465,121 @@ fn spawn_binance_private_stream(
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use tesser_core::OrderBookLevel;
+
+    struct StaticStream {
+        ticks: VecDeque<Tick>,
+        candles: VecDeque<Candle>,
+        books: VecDeque<OrderBook>,
+    }
+
+    impl StaticStream {
+        fn new(ticks: Vec<Tick>, candles: Vec<Candle>, books: Vec<OrderBook>) -> Self {
+            Self {
+                ticks: ticks.into(),
+                candles: candles.into(),
+                books: books.into(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LiveMarketStream for StaticStream {
+        async fn next_tick(&mut self) -> BrokerResult<Option<Tick>> {
+            Ok(self.ticks.pop_front())
+        }
+
+        async fn next_candle(&mut self) -> BrokerResult<Option<Candle>> {
+            Ok(self.candles.pop_front())
+        }
+
+        async fn next_order_book(&mut self) -> BrokerResult<Option<OrderBook>> {
+            Ok(self.books.pop_front())
+        }
+    }
+
+    fn build_tick(exchange: &str, price: i64) -> Tick {
+        Tick {
+            symbol: Symbol::from(exchange),
+            price: Decimal::from(price),
+            size: Decimal::ONE,
+            side: Side::Buy,
+            exchange_timestamp: Utc::now(),
+            received_at: Utc::now(),
+        }
+    }
+
+    fn build_candle(exchange: &str, close: i64) -> Candle {
+        Candle {
+            symbol: Symbol::from(exchange),
+            interval: Interval::OneMinute,
+            open: Decimal::from(close),
+            high: Decimal::from(close),
+            low: Decimal::from(close),
+            close: Decimal::from(close),
+            volume: Decimal::ONE,
+            timestamp: Utc::now(),
+        }
+    }
+
+    fn build_book(exchange: &str, price: i64) -> OrderBook {
+        OrderBook {
+            symbol: Symbol::from(exchange),
+            bids: vec![OrderBookLevel {
+                price: Decimal::from(price),
+                size: Decimal::ONE,
+            }],
+            asks: vec![OrderBookLevel {
+                price: Decimal::from(price + 1),
+                size: Decimal::ONE,
+            }],
+            timestamp: Utc::now(),
+            exchange_checksum: None,
+            local_checksum: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn router_market_stream_fans_in_events() {
+        let shutdown = ShutdownSignal::new();
+        let stream_a = Box::new(StaticStream::new(
+            vec![build_tick("A", 1), build_tick("A", 2)],
+            vec![build_candle("A", 10)],
+            vec![build_book("A", 5)],
+        ));
+        let stream_b = Box::new(StaticStream::new(
+            vec![build_tick("B", 3)],
+            vec![build_candle("B", 20)],
+            vec![build_book("B", 15)],
+        ));
+        let mut router = RouterMarketStream::new(
+            vec![("A".into(), stream_a), ("B".into(), stream_b)],
+            shutdown.clone(),
+        );
+
+        let first = router.next_tick().await.unwrap().unwrap();
+        let second = router.next_tick().await.unwrap().unwrap();
+        let third = router.next_tick().await.unwrap().unwrap();
+        assert_eq!(first.symbol, Symbol::from("A"));
+        assert_eq!(second.symbol, Symbol::from("A"));
+        assert_eq!(third.symbol, Symbol::from("B"));
+
+        let candle_a = router.next_candle().await.unwrap().unwrap();
+        let candle_b = router.next_candle().await.unwrap().unwrap();
+        assert_eq!(candle_a.symbol, Symbol::from("A"));
+        assert_eq!(candle_b.symbol, Symbol::from("B"));
+
+        let book_a = router.next_order_book().await.unwrap().unwrap();
+        let book_b = router.next_order_book().await.unwrap().unwrap();
+        assert_eq!(book_a.bids[0].price, Decimal::from(5));
+        assert_eq!(book_b.asks[0].price, Decimal::from(16));
+
+        shutdown.trigger();
+    }
 }

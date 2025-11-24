@@ -2,7 +2,8 @@ use crate::alerts::sanitize_webhook;
 use crate::analyze;
 use crate::data_validation::{validate_dataset, ValidationConfig, ValidationOutcome};
 use crate::live::{
-    run_live, ExecutionBackend, LiveSessionSettings, PersistenceBackend, PersistenceSettings,
+    run_live, ExecutionBackend, LiveSessionSettings, NamedExchange, PersistenceBackend,
+    PersistenceSettings,
 };
 use crate::state;
 use crate::telemetry::init_tracing;
@@ -939,6 +940,9 @@ pub struct LiveRunArgs {
     strategy_config: PathBuf,
     #[arg(long, default_value = "paper_sandbox")]
     exchange: String,
+    /// Optional list of additional exchange profiles to load (comma separated or repeated)
+    #[arg(long = "exchanges", value_name = "NAME", num_args = 0.., action = clap::ArgAction::Append)]
+    exchanges: Vec<String>,
     #[arg(long, default_value = "linear")]
     category: String,
     #[arg(long, default_value = "1m")]
@@ -1490,13 +1494,27 @@ impl BacktestBatchArgs {
 
 impl LiveRunArgs {
     async fn run(&self, config: &AppConfig) -> Result<()> {
-        let exchange_cfg = config
-            .exchange
-            .get(&self.exchange)
-            .cloned()
-            .ok_or_else(|| anyhow!("exchange profile {} not found", self.exchange))?;
-
-        let driver = exchange_cfg.driver.clone();
+        let exchange_names = if self.exchanges.is_empty() {
+            vec![self.exchange.clone()]
+        } else {
+            let mut names = self.exchanges.clone();
+            if !names.contains(&self.exchange) {
+                names.insert(0, self.exchange.clone());
+            }
+            names
+        };
+        let mut named_exchanges = Vec::new();
+        for name in exchange_names {
+            let config_entry = config
+                .exchange
+                .get(&name)
+                .cloned()
+                .ok_or_else(|| anyhow!("exchange profile {} not found", name))?;
+            named_exchanges.push(NamedExchange {
+                name,
+                config: config_entry,
+            });
+        }
 
         let contents = fs::read_to_string(&self.strategy_config)
             .with_context(|| format!("failed to read {}", self.strategy_config.display()))?;
@@ -1559,18 +1577,21 @@ impl LiveRunArgs {
             risk: self.build_risk_config(config),
             reconciliation_interval,
             reconciliation_threshold,
-            driver,
             orderbook_depth,
             record_path: Some(self.record_data.clone()),
             control_addr,
         };
 
+        let exchange_labels: Vec<String> = named_exchanges
+            .iter()
+            .map(|ex| format!("{} ({})", ex.name, ex.config.driver))
+            .collect();
+
         info!(
             strategy = %def.name,
             symbols = ?symbols,
-            exchange = %self.exchange,
+            exchanges = ?exchange_labels,
             interval = %self.interval,
-            driver = ?settings.driver,
             exec = ?self.exec,
             persistence_engine = ?settings.persistence.engine,
             state_path = %settings.persistence.state_path.display(),
@@ -1578,7 +1599,7 @@ impl LiveRunArgs {
             "starting live session"
         );
 
-        run_live(strategy, symbols, exchange_cfg, settings)
+        run_live(strategy, symbols, named_exchanges, settings)
             .await
             .context("live session failed")
     }
