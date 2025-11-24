@@ -1256,6 +1256,15 @@ impl BacktestRunArgs {
                 let source = self.detect_lob_source()?;
                 let latency_ms = self.sim_latency_ms.min(i64::MAX as u64);
                 let fee_model = fee_model_template.clone();
+                let execution_client = build_sim_execution_client(
+                    "paper-tick",
+                    &symbols,
+                    self.slippage_bps,
+                    fee_model_template.clone(),
+                    &initial_balances,
+                    reporting_currency,
+                )
+                .await;
                 let engine = Arc::new(MatchingEngine::with_config(
                     "matching-engine",
                     symbols.clone(),
@@ -1264,6 +1273,7 @@ impl BacktestRunArgs {
                         latency: Duration::milliseconds(latency_ms as i64),
                         queue_model: self.sim_queue_model.into(),
                         fee_model: fee_model.clone(),
+                        cash_asset: Some(reporting_currency),
                     },
                 ));
                 let stream = match source {
@@ -1278,12 +1288,7 @@ impl BacktestRunArgs {
                         .build_flight_recorder_stream(&root, &symbols)
                         .context("failed to initialize flight recorder stream")?,
                 };
-                (
-                    None,
-                    Some(stream),
-                    engine.clone() as Arc<dyn ExecutionClient>,
-                    Some(engine),
-                )
+                (None, Some(stream), execution_client, Some(engine))
             }
         };
 

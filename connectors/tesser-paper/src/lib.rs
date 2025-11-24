@@ -806,6 +806,7 @@ pub struct MatchingEngineConfig {
     pub latency: ChronoDuration,
     pub queue_model: QueueModel,
     pub fee_model: Arc<dyn FeeModel>,
+    pub cash_asset: Option<AssetId>,
 }
 
 impl Default for MatchingEngineConfig {
@@ -814,6 +815,7 @@ impl Default for MatchingEngineConfig {
             latency: ChronoDuration::zero(),
             queue_model: QueueModel::default(),
             fee_model: FeeScheduleConfig::default().build_model(),
+            cash_asset: None,
         }
     }
 }
@@ -863,7 +865,7 @@ impl MatchingEngine {
         } else {
             config.latency
         };
-        let cash_asset = AssetId::from("USDT");
+        let cash_asset = config.cash_asset.unwrap_or_else(|| AssetId::from("USDT"));
         let broker_markets: Vec<String> = markets
             .iter()
             .map(|symbol| symbol.code().to_string())
