@@ -11,11 +11,13 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use clap::ValueEnum;
 use futures::StreamExt;
+use rust_decimal::MathematicalOps;
 use rust_decimal::{prelude::ToPrimitive, Decimal};
 use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, trace, warn};
+use uuid::Uuid;
 
 use serde_json::{json, Value};
 
@@ -1474,6 +1476,7 @@ fn spawn_event_subscribers(
                         market_persisted.clone(),
                         market_bus.clone(),
                         market_data_tracker.clone(),
+                        market_catalog.clone(),
                     )
                     .await
                     {
@@ -1677,6 +1680,7 @@ async fn process_tick_event(
     persisted: Arc<Mutex<LiveState>>,
     bus: Arc<EventBus>,
     last_data_timestamp: Arc<AtomicI64>,
+    market_registry: Arc<MarketRegistry>,
 ) -> Result<()> {
     metrics.inc_tick();
     metrics.update_staleness(0.0);
@@ -1742,7 +1746,13 @@ async fn process_tick_event(
             .context("strategy failure on tick event")?;
         log_strategy_call("tick", call_start.elapsed());
     }
-    emit_signals(strategy.clone(), bus.clone(), metrics.clone()).await;
+    emit_signals(
+        strategy.clone(),
+        bus.clone(),
+        metrics.clone(),
+        market_registry.clone(),
+    )
+    .await;
     debug!(symbol = %tick.symbol, price = %tick.price, "completed tick processing");
     Ok(())
 }
@@ -1845,7 +1855,13 @@ async fn process_candle_event(
     )
     .await;
     orchestrator.update_risk_context(candle.symbol, ctx);
-    emit_signals(strategy.clone(), bus.clone(), metrics.clone()).await;
+    emit_signals(
+        strategy.clone(),
+        bus.clone(),
+        metrics.clone(),
+        market_registry.clone(),
+    )
+    .await;
     debug!(symbol = %candle.symbol, close = %candle.close, "completed candle processing");
     Ok(())
 }
@@ -1895,7 +1911,13 @@ async fn process_order_book_event(
             .context("strategy failure on order book")?;
         log_strategy_call("order_book", call_start.elapsed());
     }
-    emit_signals(strategy.clone(), bus.clone(), metrics.clone()).await;
+    emit_signals(
+        strategy.clone(),
+        bus.clone(),
+        metrics.clone(),
+        market_registry.clone(),
+    )
+    .await;
     Ok(())
 }
 
@@ -2085,6 +2107,7 @@ async fn emit_signals(
     strategy: Arc<Mutex<Box<dyn Strategy>>>,
     bus: Arc<EventBus>,
     metrics: Arc<LiveMetrics>,
+    market_registry: Arc<MarketRegistry>,
 ) {
     let signals = {
         let mut strat = strategy.lock().await;
@@ -2096,9 +2119,54 @@ async fn emit_signals(
         return;
     }
     metrics.inc_signals(signals.len());
-    for signal in signals {
+    let mut normalized = signals;
+    normalize_group_quantities(&mut normalized, &market_registry);
+    for signal in normalized {
         debug!(id = %signal.id, symbol = %signal.symbol, kind = ?signal.kind, "publishing signal event");
         bus.publish(Event::Signal(SignalEvent { signal }));
+    }
+}
+
+fn normalize_group_quantities(signals: &mut [Signal], registry: &MarketRegistry) {
+    use std::collections::HashMap;
+
+    let mut groups: HashMap<Uuid, Vec<usize>> = HashMap::new();
+    for (idx, signal) in signals.iter().enumerate() {
+        if let Some(group_id) = signal.group_id {
+            groups.entry(group_id).or_default().push(idx);
+        }
+    }
+    for indices in groups.values() {
+        if indices.len() < 2 {
+            continue;
+        }
+        let mut quantity = indices
+            .iter()
+            .filter_map(|idx| signals[*idx].quantity)
+            .find(|qty| *qty > Decimal::ZERO);
+        let mut step = Decimal::ZERO;
+        for idx in indices {
+            let symbol = signals[*idx].symbol;
+            let Some(instr) = registry.get(symbol) else {
+                quantity = None;
+                break;
+            };
+            if instr.lot_size > step {
+                step = instr.lot_size;
+            }
+        }
+        let Some(mut qty) = quantity else {
+            continue;
+        };
+        if step > Decimal::ZERO {
+            qty = (qty / step).floor() * step;
+        }
+        if qty <= Decimal::ZERO {
+            continue;
+        }
+        for idx in indices {
+            signals[*idx].quantity = Some(qty);
+        }
     }
 }
 

@@ -54,6 +54,7 @@ prost-types = "0.12"
 tokio-stream.workspace = true
 ratatui = "0.26"
 crossterm = { version = "0.27", features = ["event-stream"] }
+uuid.workspace = true
 
 [dev-dependencies]
 tesser-test-utils = { version = "0.9.0", path = "../tesser-test-utils" }
