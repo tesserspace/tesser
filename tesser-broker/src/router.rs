@@ -152,11 +152,11 @@ impl ExecutionClient for RouterExecutionClient {
         Ok(order)
     }
 
-    async fn cancel_order(&self, order_id: String, _symbol: &str) -> BrokerResult<()> {
+    async fn cancel_order(&self, order_id: String, _symbol: Symbol) -> BrokerResult<()> {
         let routed = self.translate_internal(&order_id)?;
         let client = self.client_for(routed.exchange)?;
         client
-            .cancel_order(routed.external_order_id.clone(), routed.symbol.code())
+            .cancel_order(routed.external_order_id.clone(), routed.symbol)
             .await
     }
 
@@ -184,15 +184,15 @@ impl ExecutionClient for RouterExecutionClient {
         Ok(order)
     }
 
-    async fn list_open_orders(&self, symbol: &str) -> BrokerResult<Vec<Order>> {
-        let mut combined = Vec::new();
-        for (exchange, client) in &self.routes {
-            let mut orders = client.list_open_orders(symbol).await?;
-            for order in orders.drain(..) {
-                combined.push(self.normalize_order(*exchange, order));
-            }
+    async fn list_open_orders(&self, symbol: Symbol) -> BrokerResult<Vec<Order>> {
+        let exchange = symbol.exchange;
+        let client = self.client_for(exchange)?;
+        let mut orders = client.list_open_orders(symbol).await?;
+        let mut normalized = Vec::with_capacity(orders.len());
+        for order in orders.drain(..) {
+            normalized.push(self.normalize_order(exchange, order));
         }
-        Ok(combined)
+        Ok(normalized)
     }
 
     async fn account_balances(&self) -> BrokerResult<Vec<AccountBalance>> {
@@ -317,7 +317,7 @@ mod tests {
         exchange: ExchangeId,
         next_id: Mutex<u64>,
         placed: Mutex<Vec<OrderRequest>>,
-        canceled: Mutex<Vec<(String, String)>>,
+        canceled: Mutex<Vec<(String, Symbol)>>,
     }
 
     impl TestClient {
@@ -357,11 +357,8 @@ mod tests {
             })
         }
 
-        async fn cancel_order(&self, order_id: String, symbol: &str) -> BrokerResult<()> {
-            self.canceled
-                .lock()
-                .unwrap()
-                .push((order_id, symbol.to_string()));
+        async fn cancel_order(&self, order_id: String, symbol: Symbol) -> BrokerResult<()> {
+            self.canceled.lock().unwrap().push((order_id, symbol));
             Ok(())
         }
 
@@ -393,7 +390,7 @@ mod tests {
             })
         }
 
-        async fn list_open_orders(&self, _symbol: &str) -> BrokerResult<Vec<Order>> {
+        async fn list_open_orders(&self, _symbol: Symbol) -> BrokerResult<Vec<Order>> {
             Ok(Vec::new())
         }
 
@@ -455,7 +452,7 @@ mod tests {
         );
 
         router
-            .cancel_order(order_a.id.clone(), "BTCUSDT")
+            .cancel_order(order_a.id.clone(), symbol_a)
             .await
             .unwrap();
         {

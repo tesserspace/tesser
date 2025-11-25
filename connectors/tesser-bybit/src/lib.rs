@@ -430,10 +430,14 @@ impl ExecutionClient for BybitClient {
         })
     }
 
-    async fn cancel_order(&self, order_id: tesser_core::OrderId, symbol: &str) -> BrokerResult<()> {
+    async fn cancel_order(
+        &self,
+        order_id: tesser_core::OrderId,
+        symbol: Symbol,
+    ) -> BrokerResult<()> {
         let payload = serde_json::json!({
             "category": self.config.category,
-            "symbol": symbol,
+            "symbol": Self::symbol_code(symbol),
             "orderId": order_id,
         });
         self.signed_request::<serde_json::Value>(Method::POST, "/v5/order/cancel", payload, None)
@@ -461,10 +465,7 @@ impl ExecutionClient for BybitClient {
         let resp: ApiResponse<CreateOrderResult> = self
             .signed_request(Method::POST, "/v5/order/amend", payload, None)
             .await?;
-        if let Ok(open_orders) = self
-            .list_open_orders(Self::symbol_code(request.symbol))
-            .await
-        {
+        if let Ok(open_orders) = self.list_open_orders(request.symbol).await {
             if let Some(order) = open_orders
                 .into_iter()
                 .find(|order| order.id == resp.result.order_id)
@@ -495,10 +496,13 @@ impl ExecutionClient for BybitClient {
         })
     }
 
-    async fn list_open_orders(&self, symbol: &str) -> BrokerResult<Vec<Order>> {
+    async fn list_open_orders(&self, symbol: Symbol) -> BrokerResult<Vec<Order>> {
         let query = vec![
             ("category".to_string(), self.config.category.clone()),
-            ("symbol".to_string(), symbol.to_string()),
+            (
+                "symbol".to_string(),
+                Self::symbol_code(symbol).to_string(),
+            ),
             ("openOnly".to_string(), "0".into()),
         ];
         let resp: ApiResponse<OpenOrdersResult> = self

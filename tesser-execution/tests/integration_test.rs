@@ -235,7 +235,7 @@ impl ExecutionClient for FailingClient {
         Err(BrokerError::InvalidRequest("synthetic failure".into()))
     }
 
-    async fn cancel_order(&self, _order_id: String, _symbol: &str) -> Result<(), BrokerError> {
+    async fn cancel_order(&self, _order_id: String, _symbol: Symbol) -> Result<(), BrokerError> {
         Ok(())
     }
 
@@ -248,7 +248,7 @@ impl ExecutionClient for FailingClient {
 
     async fn list_open_orders(
         &self,
-        _symbol: &str,
+        _symbol: Symbol,
     ) -> Result<Vec<tesser_core::Order>, BrokerError> {
         Ok(Vec::new())
     }

@@ -1350,7 +1350,7 @@ impl OrderOrchestrator {
         let mut updates = Vec::new();
         for (order_id, entry) in stale {
             let client = self.execution_engine.client();
-            let synthesized = match client.list_open_orders(entry.request.symbol.code()).await {
+            let synthesized = match client.list_open_orders(entry.request.symbol).await {
                 Ok(remote_orders) => {
                     if let Some(existing) =
                         remote_orders.into_iter().find(|order| order.id == order_id)
@@ -1363,7 +1363,7 @@ impl OrderOrchestrator {
                                 | OrderStatus::PartiallyFilled
                         ) {
                             let _ = client
-                                .cancel_order(order_id.clone(), entry.request.symbol.code())
+                                .cancel_order(order_id.clone(), entry.request.symbol)
                                 .await;
                             let mut canceled = existing.clone();
                             canceled.status = OrderStatus::Canceled;
@@ -1388,7 +1388,7 @@ impl OrderOrchestrator {
                         "failed to query stale order; canceling defensively"
                     );
                     let _ = client
-                        .cancel_order(order_id.clone(), entry.request.symbol.code())
+                        .cancel_order(order_id.clone(), entry.request.symbol)
                         .await;
                     Some(build_timeout_order(
                         order_id.clone(),

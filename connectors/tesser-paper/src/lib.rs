@@ -724,7 +724,7 @@ impl ExecutionClient for MatchingEngine {
         }
     }
 
-    async fn cancel_order(&self, order_id: OrderId, _symbol: &str) -> BrokerResult<()> {
+    async fn cancel_order(&self, order_id: OrderId, _symbol: Symbol) -> BrokerResult<()> {
         let mut open = self.open_orders.lock().await;
         if let Some(resting) = open.get_mut(&order_id) {
             if self.latency <= ChronoDuration::zero() {
@@ -800,7 +800,7 @@ impl ExecutionClient for MatchingEngine {
         Ok(resting.order.clone())
     }
 
-    async fn list_open_orders(&self, _symbol: &str) -> BrokerResult<Vec<Order>> {
+    async fn list_open_orders(&self, _symbol: Symbol) -> BrokerResult<Vec<Order>> {
         let open = self.open_orders.lock().await;
         Ok(open.values().map(|resting| resting.order.clone()).collect())
     }
@@ -1636,7 +1636,7 @@ impl ExecutionClient for PaperExecutionClient {
         }
     }
 
-    async fn cancel_order(&self, _order_id: OrderId, _symbol: &str) -> BrokerResult<()> {
+    async fn cancel_order(&self, _order_id: OrderId, _symbol: Symbol) -> BrokerResult<()> {
         Ok(())
     }
 
@@ -1668,7 +1668,7 @@ impl ExecutionClient for PaperExecutionClient {
         )))
     }
 
-    async fn list_open_orders(&self, _symbol: &str) -> BrokerResult<Vec<Order>> {
+    async fn list_open_orders(&self, _symbol: Symbol) -> BrokerResult<Vec<Order>> {
         Ok(Vec::new())
     }
 
@@ -2506,7 +2506,10 @@ mod tests {
 
         let order = engine.place_order(request).await.unwrap();
         assert_eq!(order.status, OrderStatus::PendingNew);
-        let mut open = engine.list_open_orders("BTCUSDT").await.unwrap();
+        let mut open = engine
+            .list_open_orders(Symbol::from("BTCUSDT"))
+            .await
+            .unwrap();
         assert_eq!(open[0].status, OrderStatus::PendingNew);
 
         let ts = book_time;
@@ -2514,7 +2517,10 @@ mod tests {
             .process_trade(Side::Sell, Decimal::from(9_900), Decimal::ONE, ts)
             .await;
         assert!(engine.drain_fills().await.is_empty());
-        open = engine.list_open_orders("BTCUSDT").await.unwrap();
+        open = engine
+            .list_open_orders(Symbol::from("BTCUSDT"))
+            .await
+            .unwrap();
         assert_eq!(open[0].status, OrderStatus::PendingNew);
 
         engine
@@ -2528,7 +2534,10 @@ mod tests {
         let fills = engine.drain_fills().await;
         assert_eq!(fills.len(), 1);
         assert_eq!(fills[0].fill_quantity, Decimal::ONE);
-        let open = engine.list_open_orders("BTCUSDT").await.unwrap();
+        let open = engine
+            .list_open_orders(Symbol::from("BTCUSDT"))
+            .await
+            .unwrap();
         assert!(open.is_empty());
     }
 

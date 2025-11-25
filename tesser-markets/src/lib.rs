@@ -111,18 +111,10 @@ pub enum MarketRegistryError {
     Empty,
     #[error("unknown symbol '{0}'")]
     UnknownSymbol(Symbol),
-    #[error("instrument '{symbol}' on {exchange} missing required field '{field}'")]
-    MissingField {
-        exchange: ExchangeId,
-        symbol: String,
-        field: &'static str,
-    },
-    #[error("instrument '{symbol}' on {exchange} has conflicting value for '{field}'")]
-    ConflictingField {
-        exchange: ExchangeId,
-        symbol: String,
-        field: &'static str,
-    },
+    #[error("instrument '{symbol}' missing required field '{field}'")]
+    MissingField { symbol: Symbol, field: &'static str },
+    #[error("instrument '{symbol}' has conflicting value for '{field}'")]
+    ConflictingField { symbol: Symbol, field: &'static str },
     #[error("markets file is invalid: {0}")]
     InvalidFormat(toml::de::Error),
     #[error("failed to read markets file at {path}: {source}")]
@@ -140,7 +132,7 @@ pub enum MarketRegistryError {
 /// Accumulates instrument metadata from multiple sources before producing a registry.
 #[derive(Default)]
 pub struct InstrumentCatalog {
-    entries: HashMap<(ExchangeId, String), InstrumentInfo>,
+    entries: HashMap<Symbol, InstrumentInfo>,
 }
 
 impl InstrumentCatalog {
@@ -159,8 +151,8 @@ impl InstrumentCatalog {
         })?;
         let file: MarketFile =
             toml::from_str(&contents).map_err(MarketRegistryError::InvalidFormat)?;
-        for info in file.markets {
-            self.insert(info)?;
+        for raw in file.markets {
+            self.insert(raw.into_typed())?;
         }
         Ok(())
     }
@@ -204,11 +196,11 @@ impl InstrumentCatalog {
 #[derive(Deserialize)]
 struct MarketFile {
     #[serde(default)]
-    markets: Vec<InstrumentInfo>,
+    markets: Vec<RawInstrumentInfo>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct InstrumentInfo {
+struct RawInstrumentInfo {
     exchange: ExchangeId,
     symbol: String,
     #[serde(default)]
@@ -225,65 +217,79 @@ struct InstrumentInfo {
     lot_size: Option<Quantity>,
 }
 
+impl RawInstrumentInfo {
+    fn into_typed(self) -> InstrumentInfo {
+        let exchange = self.exchange;
+        let symbol = Symbol::from_code(exchange, self.symbol);
+        InstrumentInfo {
+            symbol,
+            base: self.base.map(|code| AssetId::from_code(exchange, code)),
+            quote: self.quote.map(|code| AssetId::from_code(exchange, code)),
+            settlement_currency: self
+                .settlement_currency
+                .map(|code| AssetId::from_code(exchange, code)),
+            kind: self.kind,
+            tick_size: self.tick_size,
+            lot_size: self.lot_size,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct InstrumentInfo {
+    symbol: Symbol,
+    base: Option<AssetId>,
+    quote: Option<AssetId>,
+    settlement_currency: Option<AssetId>,
+    kind: Option<InstrumentKind>,
+    tick_size: Option<Price>,
+    lot_size: Option<Quantity>,
+}
+
 impl InstrumentInfo {
-    fn key(&self) -> (ExchangeId, String) {
-        (self.exchange, self.symbol.trim().to_ascii_uppercase())
+    fn key(&self) -> Symbol {
+        self.symbol
     }
 
     fn merge(self, other: InstrumentInfo) -> Result<InstrumentInfo, MarketRegistryError> {
-        let (exchange, symbol) = self.key();
-        let (other_exchange, other_symbol) = other.key();
-        if exchange != other_exchange || symbol != other_symbol {
+        let symbol = self.key();
+        if symbol != other.key() {
             return Err(MarketRegistryError::ConflictingField {
-                exchange,
                 symbol,
                 field: "symbol",
             });
         }
         Ok(InstrumentInfo {
-            exchange,
-            symbol: symbol.clone(),
-            base: merge_field(exchange, &symbol, "base", self.base, other.base)?,
-            quote: merge_field(exchange, &symbol, "quote", self.quote, other.quote)?,
+            symbol,
+            base: merge_field(symbol, "base", self.base, other.base)?,
+            quote: merge_field(symbol, "quote", self.quote, other.quote)?,
             settlement_currency: merge_field(
-                exchange,
-                &symbol,
+                symbol,
                 "settlement_currency",
                 self.settlement_currency,
                 other.settlement_currency,
             )?,
-            kind: merge_field(exchange, &symbol, "kind", self.kind, other.kind)?,
-            tick_size: merge_field(
-                exchange,
-                &symbol,
-                "tick_size",
-                self.tick_size,
-                other.tick_size,
-            )?,
-            lot_size: merge_field(exchange, &symbol, "lot_size", self.lot_size, other.lot_size)?,
+            kind: merge_field(symbol, "kind", self.kind, other.kind)?,
+            tick_size: merge_field(symbol, "tick_size", self.tick_size, other.tick_size)?,
+            lot_size: merge_field(symbol, "lot_size", self.lot_size, other.lot_size)?,
         })
     }
 
     fn into_instrument(self) -> Result<Instrument, MarketRegistryError> {
-        let (exchange, symbol_code) = self.key();
-        let base = require_field(exchange, &symbol_code, "base", self.base)?;
-        let quote = require_field(exchange, &symbol_code, "quote", self.quote)?;
-        let settlement = require_field(
-            exchange,
-            &symbol_code,
-            "settlement_currency",
-            self.settlement_currency,
-        )?;
-        let kind = require_field(exchange, &symbol_code, "kind", self.kind)?;
-        let tick_size = require_field(exchange, &symbol_code, "tick_size", self.tick_size)?;
-        let lot_size = require_field(exchange, &symbol_code, "lot_size", self.lot_size)?;
+        let symbol = self.symbol;
+        let base = require_field(symbol, "base", self.base)?;
+        let quote = require_field(symbol, "quote", self.quote)?;
+        let settlement = require_field(symbol, "settlement_currency", self.settlement_currency)?;
+        let kind = require_field(symbol, "kind", self.kind)?;
+        let tick_size = require_field(symbol, "tick_size", self.tick_size)?;
+        let lot_size = require_field(symbol, "lot_size", self.lot_size)?;
 
         Ok(Instrument {
-            symbol: Symbol::from_code(exchange, symbol_code.clone()),
-            base: AssetId::from_code(exchange, base),
-            quote: AssetId::from_code(exchange, quote),
+            symbol,
+            base,
+            quote,
             kind,
-            settlement_currency: AssetId::from_code(exchange, settlement),
+            settlement_currency: settlement,
             tick_size,
             lot_size,
         })
@@ -291,8 +297,7 @@ impl InstrumentInfo {
 }
 
 fn merge_field<T: Clone + PartialEq>(
-    exchange: ExchangeId,
-    symbol: &str,
+    symbol: Symbol,
     field: &'static str,
     primary: Option<T>,
     secondary: Option<T>,
@@ -300,11 +305,7 @@ fn merge_field<T: Clone + PartialEq>(
     match (primary, secondary) {
         (Some(existing), Some(replacement)) => {
             if existing != replacement {
-                Err(MarketRegistryError::ConflictingField {
-                    exchange,
-                    symbol: symbol.to_string(),
-                    field,
-                })
+                Err(MarketRegistryError::ConflictingField { symbol, field })
             } else {
                 Ok(Some(existing))
             }
@@ -316,26 +317,20 @@ fn merge_field<T: Clone + PartialEq>(
 }
 
 fn require_field<T>(
-    exchange: ExchangeId,
-    symbol: &str,
+    symbol: Symbol,
     field: &'static str,
     value: Option<T>,
 ) -> Result<T, MarketRegistryError> {
-    value.ok_or_else(|| MarketRegistryError::MissingField {
-        exchange,
-        symbol: symbol.to_string(),
-        field,
-    })
+    value.ok_or_else(|| MarketRegistryError::MissingField { symbol, field })
 }
 
 impl From<Instrument> for InstrumentInfo {
     fn from(value: Instrument) -> Self {
         Self {
-            exchange: value.symbol.exchange,
-            symbol: value.symbol.code().to_string(),
-            base: Some(value.base.code().to_string()),
-            quote: Some(value.quote.code().to_string()),
-            settlement_currency: Some(value.settlement_currency.code().to_string()),
+            symbol: value.symbol,
+            base: Some(value.base),
+            quote: Some(value.quote),
+            settlement_currency: Some(value.settlement_currency),
             kind: Some(value.kind),
             tick_size: Some(value.tick_size),
             lot_size: Some(value.lot_size),

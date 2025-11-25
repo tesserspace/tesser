@@ -1661,10 +1661,10 @@ impl LiveRunArgs {
             }
             names
         };
+        let profiles = config.exchange_profiles();
         let mut named_exchanges = Vec::new();
         for name in exchange_names {
-            let config_entry = config
-                .exchange
+            let config_entry = profiles
                 .get(&name)
                 .cloned()
                 .ok_or_else(|| anyhow!("exchange profile {} not found", name))?;

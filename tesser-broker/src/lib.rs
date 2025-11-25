@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tesser_core::{
     AccountBalance, Candle, Instrument, Order, OrderBook, OrderId, OrderRequest,
-    OrderUpdateRequest, Position, Signal, Tick,
+    OrderUpdateRequest, Position, Signal, Symbol, Tick,
 };
 use thiserror::Error;
 
@@ -111,13 +111,13 @@ pub trait ExecutionClient: Send + Sync {
     async fn place_order(&self, request: OrderRequest) -> BrokerResult<Order>;
 
     /// Cancel an existing order by identifier.
-    async fn cancel_order(&self, order_id: OrderId, symbol: &str) -> BrokerResult<()>;
+    async fn cancel_order(&self, order_id: OrderId, symbol: Symbol) -> BrokerResult<()>;
 
     /// Amend an existing order in-place when the exchange supports it.
     async fn amend_order(&self, request: OrderUpdateRequest) -> BrokerResult<Order>;
 
     /// Get all open orders for a symbol.
-    async fn list_open_orders(&self, symbol: &str) -> BrokerResult<Vec<Order>>;
+    async fn list_open_orders(&self, symbol: Symbol) -> BrokerResult<Vec<Order>>;
 
     /// Retrieve the latest known account balances.
     async fn account_balances(&self) -> BrokerResult<Vec<AccountBalance>>;

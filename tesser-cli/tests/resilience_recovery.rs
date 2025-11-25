@@ -36,7 +36,7 @@ fn usdt_asset() -> AssetId {
 }
 
 async fn assert_single_open_order(client: &BybitClient) -> Result<Order> {
-    let mut orders = client.list_open_orders(SYMBOL).await?;
+    let mut orders = client.list_open_orders(test_symbol()).await?;
     assert_eq!(orders.len(), 1, "expected exactly one open order");
     Ok(orders.remove(0))
 }
@@ -156,7 +156,7 @@ async fn twap_orders_adopt_after_restart() -> Result<()> {
     drop(orchestrator);
     sleep(Duration::from_millis(10)).await;
 
-    let mut open_orders = raw_client.list_open_orders(SYMBOL).await?;
+    let mut open_orders = raw_client.list_open_orders(test_symbol()).await?;
     for order in &mut open_orders {
         order.request.symbol = test_symbol();
     }

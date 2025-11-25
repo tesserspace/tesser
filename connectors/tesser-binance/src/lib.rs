@@ -265,9 +265,13 @@ impl ExecutionClient for BinanceClient {
         Ok(build_order_from_response(response, client_request))
     }
 
-    async fn cancel_order(&self, order_id: tesser_core::OrderId, symbol: &str) -> BrokerResult<()> {
+    async fn cancel_order(
+        &self,
+        order_id: tesser_core::OrderId,
+        symbol: Symbol,
+    ) -> BrokerResult<()> {
         self.throttle_weight(CANCEL_WEIGHT).await?;
-        let mut builder = rest_api::CancelOrderParams::builder(symbol.to_string())
+        let mut builder = rest_api::CancelOrderParams::builder(symbol.code().to_string())
             .recv_window(Some(self.config.recv_window as i64));
         if let Ok(id) = order_id.parse::<i64>() {
             builder = builder.order_id(Some(id));
@@ -311,10 +315,10 @@ impl ExecutionClient for BinanceClient {
         Ok(build_order_from_modify_response(response, &request))
     }
 
-    async fn list_open_orders(&self, symbol: &str) -> BrokerResult<Vec<Order>> {
+    async fn list_open_orders(&self, symbol: Symbol) -> BrokerResult<Vec<Order>> {
         self.throttle_weight(QUERY_WEIGHT).await?;
         let params = rest_api::CurrentAllOpenOrdersParams::builder()
-            .symbol(Some(symbol.to_string()))
+            .symbol(Some(symbol.code().to_string()))
             .recv_window(Some(self.config.recv_window as i64))
             .build()
             .map_err(|err| BrokerError::InvalidRequest(err.to_string()))?;

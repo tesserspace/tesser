@@ -161,6 +161,17 @@ impl Default for RiskManagementConfig {
         }
     }
 }
+
+impl AppConfig {
+    /// Merge `[exchange]` tables and `[[exchanges]]` arrays into a single lookup map.
+    pub fn exchange_profiles(&self) -> HashMap<String, ExchangeConfig> {
+        let mut merged = self.exchange.clone();
+        for entry in &self.exchanges {
+            merged.insert(entry.name.clone(), entry.config.clone());
+        }
+        merged
+    }
+}
 #[derive(Debug, Deserialize, Clone)]
 pub struct PersistenceConfig {
     #[serde(default = "default_persistence_engine")]

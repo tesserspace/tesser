@@ -494,11 +494,11 @@ pub async fn run_live_with_shutdown(
             .await
             .context("failed to fetch remote account balances")?;
         let mut open_orders = Vec::new();
-        for symbol_code in &symbol_codes {
+        for symbol in &symbols {
             let mut symbol_orders = execution_client
-                .list_open_orders(symbol_code)
+                .list_open_orders(*symbol)
                 .await
-                .with_context(|| format!("failed to fetch open orders for {symbol_code}"))?;
+                .with_context(|| format!("failed to fetch open orders for {}", symbol.code()))?;
             open_orders.append(&mut symbol_orders);
         }
         bootstrap = Some(LiveBootstrap {
@@ -2474,9 +2474,10 @@ fn spawn_bybit_private_stream(
         .downcast_ref::<BybitClient>()
         .map(|client| client.exchange())
         .unwrap_or(ExchangeId::UNSPECIFIED);
-    let symbol_codes: Vec<String> = symbols
+    let venue_symbols: Vec<Symbol> = symbols
         .iter()
-        .map(|symbol| symbol.code().to_string())
+        .copied()
+        .filter(|symbol| symbol.exchange == exchange_id)
         .collect();
     tokio::spawn(async move {
         loop {
@@ -2493,8 +2494,8 @@ fn spawn_bybit_private_stream(
                     }
                     metrics.update_connection_status("private", true);
                     info!("Connected to Bybit private WebSocket stream");
-                    for symbol in &symbol_codes {
-                        match exec_client.list_open_orders(symbol).await {
+                    for symbol in &venue_symbols {
+                        match exec_client.list_open_orders(*symbol).await {
                             Ok(orders) => {
                                 for order in orders {
                                     if let Err(err) =
@@ -2505,7 +2506,10 @@ fn spawn_bybit_private_stream(
                                 }
                             }
                             Err(e) => {
-                                error!("failed to reconcile open orders for {symbol}: {e}");
+                                error!(
+                                    "failed to reconcile open orders for {}: {e}",
+                                    symbol.code()
+                                );
                             }
                         }
                     }
