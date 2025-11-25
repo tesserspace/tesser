@@ -102,6 +102,7 @@ message Fill {
   Decimal fill_quantity = 5;
   Decimal fee = 6;
   google.protobuf.Timestamp timestamp = 7;
+  string fee_asset = 8;
 }
 
 // Control Plane Structures

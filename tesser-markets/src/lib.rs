@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+use rust_decimal::{Decimal, MathematicalOps};
 use serde::Deserialize;
 use tesser_broker::{BrokerError, ExecutionClient};
 use tesser_core::{AssetId, ExchangeId, Instrument, InstrumentKind, Price, Quantity, Symbol};
@@ -84,6 +85,23 @@ impl MarketRegistry {
             .read()
             .map(|map| map.values().cloned().collect())
             .unwrap_or_default()
+    }
+
+    /// Round a quantity down to the coarsest lot size shared by two venues.
+    pub fn normalize_pair_quantity(
+        &self,
+        first: Symbol,
+        second: Symbol,
+        quantity: Quantity,
+    ) -> Option<Quantity> {
+        let first_instr = self.get(first)?;
+        let second_instr = self.get(second)?;
+        let step = first_instr.lot_size.max(second_instr.lot_size);
+        if step <= Decimal::ZERO {
+            return Some(quantity);
+        }
+        let normalized = (quantity / step).floor() * step;
+        Some(normalized)
     }
 }
 

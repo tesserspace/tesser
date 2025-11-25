@@ -540,6 +540,7 @@ impl MockExchangeState {
                 fill_price: price,
                 fill_quantity: exec_quantity,
                 fee: None,
+                fee_asset: None,
                 timestamp: Utc::now(),
             };
             let order_snapshot = order.clone();

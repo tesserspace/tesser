@@ -142,6 +142,10 @@ impl From<Fill> for proto::Fill {
                     .map(to_decimal_proto)
                     .unwrap_or_else(|| to_decimal_proto(Decimal::ZERO)),
             ),
+            fee_asset: f
+                .fee_asset
+                .map(|asset| asset.to_string())
+                .unwrap_or_default(),
             timestamp: Some(to_timestamp_proto(f.timestamp)),
         }
     }

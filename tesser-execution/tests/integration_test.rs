@@ -2,7 +2,7 @@ use chrono::Duration;
 use rust_decimal::Decimal;
 use std::sync::Arc;
 use tempfile::NamedTempFile;
-use tesser_core::{ExecutionHint, Signal, SignalKind};
+use tesser_core::{ExecutionHint, Signal, SignalKind, Symbol};
 use tesser_execution::{
     algorithm::{ChildOrderAction, TwapAlgorithm},
     AlgoStatus, ExecutionAlgorithm, ExecutionEngine, FixedOrderSizer, NoopRiskChecker,
@@ -88,12 +88,15 @@ async fn test_orchestrator_integration() {
         Signal::new("BTCUSDT", SignalKind::EnterLong, 0.8).with_hint(ExecutionHint::Twap {
             duration: Duration::minutes(2),
         });
-
+    let symbol: Symbol = "BTCUSDT".into();
     let ctx = RiskContext {
+        symbol,
+        exchange: symbol.exchange,
         signed_position_qty: Decimal::ZERO,
         portfolio_equity: Decimal::from(10_000),
         last_price: Decimal::from(50_000),
         liquidate_only: false,
+        ..RiskContext::default()
     };
 
     // Submit signal to orchestrator
@@ -144,11 +147,15 @@ async fn orchestrator_restores_from_sqlite() {
         Signal::new("BTCUSDT", SignalKind::EnterLong, 0.5).with_hint(ExecutionHint::Twap {
             duration: Duration::minutes(1),
         });
+    let symbol: Symbol = "BTCUSDT".into();
     let ctx = RiskContext {
+        symbol,
+        exchange: symbol.exchange,
         signed_position_qty: Decimal::ZERO,
         portfolio_equity: Decimal::from(10_000),
         last_price: Decimal::from(25_000),
         liquidate_only: false,
+        ..RiskContext::default()
     };
     orchestrator.on_signal(&signal, &ctx).await.unwrap();
     assert_eq!(orchestrator.active_algorithms_count(), 1);

@@ -649,6 +649,8 @@ pub struct Fill {
     pub fill_price: Price,
     pub fill_quantity: Quantity,
     pub fee: Option<Price>,
+    #[serde(default)]
+    pub fee_asset: Option<AssetId>,
     pub timestamp: DateTime<Utc>,
 }
 

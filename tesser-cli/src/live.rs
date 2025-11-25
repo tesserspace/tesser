@@ -907,6 +907,7 @@ impl LiveRuntime {
             recorder_handle.clone(),
             last_data_timestamp.clone(),
             driver_summary.clone(),
+            market_registry.clone(),
         );
         let order_timeout_task = spawn_order_timeout_monitor(
             orchestrator.clone(),
@@ -926,7 +927,14 @@ impl LiveRuntime {
         );
 
         for symbol in &symbols {
-            let ctx = shared_risk_context(*symbol, &portfolio, &market_cache, &persisted).await;
+            let ctx = shared_risk_context(
+                *symbol,
+                &portfolio,
+                &market_cache,
+                &persisted,
+                &market_registry,
+            )
+            .await;
             orchestrator.update_risk_context(*symbol, ctx);
         }
 
@@ -951,6 +959,7 @@ impl LiveRuntime {
             strategy,
             _public_connection: public_connection,
             _private_connection: private_connection,
+            market_registry,
         })
     }
 
@@ -1424,7 +1433,11 @@ fn spawn_event_subscribers(
     exec_backend: ExecutionBackend,
     recorder: Option<RecorderHandle>,
     last_data_timestamp: Arc<AtomicI64>,
+    market_registry: Arc<MarketRegistry>,
+    market_registry: Arc<MarketRegistry>,
+    market_registry: Arc<MarketRegistry>,
     driver: Arc<String>,
+    market_registry: Arc<MarketRegistry>,
 ) -> Vec<JoinHandle<()>> {
     let mut handles = Vec::new();
     let market_recorder = recorder.clone();
@@ -1440,6 +1453,7 @@ fn spawn_event_subscribers(
     let market_snapshot = market.clone();
     let orchestrator_clone = orchestrator.clone();
     let market_data_tracker = last_data_timestamp.clone();
+    let market_catalog = market_registry.clone();
     let driver_clone = driver.clone();
     handles.push(tokio::spawn(async move {
         let recorder = market_recorder;
@@ -1486,6 +1500,7 @@ fn spawn_event_subscribers(
                         market_persisted.clone(),
                         market_bus.clone(),
                         market_data_tracker.clone(),
+                        market_catalog.clone(),
                     )
                     .await
                     {
@@ -1548,6 +1563,7 @@ fn spawn_event_subscribers(
                         exec_persisted.clone(),
                         exec_alerts.clone(),
                         exec_metrics.clone(),
+                        market_registry.clone(),
                     )
                     .await
                     {
@@ -1748,6 +1764,7 @@ async fn process_candle_event(
     persisted: Arc<Mutex<LiveState>>,
     bus: Arc<EventBus>,
     last_data_timestamp: Arc<AtomicI64>,
+    market_registry: Arc<MarketRegistry>,
 ) -> Result<()> {
     metrics.inc_candle();
     metrics.update_staleness(0.0);
@@ -1821,7 +1838,14 @@ async fn process_candle_event(
         Some(strategy.clone()),
     )
     .await?;
-    let ctx = shared_risk_context(candle.symbol, &portfolio, &market, &persisted).await;
+    let ctx = shared_risk_context(
+        candle.symbol,
+        &portfolio,
+        &market,
+        &persisted,
+        &market_registry,
+    )
+    .await;
     orchestrator.update_risk_context(candle.symbol, ctx);
     emit_signals(strategy.clone(), bus.clone(), metrics.clone()).await;
     debug!(symbol = %candle.symbol, close = %candle.close, "completed candle processing");
@@ -1885,8 +1909,16 @@ async fn process_signal_event(
     persisted: Arc<Mutex<LiveState>>,
     alerts: Arc<AlertManager>,
     metrics: Arc<LiveMetrics>,
+    market_registry: Arc<MarketRegistry>,
 ) -> Result<()> {
-    let ctx = shared_risk_context(signal.symbol, &portfolio, &market, &persisted).await;
+    let ctx = shared_risk_context(
+        signal.symbol,
+        &portfolio,
+        &market,
+        &persisted,
+        &market_registry,
+    )
+    .await;
     orchestrator.update_risk_context(signal.symbol, ctx);
     match orchestrator.on_signal(&signal, &ctx).await {
         Ok(()) => {
@@ -2103,13 +2135,42 @@ async fn shared_risk_context(
     portfolio: &Arc<Mutex<Portfolio>>,
     market: &Arc<Mutex<HashMap<Symbol, MarketSnapshot>>>,
     persisted: &Arc<Mutex<LiveState>>,
+    registry: &Arc<MarketRegistry>,
 ) -> RiskContext {
-    let (signed_qty, equity, liquidate_only) = {
+    let instrument = registry.get(symbol);
+    let (instrument_kind, base_asset, quote_asset, settlement_asset) = instrument
+        .map(|instrument| {
+            (
+                Some(instrument.kind),
+                instrument.base,
+                instrument.quote,
+                instrument.settlement_currency,
+            )
+        })
+        .unwrap_or((
+            None,
+            AssetId::unspecified(),
+            AssetId::unspecified(),
+            AssetId::unspecified(),
+        ));
+    let (signed_qty, equity, liquidate_only, base_available, quote_available, settlement_available) = {
         let guard = portfolio.lock().await;
         (
             guard.signed_position_qty(symbol),
             guard.equity(),
             guard.liquidate_only(),
+            guard
+                .balance(base_asset)
+                .map(|cash| cash.quantity)
+                .unwrap_or_default(),
+            guard
+                .balance(quote_asset)
+                .map(|cash| cash.quantity)
+                .unwrap_or_default(),
+            guard
+                .balance(settlement_asset)
+                .map(|cash| cash.quantity)
+                .unwrap_or_default(),
         )
     };
     let observed_price = {
@@ -2127,10 +2188,19 @@ async fn shared_risk_context(
             .unwrap_or(Decimal::ZERO)
     };
     RiskContext {
+        symbol,
+        exchange: symbol.exchange,
         signed_position_qty: signed_qty,
         portfolio_equity: equity,
         last_price,
         liquidate_only,
+        instrument_kind,
+        base_asset,
+        quote_asset,
+        settlement_asset,
+        base_available,
+        quote_available,
+        settlement_available,
     }
 }
 

@@ -79,3 +79,12 @@ webhook_url = ""
 max_data_gap_secs = 300
 max_order_failures = 3
 max_drawdown = 0.03
+
+# Inline exchange entries can also be provided using TOML arrays:
+# [[exchanges]]
+# name = custom_sim
+# driver = paper
+# rest_url = sandbox
+# ws_url = sandbox
+# api_key = 
+# api_secret = 

@@ -168,6 +168,7 @@ fn build_fill() -> Fill {
         fill_price: Decimal::from(50_020),
         fill_quantity: Decimal::from_f64(0.2).unwrap(),
         fee: None,
+        fee_asset: None,
         timestamp: Utc::now(),
     }
 }

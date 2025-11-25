@@ -457,6 +457,7 @@ impl PaperExecutionClient {
             fill_price,
             fill_quantity: order.request.quantity,
             fee,
+            fee_asset: None,
             timestamp,
         }
     }
@@ -1409,6 +1410,7 @@ impl MatchingEngine {
             fill_price: price,
             fill_quantity: qty,
             fee: if fee.is_zero() { None } else { Some(fee) },
+            fee_asset: None,
             timestamp,
         }
     }

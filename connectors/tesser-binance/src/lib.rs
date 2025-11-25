@@ -701,6 +701,7 @@ pub fn fill_from_update(
         fill_price: price,
         fill_quantity: last_qty,
         fee: parse_decimal_opt(order.n.as_deref()),
+        fee_asset: None,
         timestamp: timestamp_from_ms(order.t_uppercase),
     })
 }

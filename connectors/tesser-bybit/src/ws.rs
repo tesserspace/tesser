@@ -1012,6 +1012,7 @@ impl BybitWsExecution {
             fill_price,
             fill_quantity,
             fee,
+            fee_asset: None,
             timestamp,
         })
     }

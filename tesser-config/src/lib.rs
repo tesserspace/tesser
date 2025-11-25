@@ -55,6 +55,13 @@ pub struct ExchangeConfig {
     pub params: Value,
 }
 
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct NamedExchangeConfig {
+    pub name: String,
+    #[serde(flatten)]
+    pub config: ExchangeConfig,
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct LiveRuntimeConfig {
     #[serde(default = "default_state_path")]
@@ -145,14 +152,6 @@ impl Default for RiskManagementConfig {
         }
     }
 }
-
-impl LiveRuntimeConfig {
-    /// Return persistence settings, preserving legacy `state_path` overrides.
-    pub fn persistence_config(&self) -> PersistenceConfig {
-        self.persistence.with_fallback(&self.state_path)
-    }
-}
-
 #[derive(Debug, Deserialize, Clone)]
 pub struct PersistenceConfig {
     #[serde(default = "default_persistence_engine")]
@@ -292,7 +291,20 @@ pub fn load_config(env: Option<&str>) -> Result<AppConfig> {
     );
 
     let config = builder.build()?;
-    config
+    let mut app: AppConfig = config
         .try_deserialize()
-        .map_err(|err: ConfigError| err.into())
+        .map_err(|err: ConfigError| err.into())?;
+    app.merge_inline_exchanges();
+    Ok(app)
+}
+
+impl AppConfig {
+    fn merge_inline_exchanges(&mut self) {
+        if self.exchanges.is_empty() {
+            return;
+        }
+        for entry in self.exchanges.drain(..) {
+            self.exchange.insert(entry.name, entry.config);
+        }
+    }
 }

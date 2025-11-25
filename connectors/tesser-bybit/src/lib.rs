@@ -363,6 +363,7 @@ impl BybitClient {
                     fill_price: price,
                     fill_quantity: exec_qty,
                     fee,
+                    fee_asset: None,
                     timestamp: ts,
                 });
             }

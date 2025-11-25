@@ -696,6 +696,7 @@ mod tests {
             fill_price: Decimal::from_f64(101.0).unwrap(),
             fill_quantity: Decimal::ONE,
             fee: Some(Decimal::new(1, 2)),
+            fee_asset: None,
             timestamp: created_at,
         };
         let fill_two = Fill {

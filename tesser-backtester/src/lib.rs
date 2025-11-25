@@ -15,7 +15,8 @@ use reporting::{PerformanceReport, Reporter};
 use rust_decimal::Decimal;
 use tesser_broker::MarketStream;
 use tesser_core::{
-    AssetId, Candle, DepthUpdate, Fill, Order, OrderBook, Price, Quantity, Side, Symbol, Tick,
+    AssetId, Candle, DepthUpdate, Fill, InstrumentKind, Order, OrderBook, Price, Quantity, Side,
+    Symbol, Tick,
 };
 use tesser_data::merger::{UnifiedEvent, UnifiedEventKind};
 use tesser_execution::{ExecutionEngine, RiskContext};
@@ -144,6 +145,7 @@ pub struct Backtester {
     market_stream: Option<BacktestStream>,
     lob_stream: Option<MarketEventStream>,
     candle_index: usize,
+    market_registry: Arc<MarketRegistry>,
 }
 
 struct PendingFill {
@@ -169,7 +171,7 @@ impl Backtester {
         };
         Self {
             strategy_ctx: StrategyContext::new(config.history),
-            portfolio: Portfolio::new(portfolio_config, market_registry),
+            portfolio: Portfolio::new(portfolio_config, market_registry.clone()),
             config,
             strategy,
             execution,
@@ -178,6 +180,7 @@ impl Backtester {
             market_stream,
             lob_stream,
             candle_index: 0,
+            market_registry,
         }
     }
 
@@ -297,11 +300,39 @@ impl Backtester {
             .context("strategy failed on candle")?;
         let signals = self.strategy.drain_signals();
         for signal in signals {
+            let Some(instrument) = self.market_registry.get(signal.symbol) else {
+                warn!(symbol = %signal.symbol, "instrument metadata missing; skipping signal");
+                continue;
+            };
+            let base_available = self
+                .portfolio
+                .balance(instrument.base)
+                .map(|cash| cash.quantity)
+                .unwrap_or_default();
+            let quote_available = self
+                .portfolio
+                .balance(instrument.quote)
+                .map(|cash| cash.quantity)
+                .unwrap_or_default();
+            let settlement_available = self
+                .portfolio
+                .balance(instrument.settlement_currency)
+                .map(|cash| cash.quantity)
+                .unwrap_or_default();
             let ctx = RiskContext {
+                symbol: signal.symbol,
+                exchange: signal.symbol.exchange,
                 signed_position_qty: self.portfolio.signed_position_qty(signal.symbol),
                 portfolio_equity: self.portfolio.equity(),
                 last_price: candle.close,
                 liquidate_only: false,
+                instrument_kind: Some(instrument.kind),
+                base_asset: instrument.base,
+                quote_asset: instrument.quote,
+                settlement_asset: instrument.settlement_currency,
+                base_available,
+                quote_available,
+                settlement_available,
             };
             if let Some(order) = self.execution.handle_signal(signal, ctx).await? {
                 let latency = self.config.execution.latency_candles.max(1);
@@ -381,6 +412,13 @@ impl Backtester {
         } else {
             None
         };
+        let fee_asset = self
+            .market_registry
+            .get(order.request.symbol)
+            .map(|instrument| match instrument.kind {
+                InstrumentKind::Spot => instrument.quote,
+                _ => instrument.settlement_currency,
+            });
         Fill {
             order_id: order.id.clone(),
             symbol: order.request.symbol,
@@ -388,6 +426,7 @@ impl Backtester {
             fill_price: price,
             fill_quantity: order.request.quantity,
             fee,
+            fee_asset,
             timestamp: candle.timestamp,
         }
     }
@@ -461,11 +500,39 @@ impl Backtester {
                 .last_tick_price(&signal.symbol)
                 .or(fallback_price)
                 .unwrap_or(Decimal::ZERO);
+            let Some(instrument) = self.market_registry.get(signal.symbol) else {
+                warn!(symbol = %signal.symbol, "instrument metadata missing; skipping signal");
+                continue;
+            };
+            let base_available = self
+                .portfolio
+                .balance(instrument.base)
+                .map(|cash| cash.quantity)
+                .unwrap_or_default();
+            let quote_available = self
+                .portfolio
+                .balance(instrument.quote)
+                .map(|cash| cash.quantity)
+                .unwrap_or_default();
+            let settlement_available = self
+                .portfolio
+                .balance(instrument.settlement_currency)
+                .map(|cash| cash.quantity)
+                .unwrap_or_default();
             let ctx = RiskContext {
+                symbol: signal.symbol,
+                exchange: signal.symbol.exchange,
                 signed_position_qty: self.portfolio.signed_position_qty(signal.symbol),
                 portfolio_equity: self.portfolio.equity(),
                 last_price: reference_price,
                 liquidate_only: false,
+                instrument_kind: Some(instrument.kind),
+                base_asset: instrument.base,
+                quote_asset: instrument.quote,
+                settlement_asset: instrument.settlement_currency,
+                base_available,
+                quote_available,
+                settlement_available,
             };
             let _ = self.execution.handle_signal(signal, ctx).await?;
         }

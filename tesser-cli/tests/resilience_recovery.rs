@@ -114,15 +114,18 @@ async fn twap_orders_adopt_after_restart() -> Result<()> {
 
     let orchestrator = OrderOrchestrator::new(engine.clone(), repo.clone(), Vec::new()).await?;
 
-    let signal =
-        Signal::new(test_symbol(), SignalKind::EnterLong, 0.8).with_hint(ExecutionHint::Twap {
+    let symbol = test_symbol();
+    let signal = Signal::new(symbol, SignalKind::EnterLong, 0.8).with_hint(ExecutionHint::Twap {
             duration: ChronoDuration::seconds(4),
         });
     let ctx = RiskContext {
+        symbol,
+        exchange: symbol.exchange,
         signed_position_qty: Decimal::ZERO,
         portfolio_equity: Decimal::from(10_000),
         last_price: Decimal::new(20_000, 0),
         liquidate_only: false,
+        ..RiskContext::default()
     };
     orchestrator.on_signal(&signal, &ctx).await?;
     sleep(Duration::from_millis(25)).await;

@@ -14,8 +14,8 @@ use rust_decimal::Decimal;
 use std::sync::Arc;
 use tesser_broker::{BrokerError, BrokerResult, ExecutionClient};
 use tesser_core::{
-    Order, OrderRequest, OrderType, OrderUpdateRequest, Price, Quantity, Side, Signal, SignalKind,
-    Symbol,
+    AssetId, ExchangeId, InstrumentKind, Order, OrderRequest, OrderType, OrderUpdateRequest,
+    Price, Quantity, Side, Signal, SignalKind, Symbol,
 };
 use thiserror::Error;
 use tracing::{info, warn};
@@ -105,6 +105,10 @@ impl OrderSizer for RiskAdjustedSizer {
 /// Context passed to risk checks describing current exposure state.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RiskContext {
+    /// Symbol used to construct risk metadata.
+    pub symbol: Symbol,
+    /// Venue that will carry the exposure.
+    pub exchange: ExchangeId,
     /// Signed quantity of the current open position (long positive, short negative).
     pub signed_position_qty: Quantity,
     /// Total current portfolio equity.
@@ -113,6 +117,20 @@ pub struct RiskContext {
     pub last_price: Price,
     /// When true, only exposure-reducing orders are allowed.
     pub liquidate_only: bool,
+    /// Instrument kind, if metadata is available.
+    pub instrument_kind: Option<InstrumentKind>,
+    /// Base asset tracked for solvency checks.
+    pub base_asset: AssetId,
+    /// Quote asset tracked for solvency checks.
+    pub quote_asset: AssetId,
+    /// Settlement asset for derivatives.
+    pub settlement_asset: AssetId,
+    /// Available base asset quantity on the venue.
+    pub base_available: Quantity,
+    /// Available quote asset quantity on the venue.
+    pub quote_available: Quantity,
+    /// Available settlement asset quantity on the venue.
+    pub settlement_available: Quantity,
 }
 
 /// Validates an order before it reaches the broker.
@@ -176,23 +194,23 @@ impl PreTradeRiskChecker for BasicRiskChecker {
             });
         }
 
+        let positive_last_price = || {
+            if ctx.last_price > Decimal::ZERO {
+                Some(ctx.last_price)
+            } else {
+                None
+            }
+        };
+
+        let reference_price = match request.order_type {
+            OrderType::Limit => request
+                .price
+                .filter(|price| *price > Decimal::ZERO)
+                .or_else(positive_last_price),
+            _ => positive_last_price(),
+        };
+
         if let Some(limit) = self.limits.max_order_notional {
-            let positive_last_price = || {
-                if ctx.last_price > Decimal::ZERO {
-                    Some(ctx.last_price)
-                } else {
-                    None
-                }
-            };
-
-            let reference_price = match request.order_type {
-                OrderType::Limit => request
-                    .price
-                    .filter(|price| *price > Decimal::ZERO)
-                    .or_else(positive_last_price),
-                _ => positive_last_price(),
-            };
-
             if let Some(price) = reference_price {
                 let notional = qty * price;
                 if notional > limit {
@@ -227,6 +245,59 @@ impl PreTradeRiskChecker for BasicRiskChecker {
             if qty > position.abs() {
                 return Err(RiskError::LiquidateOnly);
             }
+        }
+
+        match ctx.instrument_kind {
+            Some(InstrumentKind::Spot) => match request.side {
+                Side::Buy => {
+                    if let Some(price) = reference_price {
+                        let notional = qty * price;
+                        if ctx.quote_available < notional {
+                            return Err(RiskError::InsufficientBalance {
+                                asset: ctx.quote_asset,
+                                needed: notional,
+                                available: ctx.quote_available,
+                            });
+                        }
+                    }
+                }
+                Side::Sell => {
+                    if ctx.base_available < qty {
+                        return Err(RiskError::InsufficientBalance {
+                            asset: ctx.base_asset,
+                            needed: qty,
+                            available: ctx.base_available,
+                        });
+                    }
+                }
+            },
+            Some(InstrumentKind::LinearPerpetual) => {
+                if let Some(price) = reference_price {
+                    let margin = qty * price;
+                    if ctx.settlement_available < margin {
+                        return Err(RiskError::InsufficientBalance {
+                            asset: ctx.settlement_asset,
+                            needed: margin,
+                            available: ctx.settlement_available,
+                        });
+                    }
+                }
+            }
+            Some(InstrumentKind::InversePerpetual) => {
+                if let Some(price) = reference_price {
+                    if price > Decimal::ZERO {
+                        let margin = qty / price;
+                        if ctx.settlement_available < margin {
+                            return Err(RiskError::InsufficientBalance {
+                                asset: ctx.settlement_asset,
+                                needed: margin,
+                                available: ctx.settlement_available,
+                            });
+                        }
+                    }
+                }
+            }
+            None => {}
         }
 
         Ok(())
@@ -281,6 +352,7 @@ mod tests {
             portfolio_equity: Decimal::from(10_000),
             last_price: Decimal::from(25_000),
             liquidate_only: true,
+            ..RiskContext::default()
         };
         let order = OrderRequest {
             symbol: "BTCUSDT".into(),
@@ -311,6 +383,7 @@ mod tests {
             portfolio_equity: Decimal::from(10_000),
             last_price: Decimal::from(25_000),
             liquidate_only: true,
+            ..RiskContext::default()
         };
         let reduce = OrderRequest {
             symbol: "BTCUSDT".into(),
@@ -340,6 +413,7 @@ mod tests {
             portfolio_equity: Decimal::from(25_000u32),
             last_price: Decimal::from(20_000u32),
             liquidate_only: false,
+            ..RiskContext::default()
         };
         let order = OrderRequest {
             symbol: "BTCUSDT".into(),
@@ -410,6 +484,12 @@ pub enum RiskError {
     },
     #[error("liquidate-only mode active")]
     LiquidateOnly,
+    #[error("insufficient {asset} balance: need {needed}, have {available}")]
+    InsufficientBalance {
+        asset: AssetId,
+        needed: Quantity,
+        available: Quantity,
+    },
 }
 
 /// Translates signals into orders using a provided [`ExecutionClient`].

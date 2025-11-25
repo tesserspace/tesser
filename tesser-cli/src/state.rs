@@ -127,6 +127,27 @@ fn print_portfolio(portfolio: &PortfolioState) {
         println!("  Drawdown limit: {:.2}%", limit * Decimal::from(100));
     }
 
+    if !portfolio.sub_accounts.is_empty() {
+        println!("  Venue breakdown:");
+        let mut venues: Vec<_> = portfolio.sub_accounts.values().collect();
+        venues.sort_by_key(|acct| acct.exchange.as_raw());
+        for account in venues {
+            let unrealized: Decimal = account
+                .positions
+                .values()
+                .map(|pos| pos.unrealized_pnl)
+                .sum();
+            let equity = account.balances.total_value() + unrealized;
+            println!(
+                "    {:<12} equity={:.2} balances={} positions={}",
+                account.exchange,
+                equity,
+                account.balances.iter().count(),
+                account.positions.len()
+            );
+        }
+    }
+
     if portfolio
         .balances
         .iter()
