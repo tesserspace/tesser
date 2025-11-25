@@ -670,6 +670,7 @@ impl LiveRuntime {
         bootstrap: Option<LiveBootstrap>,
     ) -> Result<Self> {
         let mut strategy_ctx = StrategyContext::new(settings.history);
+        strategy_ctx.attach_market_registry(market_registry.clone());
         let mut persisted = match tokio::task::spawn_blocking({
             let repo = state_repo.clone();
             move || repo.load()
@@ -1433,9 +1434,6 @@ fn spawn_event_subscribers(
     exec_backend: ExecutionBackend,
     recorder: Option<RecorderHandle>,
     last_data_timestamp: Arc<AtomicI64>,
-    market_registry: Arc<MarketRegistry>,
-    market_registry: Arc<MarketRegistry>,
-    market_registry: Arc<MarketRegistry>,
     driver: Arc<String>,
     market_registry: Arc<MarketRegistry>,
 ) -> Vec<JoinHandle<()>> {
@@ -2041,7 +2039,7 @@ async fn process_order_update_event(
     state_repo: Arc<dyn StateRepository<Snapshot = LiveState>>,
     persisted: Arc<Mutex<LiveState>>,
 ) -> Result<()> {
-    orchestrator.on_order_update(&order);
+    orchestrator.on_order_update(&order).await;
     if matches!(order.status, OrderStatus::Rejected) {
         error!(
             order_id = %order.id,

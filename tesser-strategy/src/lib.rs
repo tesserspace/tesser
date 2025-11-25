@@ -19,14 +19,17 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tesser_core::{
-    Candle, ExecutionHint, Fill, OrderBook, Position, Side, Signal, SignalKind, Symbol, Tick,
+    Candle, ExecutionHint, Fill, OrderBook, Position, Quantity, Side, Signal, SignalKind, Symbol,
+    Tick,
 };
 use tesser_cortex::{CortexConfig, CortexDevice, CortexEngine, FeatureBuffer};
 use tesser_indicators::{
     indicators::{Atr, BollingerBands, Ichimoku, IchimokuOutput, Macd, Rsi, Sma},
     Indicator,
 };
+use tesser_markets::MarketRegistry;
 use thiserror::Error;
+use uuid::Uuid;
 
 /// Result alias used within strategy implementations.
 pub type StrategyResult<T> = Result<T, StrategyError>;
@@ -56,6 +59,7 @@ pub struct StrategyContext {
     order_book_index: HashMap<Symbol, VecDeque<OrderBook>>,
     position_index: HashMap<Symbol, Position>,
     max_history: usize,
+    market_registry: Option<Arc<MarketRegistry>>,
 }
 
 impl StrategyContext {
@@ -72,6 +76,7 @@ impl StrategyContext {
             order_book_index: HashMap::new(),
             position_index: HashMap::new(),
             max_history: capacity,
+            market_registry: None,
         }
     }
 
@@ -184,6 +189,24 @@ impl StrategyContext {
         self.order_book_index
             .get(&symbol)
             .and_then(|books| books.back())
+    }
+
+    /// Attach a market registry so strategies can query instrument metadata.
+    pub fn attach_market_registry(&mut self, registry: Arc<MarketRegistry>) {
+        self.market_registry = Some(registry);
+    }
+
+    /// Normalize a target quantity to the coarsest lot size shared by two venues.
+    #[must_use]
+    pub fn normalize_pair_quantity(
+        &self,
+        first: Symbol,
+        second: Symbol,
+        quantity: Quantity,
+    ) -> Option<Quantity> {
+        self.market_registry
+            .as_ref()
+            .and_then(|registry| registry.normalize_pair_quantity(first, second, quantity))
     }
 }
 
@@ -1163,6 +1186,7 @@ pub struct PairsTradingConfig {
     pub lookback: usize,
     pub entry_z: Decimal,
     pub exit_z: Decimal,
+    pub clip_size: Decimal,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1179,6 +1203,7 @@ impl Default for PairsTradingConfig {
             lookback: 200,
             entry_z: Decimal::from(2),
             exit_z: Decimal::new(5, 1),
+            clip_size: Decimal::ZERO,
         }
     }
 }
@@ -1254,6 +1279,32 @@ impl PairsTradingArbitrage {
         }
         Some(spreads)
     }
+
+    fn manual_clip(&self, ctx: &StrategyContext) -> Option<Decimal> {
+        if self.cfg.clip_size <= Decimal::ZERO {
+            return None;
+        }
+        ctx.normalize_pair_quantity(self.cfg.symbols[0], self.cfg.symbols[1], self.cfg.clip_size)
+            .or(Some(self.cfg.clip_size))
+    }
+
+    fn push_signal_with_clip(
+        &mut self,
+        symbol: Symbol,
+        kind: SignalKind,
+        confidence: f64,
+        clip: Option<Decimal>,
+        group_id: Option<Uuid>,
+    ) {
+        let mut signal = Signal::new(symbol, kind, confidence);
+        if let Some(qty) = clip {
+            signal = signal.with_quantity(qty);
+        }
+        if let Some(id) = group_id {
+            signal = signal.with_group(id);
+        }
+        self.signals.push(signal);
+    }
 }
 
 #[async_trait]
@@ -1294,33 +1345,45 @@ impl Strategy for PairsTradingArbitrage {
         if self.cfg.symbols.contains(&candle.symbol) {
             if let Some(spreads) = self.spreads(ctx) {
                 if let Some(z) = z_score(&spreads) {
+                    let clip = self.manual_clip(ctx);
                     if z >= self.entry_z_level {
                         self.bias = SpreadBias::ShortFirst;
+                        let group_id = Uuid::new_v4();
                         // Asset A rich: short A, long B.
-                        self.signals.push(Signal::new(
+                        self.push_signal_with_clip(
                             self.cfg.symbols[0],
                             SignalKind::EnterShort,
                             0.8,
-                        ));
-                        self.signals.push(Signal::new(
+                            clip,
+                            Some(group_id),
+                        );
+                        self.push_signal_with_clip(
                             self.cfg.symbols[1],
                             SignalKind::EnterLong,
                             0.8,
-                        ));
+                            clip,
+                            Some(group_id),
+                        );
                     } else if z <= -self.entry_z_level {
                         self.bias = SpreadBias::LongFirst;
+                        let group_id = Uuid::new_v4();
                         // Asset B rich: long A, short B.
-                        self.signals.push(Signal::new(
+                        self.push_signal_with_clip(
                             self.cfg.symbols[0],
                             SignalKind::EnterLong,
                             0.8,
-                        ));
-                        self.signals.push(Signal::new(
+                            clip,
+                            Some(group_id),
+                        );
+                        self.push_signal_with_clip(
                             self.cfg.symbols[1],
                             SignalKind::EnterShort,
                             0.8,
-                        ));
+                            clip,
+                            Some(group_id),
+                        );
                     } else if z.abs() <= self.exit_z_level {
+                        let group_id = Uuid::new_v4();
                         for (idx, symbol) in self.cfg.symbols.iter().enumerate() {
                             let exit_kind = match self.bias {
                                 SpreadBias::ShortFirst => {
@@ -1345,7 +1408,13 @@ impl Strategy for PairsTradingArbitrage {
                                     }
                                 }
                             };
-                            self.signals.push(Signal::new(*symbol, exit_kind, 0.6));
+                            self.push_signal_with_clip(
+                                *symbol,
+                                exit_kind,
+                                0.6,
+                                clip,
+                                Some(group_id),
+                            );
                         }
                         self.bias = SpreadBias::Flat;
                     }

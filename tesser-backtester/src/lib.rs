@@ -169,8 +169,10 @@ impl Backtester {
             reporting_currency: config.reporting_currency,
             max_drawdown: None, // Disable liquidate-only for backtests for now
         };
+        let mut strategy_ctx = StrategyContext::new(config.history);
+        strategy_ctx.attach_market_registry(market_registry.clone());
         Self {
-            strategy_ctx: StrategyContext::new(config.history),
+            strategy_ctx,
             portfolio: Portfolio::new(portfolio_config, market_registry.clone()),
             config,
             strategy,

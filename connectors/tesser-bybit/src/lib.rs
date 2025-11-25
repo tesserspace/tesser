@@ -356,6 +356,11 @@ impl BybitClient {
                     "Buy" => Side::Buy,
                     _ => Side::Sell,
                 };
+                let fee_asset = item
+                    .fee_currency
+                    .as_deref()
+                    .filter(|code| !code.is_empty())
+                    .map(|code| self.parse_asset(code));
                 out.push(Fill {
                     order_id: item.order_id,
                     symbol: self.parse_symbol(&item.symbol),
@@ -363,7 +368,7 @@ impl BybitClient {
                     fill_price: price,
                     fill_quantity: exec_qty,
                     fee,
-                    fee_asset: None,
+                    fee_asset,
                     timestamp: ts,
                 });
             }
@@ -806,6 +811,8 @@ struct ExecutionListItem {
     exec_qty: String,
     #[serde(rename = "execFee")]
     exec_fee: String,
+    #[serde(rename = "feeCurrency")]
+    fee_currency: Option<String>,
     #[serde(rename = "execTime")]
     exec_time: String,
 }

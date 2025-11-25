@@ -28,7 +28,7 @@ type HmacSha256 = Hmac<Sha256>;
 
 use tesser_broker::{BrokerError, BrokerErrorKind, BrokerInfo, BrokerResult, MarketStream};
 use tesser_core::{
-    Candle, ExchangeId, Fill, Interval, LocalOrderBook, Order, OrderBook, OrderBookLevel,
+    AssetId, Candle, ExchangeId, Fill, Interval, LocalOrderBook, Order, OrderBook, OrderBookLevel,
     OrderRequest, OrderType, Side, Symbol, Tick,
 };
 
@@ -938,6 +938,8 @@ pub struct BybitWsExecution {
     pub side: String,
     #[serde(rename = "execFee")]
     pub exec_fee: String,
+    #[serde(rename = "feeCurrency")]
+    pub fee_currency: Option<String>,
     #[serde(rename = "execTime")]
     pub exec_time: String,
     #[serde(rename = "cumExecQty")]
@@ -1005,6 +1007,11 @@ impl BybitWsExecution {
             }
         };
 
+        let fee_asset = self
+            .fee_currency
+            .as_deref()
+            .filter(|code| !code.is_empty())
+            .map(|code| AssetId::from_code(exchange, code));
         Ok(Fill {
             order_id: self.order_id.clone(),
             symbol: Symbol::from_code(exchange, &self.symbol),
@@ -1012,7 +1019,7 @@ impl BybitWsExecution {
             fill_price,
             fill_quantity,
             fee,
-            fee_asset: None,
+            fee_asset,
             timestamp,
         })
     }

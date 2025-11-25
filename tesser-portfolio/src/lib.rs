@@ -493,7 +493,9 @@ impl Portfolio {
             Side::Sell => {
                 account.ensure_currency(self.reporting_currency, instrument.base);
                 account.ensure_currency(self.reporting_currency, instrument.quote);
-                account.balances.adjust(instrument.base, -fill.fill_quantity);
+                account
+                    .balances
+                    .adjust(instrument.base, -fill.fill_quantity);
                 account.balances.adjust(instrument.quote, notional);
             }
         }
@@ -510,7 +512,9 @@ impl Portfolio {
         let direction = Decimal::from(fill.side.as_i8());
         let settlement = &instrument.settlement_currency;
         account.ensure_currency(self.reporting_currency, *settlement);
-        account.balances.adjust(*settlement, -(notional * direction));
+        account
+            .balances
+            .adjust(*settlement, -(notional * direction));
         if !realized.is_zero() {
             account.balances.adjust(*settlement, realized);
         }
@@ -525,7 +529,9 @@ impl Portfolio {
         if instrument.quote == self.reporting_currency {
             account.ensure_currency(self.reporting_currency, instrument.base);
             account.ensure_currency(self.reporting_currency, instrument.quote);
-            account.balances.update_conversion_rate(instrument.base, price);
+            account
+                .balances
+                .update_conversion_rate(instrument.base, price);
             account
                 .balances
                 .update_conversion_rate(instrument.quote, Decimal::ONE);
@@ -567,13 +573,11 @@ impl Portfolio {
     }
 
     fn account_mut(&mut self, exchange: ExchangeId) -> &mut SubAccount {
-        self.sub_accounts
-            .entry(exchange)
-            .or_insert_with(|| {
-                let mut account = SubAccount::new(exchange);
-                account.ensure_currency(self.reporting_currency, self.reporting_currency);
-                account
-            })
+        self.sub_accounts.entry(exchange).or_insert_with(|| {
+            let mut account = SubAccount::new(exchange);
+            account.ensure_currency(self.reporting_currency, self.reporting_currency);
+            account
+        })
     }
 
     fn account(&self, exchange: ExchangeId) -> Option<&SubAccount> {

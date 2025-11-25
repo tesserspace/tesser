@@ -457,7 +457,7 @@ impl PaperExecutionClient {
             fill_price,
             fill_quantity: order.request.quantity,
             fee,
-            fee_asset: None,
+            fee_asset: fee.map(|_| *self.cash_asset.lock().unwrap()),
             timestamp,
         }
     }
@@ -1154,7 +1154,7 @@ impl MatchingEngine {
             price,
             quantity,
         );
-        let fill = Self::build_fill(
+        let fill = self.build_fill(
             order_id,
             resting.order.request.symbol,
             resting.order.request.side,
@@ -1373,7 +1373,7 @@ impl MatchingEngine {
                 event.fill_price,
                 qty,
             );
-            let fill = Self::build_fill(
+            let fill = self.build_fill(
                 &event.order.id,
                 event.order.request.symbol,
                 event.order.request.side,
@@ -1395,6 +1395,7 @@ impl MatchingEngine {
     }
 
     fn build_fill(
+        &self,
         order_id: &OrderId,
         symbol: Symbol,
         side: Side,
@@ -1403,6 +1404,11 @@ impl MatchingEngine {
         fee: Decimal,
         timestamp: DateTime<Utc>,
     ) -> Fill {
+        let fee_asset = if fee.is_zero() {
+            None
+        } else {
+            Some(*self.cash_asset.lock().unwrap())
+        };
         Fill {
             order_id: order_id.clone(),
             symbol,
@@ -1410,7 +1416,7 @@ impl MatchingEngine {
             fill_price: price,
             fill_quantity: qty,
             fee: if fee.is_zero() { None } else { Some(fee) },
-            fee_asset: None,
+            fee_asset,
             timestamp,
         }
     }
@@ -1547,7 +1553,7 @@ impl MatchingEngine {
                 *price,
                 *qty,
             );
-            let fill = Self::build_fill(
+            let fill = self.build_fill(
                 &order.id,
                 order.request.symbol,
                 order.request.side,

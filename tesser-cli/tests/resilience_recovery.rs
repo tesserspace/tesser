@@ -116,8 +116,8 @@ async fn twap_orders_adopt_after_restart() -> Result<()> {
 
     let symbol = test_symbol();
     let signal = Signal::new(symbol, SignalKind::EnterLong, 0.8).with_hint(ExecutionHint::Twap {
-            duration: ChronoDuration::seconds(4),
-        });
+        duration: ChronoDuration::seconds(4),
+    });
     let ctx = RiskContext {
         symbol,
         exchange: symbol.exchange,

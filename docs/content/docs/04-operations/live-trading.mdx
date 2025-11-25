@@ -40,6 +40,7 @@ cargo run -p tesser-cli -- \
 What you get:
 
 - **Status header** showing equity, realized PnL, last data timestamp, and whether Liquidate-Only is active.
+- **Venue breakdown** that aggregates balances and unrealized PnL per exchange so you can see which venue is carrying which sub-account in real time.
 - **Positions / Active Orders** tables that stream updates over gRPC so you instantly see fills and algo progress.
 - **Live Log** that color-codes Signals, Order events, and Fills, keeping the event bus visible while the runtime stays headless.
 - **Help & Shortcuts** footer explaining the available key bindings so on-call operators know what to do at a glance.
@@ -74,6 +75,28 @@ weight_limit_per_minute = 600  # default is 1200, lower it for testing
 ```
 
 Each connector now waits for the appropriate token bucket before issuing HTTP calls, shielding your API keys from accidental bans while still allowing you to dial in higher tiers as your VIP level increases.
+
+### Inline Exchange Blocks
+
+You can also declare additional exchange profiles inline without inventing new `[exchange.NAME]` tables by using TOML arrays:
+
+```toml
+[[exchanges]]
+name = "sim_primary"
+driver = "paper"
+rest_url = "sandbox"
+ws_url = "sandbox"
+
+[[exchanges]]
+name = "binance_hedge"
+driver = "binance"
+rest_url = "https://fapi.binance.com"
+ws_url = "wss://fstream.binance.com/stream"
+api_key = "..."
+api_secret = "..."
+```
+
+These entries merge into the same `exchange` map that the CLI expects, so `--exchange sim_primary --exchanges binance_hedge` works whether the profile lives under `[exchange.sim_primary]` or in a `[[exchanges]]` block.
 
 ## Native Order Amendments
 

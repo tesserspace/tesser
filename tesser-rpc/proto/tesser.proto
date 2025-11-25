@@ -185,6 +185,8 @@ message Signal {
   string id = 8;
   google.protobuf.Timestamp generated_at = 9;
   string metadata = 10;
+  Decimal quantity = 11;
+  string group_id = 12;
 }
 
 message SignalList {

@@ -14,8 +14,8 @@ use rust_decimal::Decimal;
 use std::sync::Arc;
 use tesser_broker::{BrokerError, BrokerResult, ExecutionClient};
 use tesser_core::{
-    AssetId, ExchangeId, InstrumentKind, Order, OrderRequest, OrderType, OrderUpdateRequest,
-    Price, Quantity, Side, Signal, SignalKind, Symbol,
+    AssetId, ExchangeId, InstrumentKind, Order, OrderRequest, OrderType, OrderUpdateRequest, Price,
+    Quantity, Side, Signal, SignalKind, Symbol,
 };
 use thiserror::Error;
 use tracing::{info, warn};
@@ -513,6 +513,19 @@ impl ExecutionEngine {
         }
     }
 
+    /// Determine the quantity that should be used for a signal, honoring overrides when present.
+    pub fn determine_quantity(
+        &self,
+        signal: &Signal,
+        ctx: &RiskContext,
+    ) -> anyhow::Result<Quantity> {
+        if let Some(qty) = signal.quantity {
+            return Ok(qty.max(Decimal::ZERO));
+        }
+        self.sizer
+            .size(signal, ctx.portfolio_equity, ctx.last_price)
+    }
+
     /// Consume a signal and forward it to the broker.
     pub async fn handle_signal(
         &self,
@@ -520,8 +533,7 @@ impl ExecutionEngine {
         ctx: RiskContext,
     ) -> BrokerResult<Option<Order>> {
         let qty = self
-            .sizer
-            .size(&signal, ctx.portfolio_equity, ctx.last_price)
+            .determine_quantity(&signal, &ctx)
             .context("failed to determine order size")
             .map_err(|err| BrokerError::Other(err.to_string()))?;
 

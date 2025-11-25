@@ -706,6 +706,10 @@ pub struct Signal {
     pub symbol: Symbol,
     pub kind: SignalKind,
     pub confidence: f64,
+    #[serde(default)]
+    pub quantity: Option<Quantity>,
+    #[serde(default)]
+    pub group_id: Option<Uuid>,
     pub generated_at: DateTime<Utc>,
     pub note: Option<String>,
     pub stop_loss: Option<Price>,
@@ -749,6 +753,8 @@ impl Signal {
             symbol: symbol.into(),
             kind,
             confidence,
+            quantity: None,
+            group_id: None,
             generated_at: Utc::now(),
             note: None,
             stop_loss: None,
@@ -761,6 +767,20 @@ impl Signal {
     #[must_use]
     pub fn with_hint(mut self, hint: ExecutionHint) -> Self {
         self.execution_hint = Some(hint);
+        self
+    }
+
+    /// Override the default sizing logic with a fixed quantity.
+    #[must_use]
+    pub fn with_quantity(mut self, quantity: Quantity) -> Self {
+        self.quantity = Some(quantity);
+        self
+    }
+
+    /// Associate this signal with a multi-leg execution group.
+    #[must_use]
+    pub fn with_group(mut self, group_id: Uuid) -> Self {
+        self.group_id = Some(group_id);
         self
     }
 }

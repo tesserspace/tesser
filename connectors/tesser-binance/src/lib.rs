@@ -694,6 +694,11 @@ pub fn fill_from_update(
         .as_deref()
         .map(|code| Symbol::from_code(exchange, code))
         .unwrap_or(Symbol::unspecified());
+    let fee_currency = order
+        .n_uppercase
+        .as_deref()
+        .filter(|code| !code.is_empty())
+        .map(|code| AssetId::from_code(exchange, code));
     Some(Fill {
         order_id: order.i.map(|id| id.to_string()).unwrap_or_default(),
         symbol,
@@ -701,7 +706,7 @@ pub fn fill_from_update(
         fill_price: price,
         fill_quantity: last_qty,
         fee: parse_decimal_opt(order.n.as_deref()),
-        fee_asset: None,
+        fee_asset: fee_currency,
         timestamp: timestamp_from_ms(order.t_uppercase),
     })
 }

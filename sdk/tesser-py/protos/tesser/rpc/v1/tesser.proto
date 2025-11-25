@@ -141,6 +141,8 @@ message Signal {
   Decimal take_profit = 5;
   ExecutionHint execution_hint = 6;
   string note = 7;
+  Decimal quantity = 8;
+  string group_id = 9;
 }
 
 message SignalList {

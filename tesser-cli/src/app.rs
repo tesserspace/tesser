@@ -942,6 +942,8 @@ pub struct LiveRunArgs {
     #[arg(long, default_value = "paper_sandbox")]
     exchange: String,
     /// Optional list of additional exchange profiles to load (comma separated or repeated)
+    ///
+    /// Each entry must match a `[exchange.NAME]` table or a `[[exchanges]]` block in the selected config.
     #[arg(long = "exchanges", value_name = "NAME", num_args = 0.., action = clap::ArgAction::Append)]
     exchanges: Vec<String>,
     #[arg(long, default_value = "linear")]

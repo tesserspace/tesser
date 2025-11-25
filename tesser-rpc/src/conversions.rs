@@ -212,6 +212,8 @@ impl From<Signal> for proto::Signal {
             id: signal.id.to_string(),
             generated_at: Some(to_timestamp_proto(signal.generated_at)),
             metadata,
+            quantity: signal.quantity.map(to_decimal_proto),
+            group_id: signal.group_id.map(|id| id.to_string()).unwrap_or_default(),
         }
     }
 }
@@ -321,6 +323,14 @@ impl From<proto::Signal> for Signal {
         if !p.id.is_empty() {
             if let Ok(uuid) = Uuid::parse_str(&p.id) {
                 signal.id = uuid;
+            }
+        }
+        if let Some(qty) = p.quantity {
+            signal.quantity = Some(from_decimal_proto(qty));
+        }
+        if !p.group_id.is_empty() {
+            if let Ok(id) = Uuid::parse_str(&p.group_id) {
+                signal.group_id = Some(id);
             }
         }
 
