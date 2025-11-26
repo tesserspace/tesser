@@ -133,6 +133,10 @@ Per-signal overrides win over the global defaults—call `Signal::with_panic_beh
 
 When you enable the `RouterExecutionClient` (multiple `--exchange` entries), the CLI exposes `tesser_router_failures_total{reason="..."}` for visibility into reconciled vs. orphaned events. If a private stream delivers a fill for an order the router never saw, the runtime drops the fill (to avoid double-counting) and bumps `reason="orphan_fill"`. Alert on this metric to catch exchanges that send stale events after restarts or when credentials point at the wrong sub-account.
 
+### Venue Snapshots
+
+Both `state inspect` and `tesser-cli live monitor` now surface per-exchange views so you can see where equity lives at a glance. The state inspector renders a “Venue breakdown” section listing each exchange’s equity, balances, and positions; the live TUI mirrors that layout with a per-exchange equity table above the cash balance table in the left panel. When one venue is margin constrained while another is flush with collateral, you’ll spot it immediately.
+
 ## Flight Recorder
 
 Set `--record-data <path>` when you launch `tesser-cli live run` to stream every `Tick`, `Candle`, `Fill`, and order update into partitioned Parquet files. The recorder runs on its own Tokio task, buffers data in Arrow `RecordBatch`es, and rotates files per day under the provided directory (defaults to `data/flight_recorder`).

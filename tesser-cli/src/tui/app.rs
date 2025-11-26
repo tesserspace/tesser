@@ -117,6 +117,14 @@ impl MonitorApp {
         self.portfolio.as_ref()
     }
 
+    pub fn sub_accounts(&self) -> Option<&[proto::SubAccountSnapshot]> {
+        self.portfolio.as_ref().map(|p| p.sub_accounts.as_slice())
+    }
+
+    pub fn balances(&self) -> Option<&[proto::CashBalance]> {
+        self.portfolio.as_ref().map(|p| p.balances.as_slice())
+    }
+
     pub fn positions(&self) -> Option<&[proto::Position]> {
         self.portfolio.as_ref().map(|p| p.positions.as_slice())
     }

@@ -2317,11 +2317,20 @@ async fn shared_risk_context(
             AssetId::unspecified(),
             AssetId::unspecified(),
         ));
-    let (signed_qty, equity, liquidate_only, base_available, quote_available, settlement_available) = {
+    let (
+        signed_qty,
+        equity,
+        venue_equity,
+        liquidate_only,
+        base_available,
+        quote_available,
+        settlement_available,
+    ) = {
         let guard = portfolio.lock().await;
         (
             guard.signed_position_qty(symbol),
             guard.equity(),
+            guard.exchange_equity(symbol.exchange),
             guard.liquidate_only(),
             guard
                 .balance(base_asset)
@@ -2356,6 +2365,7 @@ async fn shared_risk_context(
         exchange: symbol.exchange,
         signed_position_qty: signed_qty,
         portfolio_equity: equity,
+        exchange_equity: venue_equity,
         last_price,
         liquidate_only,
         instrument_kind,

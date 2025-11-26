@@ -130,6 +130,7 @@ async fn twap_orders_adopt_after_restart() -> Result<()> {
         exchange: symbol.exchange,
         signed_position_qty: Decimal::ZERO,
         portfolio_equity: Decimal::from(10_000),
+        exchange_equity: Decimal::from(10_000),
         last_price: Decimal::new(20_000, 0),
         liquidate_only: false,
         ..RiskContext::default()

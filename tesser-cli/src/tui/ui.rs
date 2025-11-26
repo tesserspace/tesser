@@ -29,7 +29,18 @@ pub fn draw(f: &mut Frame<'_>, app: &MonitorApp) {
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(layout[1]);
 
-    render_positions(f, main_chunks[0], app);
+    let venue_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(main_chunks[0]);
+    let summary_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(venue_chunks[0]);
+
+    render_sub_accounts(f, summary_chunks[0], app);
+    render_balances(f, summary_chunks[1], app);
+    render_positions(f, venue_chunks[1], app);
     render_orders(f, main_chunks[1], app);
 
     let footer = Layout::default()
@@ -181,6 +192,98 @@ fn render_positions(f: &mut Frame<'_>, area: Rect, app: &MonitorApp) {
                 .style(Style::default().fg(Color::Gray)),
         )
         .block(Block::default().title("Positions").borders(Borders::ALL))
+        .column_spacing(1);
+    f.render_widget(table, area);
+}
+
+fn render_sub_accounts(f: &mut Frame<'_>, area: Rect, app: &MonitorApp) {
+    let Some(accounts) = app.sub_accounts() else {
+        let block = Paragraph::new("No venue data").block(
+            Block::default()
+                .title("Per-Exchange Equity")
+                .borders(Borders::ALL),
+        );
+        f.render_widget(block, area);
+        return;
+    };
+
+    if accounts.is_empty() {
+        let block = Paragraph::new("No venue data").block(
+            Block::default()
+                .title("Per-Exchange Equity")
+                .borders(Borders::ALL),
+        );
+        f.render_widget(block, area);
+        return;
+    }
+
+    let rows = accounts.iter().map(|acct| {
+        let equity = decimal_from_proto(acct.equity.as_ref());
+        Row::new(vec![
+            Cell::from(acct.exchange.clone()),
+            Cell::from(format_decimal(equity)),
+            Cell::from(acct.balances.len().to_string()),
+            Cell::from(acct.positions.len().to_string()),
+        ])
+    });
+
+    let widths = [
+        Constraint::Length(14),
+        Constraint::Length(14),
+        Constraint::Length(10),
+        Constraint::Length(12),
+    ];
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(vec!["Exchange", "Equity", "Balances", "Positions"])
+                .style(Style::default().fg(Color::Gray)),
+        )
+        .block(
+            Block::default()
+                .title("Per-Exchange Equity")
+                .borders(Borders::ALL),
+        )
+        .column_spacing(1);
+    f.render_widget(table, area);
+}
+
+fn render_balances(f: &mut Frame<'_>, area: Rect, app: &MonitorApp) {
+    let Some(balances) = app.balances() else {
+        let block = Paragraph::new("No balances")
+            .block(Block::default().title("Balances").borders(Borders::ALL))
+            .wrap(Wrap { trim: true });
+        f.render_widget(block, area);
+        return;
+    };
+
+    if balances.is_empty() {
+        let block = Paragraph::new("No balances")
+            .block(Block::default().title("Balances").borders(Borders::ALL))
+            .wrap(Wrap { trim: true });
+        f.render_widget(block, area);
+        return;
+    }
+
+    let rows = balances.iter().map(|cash| {
+        let qty = decimal_from_proto(cash.quantity.as_ref());
+        let rate = decimal_from_proto(cash.conversion_rate.as_ref());
+        Row::new(vec![
+            Cell::from(cash.currency.clone()),
+            Cell::from(format_decimal(qty)),
+            Cell::from(format_decimal(rate)),
+        ])
+    });
+    let widths = [
+        Constraint::Length(10),
+        Constraint::Length(16),
+        Constraint::Length(16),
+    ];
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(vec!["Currency", "Quantity", "Conv Rate"])
+                .style(Style::default().fg(Color::Gray)),
+        )
+        .block(Block::default().title("Balances").borders(Borders::ALL))
         .column_spacing(1);
     f.render_widget(table, area);
 }

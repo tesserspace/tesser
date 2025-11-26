@@ -144,6 +144,8 @@ pub struct RiskContext {
     pub signed_position_qty: Quantity,
     /// Total current portfolio equity.
     pub portfolio_equity: Price,
+    /// Equity scoped to the symbol's exchange.
+    pub exchange_equity: Price,
     /// Last known price for the signal's symbol.
     pub last_price: Price,
     /// When true, only exposure-reducing orders are allowed.
@@ -554,8 +556,7 @@ impl ExecutionEngine {
         if let Some(qty) = signal.quantity {
             return Ok(qty.max(Decimal::ZERO));
         }
-        self.sizer
-            .size(signal, ctx.portfolio_equity, ctx.last_price)
+        self.sizer.size(signal, ctx.exchange_equity, ctx.last_price)
     }
 
     /// Consume a signal and forward it to the broker.

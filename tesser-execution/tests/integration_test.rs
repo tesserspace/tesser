@@ -103,6 +103,7 @@ async fn test_orchestrator_integration() {
         exchange: symbol.exchange,
         signed_position_qty: Decimal::ZERO,
         portfolio_equity: Decimal::from(10_000),
+        exchange_equity: Decimal::from(10_000),
         last_price: Decimal::from(50_000),
         liquidate_only: false,
         ..RiskContext::default()
@@ -168,6 +169,7 @@ async fn orchestrator_restores_from_sqlite() {
         exchange: symbol.exchange,
         signed_position_qty: Decimal::ZERO,
         portfolio_equity: Decimal::from(10_000),
+        exchange_equity: Decimal::from(10_000),
         last_price: Decimal::from(25_000),
         liquidate_only: false,
         ..RiskContext::default()
