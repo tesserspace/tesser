@@ -651,6 +651,14 @@ async fn pairs_trading_executes_cross_exchange_round_trip() -> Result<()> {
     let temp = tempdir()?;
     let state_path = temp.path().join("live_state.db");
     let markets_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/markets.toml");
+    let alerting = AlertingConfig {
+        max_drawdown: Decimal::new(2, 0),
+        ..AlertingConfig::default()
+    };
+    let risk = RiskManagementConfig {
+        max_drawdown: Decimal::new(2, 0),
+        ..RiskManagementConfig::default()
+    };
     let settings = LiveSessionSettings {
         category: PublicChannel::Linear,
         interval: Interval::OneMinute,
@@ -663,9 +671,9 @@ async fn pairs_trading_executes_cross_exchange_round_trip() -> Result<()> {
         initial_balances: dual_initial_balances(),
         reporting_currency: usdt_asset(),
         markets_file: Some(markets_file),
-        alerting: AlertingConfig::default(),
+        alerting,
         exec_backend: ExecutionBackend::Live,
-        risk: RiskManagementConfig::default(),
+        risk,
         reconciliation_interval: Duration::from_secs(30),
         reconciliation_threshold: Decimal::new(1, 1),
         orderbook_depth: 50,
