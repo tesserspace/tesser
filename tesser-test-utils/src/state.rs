@@ -35,6 +35,7 @@ pub(crate) struct Inner {
     pub accounts: HashMap<ApiKey, AccountState>,
     pub market_data: MarketDataQueues,
     pub private_ws_sender: Option<mpsc::UnboundedSender<PrivateMessage>>,
+    pub pending_private_messages: VecDeque<PrivateMessage>,
     pub order_seq: u64,
     pub exchange: ExchangeId,
 }
@@ -372,6 +373,7 @@ impl MockExchangeState {
             accounts,
             market_data,
             private_ws_sender: None,
+            pending_private_messages: VecDeque::new(),
             order_seq: 1,
             exchange: config.exchange,
         };
@@ -401,7 +403,12 @@ impl MockExchangeState {
 
     pub async fn set_private_ws_sender(&self, sender: mpsc::UnboundedSender<PrivateMessage>) {
         let mut guard = self.inner.lock().await;
-        guard.private_ws_sender = Some(sender);
+        guard.private_ws_sender = Some(sender.clone());
+        while let Some(payload) = guard.pending_private_messages.pop_front() {
+            if sender.send(payload).is_err() {
+                break;
+            }
+        }
     }
 
     pub async fn clear_private_ws_sender(&self) {
@@ -418,6 +425,8 @@ impl MockExchangeState {
             tx.send(payload)
                 .map_err(|err| anyhow!("failed to deliver private stream message: {err}"))
         } else {
+            let mut guard = self.inner.lock().await;
+            guard.pending_private_messages.push_back(payload);
             Ok(())
         }
     }
