@@ -1,11 +1,10 @@
-use std::any::Any;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Server;
@@ -15,7 +14,6 @@ use tracing::{debug, info, warn};
 use tesser_core::ExitStrategy;
 use tesser_events::{Event as RuntimeEvent, EventBus};
 use tesser_execution::OrderOrchestrator;
-use tesser_portfolio::{LiveState, Portfolio};
 use tesser_rpc::conversions::to_decimal_proto;
 use tesser_rpc::proto::control_service_server::{ControlService, ControlServiceServer};
 use tesser_rpc::proto::{
@@ -25,36 +23,33 @@ use tesser_rpc::proto::{
     OrderSnapshot, PortfolioSnapshot, UpdateTradeExitStrategyRequest,
     UpdateTradeExitStrategyResponse,
 };
-use tesser_strategy::{PairTradeSnapshot, PairsTradingArbitrage, Strategy, StrategyResult};
+use tesser_strategy::PairTradeSnapshot;
 use uuid::Uuid;
 
-use crate::live::ShutdownSignal;
+use crate::live::{OmsHandle, ShutdownSignal, StrategyHandle};
 
 pub struct ControlPlaneComponents {
-    pub portfolio: Arc<Mutex<Portfolio>>,
+    pub oms: OmsHandle,
     pub orchestrator: Arc<OrderOrchestrator>,
-    pub persisted: Arc<Mutex<LiveState>>,
     pub last_data_timestamp: Arc<AtomicI64>,
     pub event_bus: Arc<EventBus>,
-    pub strategy: Arc<Mutex<Box<dyn Strategy>>>,
+    pub strategy: StrategyHandle,
     pub shutdown: ShutdownSignal,
 }
 
 /// Launch the Control Plane gRPC server alongside the live runtime.
 pub fn spawn_control_plane(addr: SocketAddr, components: ControlPlaneComponents) -> JoinHandle<()> {
     let ControlPlaneComponents {
-        portfolio,
+        oms,
         orchestrator,
-        persisted,
         last_data_timestamp,
         event_bus,
         strategy,
         shutdown,
     } = components;
     let service = ControlGrpcService::new(
-        portfolio,
+        oms,
         orchestrator,
-        persisted,
         last_data_timestamp,
         event_bus,
         strategy,
@@ -73,29 +68,26 @@ pub fn spawn_control_plane(addr: SocketAddr, components: ControlPlaneComponents)
 }
 
 struct ControlGrpcService {
-    portfolio: Arc<Mutex<Portfolio>>,
+    oms: OmsHandle,
     orchestrator: Arc<OrderOrchestrator>,
-    persisted: Arc<Mutex<LiveState>>,
     last_data_timestamp: Arc<AtomicI64>,
     event_bus: Arc<EventBus>,
-    strategy: Arc<Mutex<Box<dyn Strategy>>>,
+    strategy: StrategyHandle,
     shutdown: ShutdownSignal,
 }
 
 impl ControlGrpcService {
     fn new(
-        portfolio: Arc<Mutex<Portfolio>>,
+        oms: OmsHandle,
         orchestrator: Arc<OrderOrchestrator>,
-        persisted: Arc<Mutex<LiveState>>,
         last_data_timestamp: Arc<AtomicI64>,
         event_bus: Arc<EventBus>,
-        strategy: Arc<Mutex<Box<dyn Strategy>>>,
+        strategy: StrategyHandle,
         shutdown: ShutdownSignal,
     ) -> Self {
         Self {
-            portfolio,
+            oms,
             orchestrator,
-            persisted,
             last_data_timestamp,
             event_bus,
             strategy,
@@ -129,10 +121,7 @@ impl ControlGrpcService {
             }
         }
 
-        let open_orders = {
-            let state = self.persisted.lock().await;
-            state.open_orders.clone()
-        };
+        let open_orders = self.oms.open_orders().await;
         let client = self.orchestrator.execution_engine().client();
         let mut cancelled_orders = 0u32;
         for order in open_orders {
@@ -143,20 +132,6 @@ impl ControlGrpcService {
             }
         }
         Ok((cancelled_orders, cancelled_algorithms))
-    }
-
-    async fn with_pairs_strategy<R>(
-        &self,
-        f: impl FnOnce(&mut PairsTradingArbitrage) -> StrategyResult<R>,
-    ) -> Result<R, Status> {
-        let mut guard = self.strategy.lock().await;
-        let any = (&mut **guard) as &mut dyn Any;
-        let Some(pairs) = any.downcast_mut::<PairsTradingArbitrage>() else {
-            return Err(Status::failed_precondition(
-                "active strategy does not expose managed trades",
-            ));
-        };
-        f(pairs).map_err(|err| Status::internal(err.to_string()))
     }
 
     #[allow(clippy::result_large_err)]
@@ -184,10 +159,12 @@ impl ControlService for ControlGrpcService {
         &self,
         _request: Request<GetPortfolioRequest>,
     ) -> Result<Response<GetPortfolioResponse>, Status> {
-        let snapshot: PortfolioSnapshot = {
-            let guard = self.portfolio.lock().await;
-            PortfolioSnapshot::from(&*guard)
-        };
+        let snapshot: PortfolioSnapshot = self
+            .oms
+            .portfolio_state()
+            .await
+            .map(|state| state.into())
+            .unwrap_or_default();
         Ok(Response::new(GetPortfolioResponse {
             portfolio: Some(snapshot),
         }))
@@ -197,11 +174,9 @@ impl ControlService for ControlGrpcService {
         &self,
         _request: Request<GetOpenOrdersRequest>,
     ) -> Result<Response<GetOpenOrdersResponse>, Status> {
-        let orders = {
-            let state = self.persisted.lock().await;
-            state.open_orders.clone()
-        };
-        let proto_orders: Vec<OrderSnapshot> = orders.iter().map(OrderSnapshot::from).collect();
+        let orders = self.oms.open_orders().await;
+        let proto_orders: Vec<OrderSnapshot> =
+            orders.into_iter().map(OrderSnapshot::from).collect();
         Ok(Response::new(GetOpenOrdersResponse {
             orders: proto_orders,
         }))
@@ -211,16 +186,13 @@ impl ControlService for ControlGrpcService {
         &self,
         _request: Request<GetStatusRequest>,
     ) -> Result<Response<GetStatusResponse>, Status> {
-        let (equity, liquidate_only) = {
-            let guard = self.portfolio.lock().await;
-            (guard.equity(), guard.liquidate_only())
-        };
+        let summary = self.oms.status().await;
         let response = GetStatusResponse {
             shutdown: self.shutdown.triggered(),
-            liquidate_only,
+            liquidate_only: summary.liquidate_only,
             active_algorithms: self.orchestrator.active_algorithms_count() as u32,
             last_data_timestamp: self.last_data_timestamp(),
-            equity: Some(to_decimal_proto(equity)),
+            equity: Some(to_decimal_proto(summary.equity)),
         };
         Ok(Response::new(response))
     }
@@ -243,8 +215,10 @@ impl ControlService for ControlGrpcService {
         _request: Request<ListManagedTradesRequest>,
     ) -> Result<Response<ListManagedTradesResponse>, Status> {
         let snapshots = self
-            .with_pairs_strategy(|strategy| Ok(strategy.managed_trades()))
-            .await?;
+            .strategy
+            .list_managed_trades()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
         let mut trades = Vec::with_capacity(snapshots.len());
         for snapshot in snapshots {
             trades.push(Self::snapshot_to_proto(snapshot)?);
@@ -263,12 +237,10 @@ impl ControlService for ControlGrpcService {
             serde_json::from_str(&payload.new_strategy_json).map_err(|err| {
                 Status::invalid_argument(format!("invalid exit strategy json: {err}"))
             })?;
-        self.with_pairs_strategy(|strategy| {
-            strategy
-                .update_trade_exit_strategy(trade_id, new_strategy.clone())
-                .map(|_| ())
-        })
-        .await?;
+        self.strategy
+            .update_exit_strategy(trade_id, new_strategy.clone())
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
         Ok(Response::new(UpdateTradeExitStrategyResponse {
             success: true,
             error_message: String::new(),
