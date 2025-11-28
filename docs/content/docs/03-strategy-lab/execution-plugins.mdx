@@ -1,0 +1,121 @@
+---
+title: Execution Plugins
+description: Build custom execution algorithms in WebAssembly and load them without touching the core orchestrator.
+---
+
+## Why WebAssembly Plugins?
+
+`ExecutionHint::Plugin` lets a strategy delegate its order lifecycle to a WebAssembly module. The runtime keeps persistence, panic handling, and risk checks in Rust, but loads the execution logic dynamically, so teams can iterate on proprietary algos without recompiling `tesser-cli`.
+
+## Author a Plugin
+
+1. **Scaffold a crate**:
+   ```bash
+   cargo new chase-execution --lib
+   cd chase-execution
+   ```
+2. **Update `Cargo.toml`**:
+   ```toml
+   [lib]
+   crate-type = ["cdylib"]
+
+   [dependencies]
+   rust_decimal = "1"
+   tesser-wasm = { path = "../../tesser-wasm", features = ["guest"] }
+   ```
+3. **Implement the trait** – the SDK exposes the data types plus the `export_plugin!` macro:
+   ```rust
+   use rust_decimal::Decimal;
+   use tesser_wasm::{
+       export_plugin, ExecutionPlugin, PluginChildOrderAction, PluginInitContext,
+       PluginOrderRequest, PluginOrderType, PluginResult, PluginSide, PluginTick,
+   };
+
+   #[derive(Default)]
+   struct ChasePlugin {
+       symbol: String,
+       side: PluginSide,
+       remaining: Decimal,
+       last_price: Decimal,
+   }
+
+   impl ExecutionPlugin for ChasePlugin {
+       fn init(&mut self, ctx: PluginInitContext) -> Result<PluginResult, tesser_wasm::PluginError> {
+           self.symbol = ctx.signal.symbol;
+           self.side = ctx.signal.side;
+           self.remaining = ctx.signal.target_quantity;
+           self.last_price = ctx.risk.last_price;
+           Ok(PluginResult::new())
+       }
+
+       fn on_tick(&mut self, tick: PluginTick) -> Result<PluginResult, tesser_wasm::PluginError> {
+           self.last_price = tick.price;
+           Ok(PluginResult::new())
+       }
+
+       fn on_timer(&mut self) -> Result<PluginResult, tesser_wasm::PluginError> {
+           if self.remaining <= Decimal::ZERO {
+               return Ok(PluginResult::new().completed());
+           }
+           let slice = self.remaining.min(Decimal::new(1, 1));
+           self.remaining -= slice;
+           let request = PluginOrderRequest {
+               symbol: self.symbol.clone(),
+               side: self.side,
+               order_type: PluginOrderType::Limit,
+               quantity: slice,
+               price: Some(self.last_price),
+               trigger_price: None,
+               time_in_force: None,
+               client_order_id: None,
+               take_profit: None,
+               stop_loss: None,
+               display_quantity: None,
+           };
+           Ok(PluginResult::new().with_order(PluginChildOrderAction::Place(request)))
+       }
+   }
+
+   export_plugin!(ChasePlugin);
+   ```
+4. **Build for WASI**:
+   ```bash
+   rustup target add wasm32-wasi # once per workstation
+   cargo build --release --target wasm32-wasi
+   ```
+   Your module is emitted at `target/wasm32-wasi/release/chase_execution.wasm`.
+
+> Tip: `examples/plugin-chase` in the repo provides a complete, documented sample.
+
+## Configure the Runtime
+
+1. **Point Tesser at your plugins** – set `live.plugins_dir` in `config/default.toml` or pass `--plugins-dir` to `tesser live run`. The orchestrator loads `<plugins_dir>/<name>.wasm`.
+   ```toml
+   [live]
+   plugins_dir = "./plugins"
+   ```
+2. **Drop the compiled module** into that directory (rename if desired).
+3. **Attach the hint** when emitting a signal:
+   ```rust
+   use serde_json::json;
+   use tesser_core::{ExecutionHint, Signal};
+
+   let signal = Signal::new(symbol, SignalKind::EnterLong, 0.7).with_hint(
+       ExecutionHint::Plugin {
+           name: "chase_execution".into(),
+           params: json!({ "clip_size": "0.25" }),
+       },
+   );
+   ctx.publish(signal);
+   ```
+
+The orchestrator persists plugin state just like TWAP/VWAP. If the process restarts, the module is re-instantiated and its `restore` callback receives the previous snapshot.
+
+## Diagnostics & Best Practices
+
+- **Logging** – return strings in `PluginResult.logs` to surface structured messages in the host logs (`target=plugin`).
+- **State size** – keep snapshot payloads small (JSON is stored in SQLite/Lmdb alongside other algos).
+- **Validation** – keep risk-sensitive checks in Rust. Plugins should assume their child orders still run through the standard pre-trade filters.
+- **Versioning** – ship new modules alongside existing ones and switch strategies to the new `name` when you are ready; the engine caches compiled components, so hot swaps are fast.
+
+With these pieces in place you can iterate on execution logic without touching the monorepo or interrupting a live session.

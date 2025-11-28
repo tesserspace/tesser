@@ -5,6 +5,7 @@
     "ai-inference",
     "using-indicators",
     "signal-lifecycle",
-    "rpc-strategies"
+    "rpc-strategies",
+    "execution-plugins"
   ]
 }
