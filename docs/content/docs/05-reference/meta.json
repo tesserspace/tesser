@@ -2,6 +2,7 @@
   "title": "Reference",
   "pages": [
     "configuration",
-    "cli-commands"
+    "cli-commands",
+    "rfc-003-programmable-execution"
   ]
 }

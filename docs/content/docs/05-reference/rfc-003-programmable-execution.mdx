@@ -1,0 +1,88 @@
+
+
+# Tesser RFC-003: Programmable Execution Engines
+
+| Metadata | Detail |
+| :--- | :--- |
+| **Status** | **Draft** (Targeting v0.12.0) |
+| **Type** | **Feature / Extension** |
+| **Dependencies** | RFC-002 (Actor Model) |
+| **Objective** | Enable dynamic loading of custom execution algorithms without recompilation. |
+
+## 1. Motivation
+
+### 1.1 The "Strategy vs. Execution" Separation
+Traders often tweak *when* to buy (Strategy) separately from *how* to buy (Execution).
+*   **Strategy:** "RSI is low, buy 10 BTC."
+*   **Execution:** "Buy 10 BTC over 1 hour, participation rate 10%, never pay taker fees."
+
+Currently, adding a new execution logic (e.g., "Chase Best Bid + 1 tick") requires modifying `tesser-execution`, recompiling the CLI, and restarting the entire stack.
+
+### 1.2 Hot-Swapping & Multi-Tenancy
+RFC-002 laid the groundwork for hot-swapping by isolating Actors. RFC-003 takes this further by allowing the `OmsActor` to load execution logic as **plugins**. This is critical for:
+*   Updating execution logic without stopping the feed handler.
+*   Running proprietary, closed-source algorithms on top of the open-source Tesser core.
+
+---
+
+## 2. Proposed Architecture
+
+We will introduce a **Scripting / Plugin Layer** into the `OrderOrchestrator`.
+
+### 2.1 Technology Choice: Rhai or WASM?
+*   **Option A: Rhai (Scripting)**
+    *   *Pros:* Simple, embedded in Rust, no separate compile step for users. Perfect for small logic tweaks.
+    *   *Cons:* Slower execution than native code (though likely fast enough for execution logic), specific syntax.
+*   **Option B: WebAssembly (WASM)**
+    *   *Pros:* Near-native speed, sandboxed, supports Rust/C++/AssemblyScript. Industry standard for plugins.
+    *   *Cons:* Requires users to compile `.wasm` files.
+
+**Recommendation:** **WASM (using `wasmer` or `wasmtime`)**. It aligns with the "Industrial-Grade" vision. It allows users to write high-performance execution algos in Rust and compile them to a portable format that Tesser loads safely.
+
+### 2.2 The `ExecutionPlugin` Trait
+We will define a host-guest interface (ABI) for execution algorithms.
+
+```rust
+// Guest (WASM) Interface
+trait ExecutionPlugin {
+    fn init(params: Json) -> State;
+    fn on_tick(state: State, tick: Tick) -> (State, Vec<ChildOrderRequest>);
+    fn on_fill(state: State, fill: Fill) -> (State, Vec<ChildOrderRequest>);
+    fn on_timer(state: State) -> (State, Vec<ChildOrderRequest>);
+}
+```
+
+### 2.3 The `PluginOrchestrator`
+The `OmsActor` will manage a registry of loaded WASM modules.
+1.  **Signal Arrival:** A Signal comes in with `execution_hint = "plugin:chase_vwap.wasm"`.
+2.  **Instantiation:** The Orchestrator loads (or retrieves cached) WASM module.
+3.  **Execution:** Events (Tick, Fill) are serialized and passed into the WASM instance memory.
+4.  **Action:** The WASM module returns structured `ChildOrderRequest`s which the Orchestrator validates and routes.
+
+---
+
+## 3. Implementation Plan
+
+### 3.1 Phase 1: The Host Environment
+*   Integrate `wasmer` or `wasmtime` into `tesser-execution`.
+*   Define the `wit` (WASM Interface Type) or simplified ABI for passing `Tick` and `Order` structs efficiently.
+
+### 3.2 Phase 2: Dynamic Loader
+*   Update `LiveSessionSettings` to accept a `plugins_dir` path.
+*   Implement hot-reloading: Watch the directory for file changes and reload `.wasm` modules automatically.
+
+### 3.3 Phase 3: Standard Library
+*   Port existing hardcoded algos (`Twap`, `Iceberg`, `Pegged`) to the new WASM API as reference implementations.
+*   Prove that the WASM version has negligible latency overhead compared to the native version.
+
+## 4. Implementation Notes
+
+The initial implementation ships with the following components in the `v0.12.0` development branch:
+
+* **`tesser-wasm` SDK** – a reusable crate that hosts the shared WIT definitions, JSON-friendly data models, and the `export_plugin!` macro. Plugins can depend on this crate and compile to `wasm32-wasi` without pulling the full workspace.
+* **New Execution Hint** – `ExecutionHint::Plugin { name, params }` instructs the orchestrator to load `<plugins_dir>/<name>.wasm`, optionally handing JSON parameters through to the guest module. Hints propagate through the RPC, data recorder, and Python SDK protobufs.
+* **Host Runtime** – `tesser-execution` now exposes a `wasm` module that wraps Wasmtime. The orchestrator caches compiled components, instantiates a plugin per algorithm, and restores plugin state from the persisted snapshot.
+* **Configuration Surface** – `LiveSessionSettings` and the `tesser-cli live run` command accept `--plugins-dir` (and `live.plugins_dir` in config). When unset, plugin hints are rejected with a descriptive error.
+* **Reference Plugin** – `examples/plugin-chase` demonstrates how to build a simple chase-style execution algorithm with the SDK.
+
+Plugins return a list of child-order requests serialized via JSON, and the orchestrator enforces risk checks, persistence, and failure handling just like the built-in algorithms.
