@@ -219,6 +219,8 @@ impl BasicRiskChecker {
 impl PreTradeRiskChecker for BasicRiskChecker {
     fn check(&self, request: &OrderRequest, ctx: &RiskContext) -> Result<(), RiskError> {
         let qty = request.quantity.abs();
+        let position = ctx.signed_position_qty;
+        let position_abs = position.abs();
         let max_order = self.limits.max_order_quantity;
         if max_order > Decimal::ZERO && qty > max_order {
             return Err(RiskError::MaxOrderSize {
@@ -253,8 +255,8 @@ impl PreTradeRiskChecker for BasicRiskChecker {
         }
 
         let projected_position = match request.side {
-            Side::Buy => ctx.signed_position_qty + qty,
-            Side::Sell => ctx.signed_position_qty - qty,
+            Side::Buy => position + qty,
+            Side::Sell => position - qty,
         };
 
         let max_position = self.limits.max_position_quantity;
@@ -266,7 +268,6 @@ impl PreTradeRiskChecker for BasicRiskChecker {
         }
 
         if ctx.liquidate_only {
-            let position = ctx.signed_position_qty;
             if position.is_zero() {
                 return Err(RiskError::LiquidateOnly);
             }
@@ -279,6 +280,11 @@ impl PreTradeRiskChecker for BasicRiskChecker {
                 return Err(RiskError::LiquidateOnly);
             }
         }
+
+        let reduce_only = match request.side {
+            Side::Buy => position < Decimal::ZERO && qty <= position_abs,
+            Side::Sell => position > Decimal::ZERO && qty <= position_abs,
+        };
 
         match ctx.instrument_kind {
             Some(InstrumentKind::Spot) => match request.side {
@@ -305,27 +311,31 @@ impl PreTradeRiskChecker for BasicRiskChecker {
                 }
             },
             Some(InstrumentKind::LinearPerpetual) => {
-                if let Some(price) = reference_price {
-                    let margin = qty * price;
-                    if ctx.settlement_available < margin {
-                        return Err(RiskError::InsufficientBalance {
-                            asset: ctx.settlement_asset,
-                            needed: margin,
-                            available: ctx.settlement_available,
-                        });
-                    }
-                }
-            }
-            Some(InstrumentKind::InversePerpetual) => {
-                if let Some(price) = reference_price {
-                    if price > Decimal::ZERO {
-                        let margin = qty / price;
+                if !reduce_only {
+                    if let Some(price) = reference_price {
+                        let margin = qty * price;
                         if ctx.settlement_available < margin {
                             return Err(RiskError::InsufficientBalance {
                                 asset: ctx.settlement_asset,
                                 needed: margin,
                                 available: ctx.settlement_available,
                             });
+                        }
+                    }
+                }
+            }
+            Some(InstrumentKind::InversePerpetual) => {
+                if !reduce_only {
+                    if let Some(price) = reference_price {
+                        if price > Decimal::ZERO {
+                            let margin = qty / price;
+                            if ctx.settlement_available < margin {
+                                return Err(RiskError::InsufficientBalance {
+                                    asset: ctx.settlement_asset,
+                                    needed: margin,
+                                    available: ctx.settlement_available,
+                                });
+                            }
                         }
                     }
                 }
@@ -432,6 +442,41 @@ mod tests {
             display_quantity: None,
         };
         assert!(checker.check(&reduce, &ctx).is_ok());
+    }
+
+    #[test]
+    fn derivative_reduce_only_skips_margin_checks() {
+        let checker = BasicRiskChecker::new(RiskLimits {
+            max_order_quantity: Decimal::ZERO,
+            max_position_quantity: Decimal::ZERO,
+            max_order_notional: None,
+        });
+        let ctx = RiskContext {
+            signed_position_qty: Decimal::ONE,
+            portfolio_equity: Decimal::from(10_000),
+            last_price: Decimal::from(100),
+            instrument_kind: Some(InstrumentKind::LinearPerpetual),
+            settlement_asset: AssetId::from("USDT"),
+            settlement_available: Decimal::ZERO,
+            ..RiskContext::default()
+        };
+        let reduce = OrderRequest {
+            symbol: "BTCUSDT".into(),
+            side: Side::Sell,
+            order_type: OrderType::Limit,
+            quantity: Decimal::ONE,
+            price: Some(Decimal::from(100)),
+            trigger_price: None,
+            time_in_force: None,
+            client_order_id: None,
+            take_profit: None,
+            stop_loss: None,
+            display_quantity: None,
+        };
+        assert!(
+            checker.check(&reduce, &ctx).is_ok(),
+            "reduce-only derivative orders should bypass margin requirement"
+        );
     }
 
     #[test]
