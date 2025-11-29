@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use anyhow::{anyhow, Context, Result};
 use arrow::array::{
-    Array, Decimal128Array, Int8Array, ListArray, StringArray, StructArray,
+    Array, Decimal128Array, Int64Array, Int8Array, ListArray, StringArray, StructArray,
     TimestampNanosecondArray,
 };
 use arrow::datatypes::SchemaRef;
@@ -528,7 +528,7 @@ fn decode_candle(batch: &RecordBatch, row: usize, columns: &CandleColumns) -> Re
     let high = decimal_value(batch, columns.high, row)?;
     let low = decimal_value(batch, columns.low, row)?;
     let close = decimal_value(batch, columns.close, row)?;
-    let volume = decimal_value(batch, columns.volume, row)?;
+    let volume = decimal_value_or_default(batch, columns.volume, row, Decimal::ZERO)?;
     let timestamp = timestamp_value(batch, columns.timestamp, row)?;
     Ok(Candle {
         symbol,
@@ -591,6 +591,22 @@ fn decimal_value(batch: &RecordBatch, column: usize, row: usize) -> Result<Decim
     let array = as_array::<Decimal128Array>(batch, column)?;
     if array.is_null(row) {
         return Err(anyhow!("column {column} contains null decimal"));
+    }
+    Ok(Decimal::from_i128_with_scale(
+        array.value(row),
+        array.scale() as u32,
+    ))
+}
+
+fn decimal_value_or_default(
+    batch: &RecordBatch,
+    column: usize,
+    row: usize,
+    default: Decimal,
+) -> Result<Decimal> {
+    let array = as_array::<Decimal128Array>(batch, column)?;
+    if array.is_null(row) {
+        return Ok(default);
     }
     Ok(Decimal::from_i128_with_scale(
         array.value(row),
@@ -682,15 +698,33 @@ fn struct_level_columns(
 }
 
 fn timestamp_value(batch: &RecordBatch, column: usize, row: usize) -> Result<DateTime<Utc>> {
-    let array = as_array::<TimestampNanosecondArray>(batch, column)?;
-    if array.is_null(row) {
-        return Err(anyhow!("column {column} contains null timestamp"));
+    if let Some(array) = batch
+        .column(column)
+        .as_any()
+        .downcast_ref::<TimestampNanosecondArray>()
+    {
+        if array.is_null(row) {
+            return Err(anyhow!("column {column} contains null timestamp"));
+        }
+        let nanos = array.value(row);
+        let secs = nanos.div_euclid(1_000_000_000);
+        let sub = nanos.rem_euclid(1_000_000_000) as u32;
+        return DateTime::<Utc>::from_timestamp(secs, sub)
+            .ok_or_else(|| anyhow!("timestamp overflow for value {nanos}"));
     }
-    let nanos = array.value(row);
-    let secs = nanos.div_euclid(1_000_000_000);
-    let sub = nanos.rem_euclid(1_000_000_000) as u32;
-    DateTime::<Utc>::from_timestamp(secs, sub)
-        .ok_or_else(|| anyhow!("timestamp overflow for value {nanos}"))
+    if let Some(array) = batch.column(column).as_any().downcast_ref::<Int64Array>() {
+        if array.is_null(row) {
+            return Err(anyhow!("column {column} contains null timestamp"));
+        }
+        let nanos = array.value(row);
+        let secs = nanos.div_euclid(1_000_000_000);
+        let sub = nanos.rem_euclid(1_000_000_000) as u32;
+        return DateTime::<Utc>::from_timestamp(secs, sub)
+            .ok_or_else(|| anyhow!("timestamp overflow for value {nanos}"));
+    }
+    Err(anyhow!(
+        "column {column} type mismatch; expected timestamp nanoseconds or int64"
+    ))
 }
 
 fn side_value(batch: &RecordBatch, column: usize, row: usize) -> Result<Side> {

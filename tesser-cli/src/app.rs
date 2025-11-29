@@ -235,6 +235,9 @@ pub struct DataNormalizeArgs {
     /// Partitioning strategy (daily or monthly)
     #[arg(long, value_enum, default_value = "daily")]
     pub partition: DataPartitionArg,
+    /// Override the canonical interval label defined in the mapping config
+    #[arg(long)]
+    pub interval: Option<String>,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, ValueEnum)]
@@ -651,8 +654,11 @@ impl DataNormalizeArgs {
     fn run(&self) -> Result<()> {
         let raw = fs::read_to_string(&self.config)
             .with_context(|| format!("failed to read {}", self.config.display()))?;
-        let mapping: EtlMappingConfig = toml::from_str(&raw)
+        let mut mapping: EtlMappingConfig = toml::from_str(&raw)
             .with_context(|| format!("failed to parse mapping config {}", self.config.display()))?;
+        if let Some(interval) = &self.interval {
+            mapping.interval = interval.clone();
+        }
         let pipeline = EtlPipeline::new(mapping);
         let rows = pipeline.run(
             &self.source,
@@ -917,7 +923,7 @@ impl From<QueueModelArg> for QueueModel {
 pub struct BacktestRunArgs {
     #[arg(long)]
     strategy_config: PathBuf,
-    /// One or more CSV files with historical candles (symbol,timestamp,...)
+    /// One or more canonical parquet files produced via `tesser-cli data normalize`
     #[arg(long = "data", value_name = "PATH", num_args = 0.., action = clap::ArgAction::Append)]
     data_paths: Vec<PathBuf>,
     #[arg(long, default_value_t = 500)]
@@ -965,7 +971,7 @@ pub struct BacktestBatchArgs {
     /// Glob or directory containing strategy config files
     #[arg(long = "config", value_name = "PATH", num_args = 1.., action = clap::ArgAction::Append)]
     config_paths: Vec<PathBuf>,
-    /// Candle CSVs available to every strategy
+    /// Canonical parquet paths available to every strategy
     #[arg(long = "data", value_name = "PATH", num_args = 1.., action = clap::ArgAction::Append)]
     data_paths: Vec<PathBuf>,
     #[arg(long, default_value = "0.01")]
@@ -1420,17 +1426,8 @@ impl BacktestRunArgs {
             return Ok(memory_market_stream(symbols[0], generated));
         }
 
-        match detect_data_format(&self.data_paths)? {
-            DataFormat::Csv => {
-                let mut candles = load_candles_from_paths(&self.data_paths)?;
-                if candles.is_empty() {
-                    bail!("no candles loaded from --data paths");
-                }
-                candles.sort_by_key(|c| c.timestamp);
-                Ok(memory_market_stream(symbols[0], candles))
-            }
-            DataFormat::Parquet => Ok(parquet_market_stream(symbols, self.data_paths.clone())),
-        }
+        ensure_parquet_inputs(&self.data_paths)?;
+        Ok(parquet_market_stream(symbols, self.data_paths.clone()))
     }
 
     fn detect_lob_source(&self) -> Result<LobSource> {
@@ -1492,7 +1489,6 @@ impl BacktestBatchArgs {
                 format!("failed to load markets from {}", markets_path.display())
             })?,
         );
-        let data_format = detect_data_format(&self.data_paths)?;
         let mut aggregated = Vec::new();
         let fee_schedule = if let Some(path) = &self.fee_schedule {
             load_fee_schedule_file(path)?
@@ -1504,6 +1500,7 @@ impl BacktestBatchArgs {
         };
         let reporting_currency = AssetId::from(config.backtest.reporting_currency.as_str());
         let initial_balances = clone_initial_balances(&config.backtest);
+        ensure_parquet_inputs(&self.data_paths)?;
         for config_path in &self.config_paths {
             let contents = std::fs::read_to_string(config_path).with_context(|| {
                 format!("failed to read strategy config {}", config_path.display())
@@ -1518,17 +1515,7 @@ impl BacktestBatchArgs {
             if symbols.is_empty() {
                 bail!("strategy {} did not declare subscriptions", strategy.name());
             }
-            let stream = match data_format {
-                DataFormat::Csv => {
-                    let mut candles = load_candles_from_paths(&self.data_paths)?;
-                    if candles.is_empty() {
-                        bail!("no candles loaded from --data paths");
-                    }
-                    candles.sort_by_key(|c| c.timestamp);
-                    memory_market_stream(symbols[0], candles)
-                }
-                DataFormat::Parquet => parquet_market_stream(&symbols, self.data_paths.clone()),
-            };
+            let stream = parquet_market_stream(&symbols, self.data_paths.clone());
             let execution_client = build_sim_execution_client(
                 &format!("paper-batch-{}", def.name),
                 &symbols,
@@ -2031,34 +2018,23 @@ fn load_candles_from_paths(paths: &[PathBuf]) -> Result<Vec<Candle>> {
     Ok(candles)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DataFormat {
-    Csv,
-    Parquet,
-}
-
-fn detect_data_format(paths: &[PathBuf]) -> Result<DataFormat> {
-    let mut detected: Option<DataFormat> = None;
+fn ensure_parquet_inputs(paths: &[PathBuf]) -> Result<()> {
+    if paths.is_empty() {
+        bail!("provide at least one --data path (canonical parquet)");
+    }
     for path in paths {
         let ext = path
             .extension()
             .and_then(|ext| ext.to_str())
-            .map(|ext| ext.to_ascii_lowercase())
-            .unwrap_or_else(|| String::from(""));
-        let current = if ext == "parquet" {
-            DataFormat::Parquet
-        } else {
-            DataFormat::Csv
-        };
-        if let Some(existing) = detected {
-            if existing != current {
-                bail!("cannot mix CSV and Parquet inputs in --data");
-            }
-        } else {
-            detected = Some(current);
+            .map(|ext| ext.to_ascii_lowercase());
+        if ext.as_deref() != Some("parquet") {
+            bail!(
+                "{} is not a parquet file; run `tesser-cli data normalize` before backtesting",
+                path.display()
+            );
         }
     }
-    detected.ok_or_else(|| anyhow!("no data paths provided"))
+    Ok(())
 }
 
 fn memory_market_stream(symbol: Symbol, candles: Vec<Candle>) -> BacktestStream {

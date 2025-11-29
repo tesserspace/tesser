@@ -13,6 +13,7 @@ pub fn canonical_candle_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("timestamp", DataType::Int64, false),
         Field::new("symbol", DataType::Utf8, false),
+        Field::new("interval", DataType::Utf8, false),
         Field::new("open", canonical_decimal_type(), false),
         Field::new("high", canonical_decimal_type(), false),
         Field::new("low", canonical_decimal_type(), false),
@@ -33,10 +34,12 @@ mod tests {
     #[test]
     fn schema_contains_expected_fields() {
         let schema = canonical_candle_schema();
-        assert_eq!(schema.fields().len(), 7);
+        assert_eq!(schema.fields().len(), 8);
         let open_field = schema.field_with_name("open").unwrap();
         assert_eq!(open_field.data_type(), &canonical_decimal_type());
         let ts_field = schema.field_with_name("timestamp").unwrap();
         assert_eq!(ts_field.data_type(), &DataType::Int64);
+        let interval = schema.field_with_name("interval").unwrap();
+        assert_eq!(interval.data_type(), &DataType::Utf8);
     }
 }

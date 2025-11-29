@@ -35,6 +35,14 @@ pub enum Partitioning {
 pub struct MappingConfig {
     pub csv: CsvConfig,
     pub fields: FieldMapping,
+    #[serde(default = "MappingConfig::default_interval")]
+    pub interval: String,
+}
+
+impl MappingConfig {
+    fn default_interval() -> String {
+        "1m".to_string()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -87,6 +95,8 @@ pub struct TimestampField {
     pub col: usize,
     #[serde(default)]
     pub unit: TimestampUnit,
+    #[serde(default)]
+    pub format: TimestampFormat,
 }
 
 impl TimestampField {
@@ -98,6 +108,13 @@ impl TimestampField {
         if raw.is_empty() {
             bail!("timestamp column {} is empty", self.col);
         }
+        match self.format {
+            TimestampFormat::Unix => self.parse_unix(raw),
+            TimestampFormat::Rfc3339 => Self::parse_rfc3339(raw),
+        }
+    }
+
+    fn parse_unix(&self, raw: &str) -> Result<i64> {
         let value: i64 = raw
             .parse()
             .with_context(|| format!("invalid timestamp '{raw}'"))?;
@@ -105,6 +122,14 @@ impl TimestampField {
             .checked_mul(self.unit.multiplier())
             .ok_or_else(|| anyhow!("timestamp overflow for value {value}"))?;
         Ok(nanos)
+    }
+
+    fn parse_rfc3339(raw: &str) -> Result<i64> {
+        let dt = DateTime::parse_from_rfc3339(raw)
+            .with_context(|| format!("invalid RFC3339 timestamp '{raw}'"))?
+            .with_timezone(&Utc);
+        dt.timestamp_nanos_opt()
+            .ok_or_else(|| anyhow!("timestamp overflow for value {raw}"))
     }
 }
 
@@ -128,6 +153,15 @@ impl TimestampUnit {
             TimestampUnit::Nanoseconds => 1,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum TimestampFormat {
+    #[default]
+    Unix,
+    Rfc3339,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -186,6 +220,7 @@ impl Pipeline {
     }
 
     fn load_rows(&self, path: &Path, symbol: &str) -> Result<Vec<CanonicalCandle>> {
+        let interval_label = self.mapping.interval.clone();
         let file = File::open(path)
             .with_context(|| format!("failed to open source file {}", path.display()))?;
         let mut reader = csv::ReaderBuilder::new()
@@ -251,6 +286,7 @@ impl Pipeline {
             rows.push(CanonicalCandle {
                 timestamp,
                 symbol: symbol.to_string(),
+                interval: interval_label.clone(),
                 open,
                 high,
                 low,
@@ -270,7 +306,7 @@ impl Pipeline {
         let schema = canonical_candle_schema();
         let mut partitions: BTreeMap<String, Vec<CanonicalCandle>> = BTreeMap::new();
         for row in rows {
-            let key = partition_path(&row.symbol, row.timestamp, partitioning)?;
+            let key = partition_path(&row.symbol, &row.interval, row.timestamp, partitioning)?;
             partitions.entry(key).or_default().push(row);
         }
         for (counter, (relative, records)) in partitions.into_iter().enumerate() {
@@ -293,6 +329,7 @@ impl Pipeline {
 struct CanonicalCandle {
     timestamp: i64,
     symbol: String,
+    interval: String,
     open: Decimal,
     high: Decimal,
     low: Decimal,
@@ -304,6 +341,7 @@ fn rows_to_batch(rows: &[CanonicalCandle], schema: &SchemaRef) -> Result<RecordB
     let decimal_type = DataType::Decimal128(CANONICAL_DECIMAL_PRECISION, CANONICAL_DECIMAL_SCALE);
     let mut timestamps = Int64Builder::new();
     let mut symbols = StringBuilder::new();
+    let mut intervals = StringBuilder::new();
     let mut open_builder = Decimal128Builder::new().with_data_type(decimal_type.clone());
     let mut high_builder = Decimal128Builder::new().with_data_type(decimal_type.clone());
     let mut low_builder = Decimal128Builder::new().with_data_type(decimal_type.clone());
@@ -313,6 +351,7 @@ fn rows_to_batch(rows: &[CanonicalCandle], schema: &SchemaRef) -> Result<RecordB
     for row in rows {
         timestamps.append_value(row.timestamp);
         symbols.append_value(&row.symbol);
+        intervals.append_value(&row.interval);
         open_builder.append_value(decimal_to_i128(row.open)?);
         high_builder.append_value(decimal_to_i128(row.high)?);
         low_builder.append_value(decimal_to_i128(row.low)?);
@@ -327,6 +366,7 @@ fn rows_to_batch(rows: &[CanonicalCandle], schema: &SchemaRef) -> Result<RecordB
     let columns: Vec<ArrayRef> = vec![
         Arc::new(timestamps.finish()),
         Arc::new(symbols.finish()),
+        Arc::new(intervals.finish()),
         Arc::new(open_builder.finish()),
         Arc::new(high_builder.finish()),
         Arc::new(low_builder.finish()),
@@ -362,9 +402,17 @@ fn decimal_to_i128(value: Decimal) -> Result<i128> {
         .ok_or_else(|| anyhow!("decimal mantissa overflow"))
 }
 
-fn partition_path(symbol: &str, timestamp: i64, partitioning: Partitioning) -> Result<String> {
+fn partition_path(
+    symbol: &str,
+    interval: &str,
+    timestamp: i64,
+    partitioning: Partitioning,
+) -> Result<String> {
     let dt = datetime_from_ns(timestamp)?;
-    let mut segments = vec![format!("symbol={}", sanitize_symbol(symbol))];
+    let mut segments = vec![
+        format!("symbol={}", sanitize_symbol(symbol)),
+        format!("interval={}", sanitize_interval(interval)),
+    ];
     segments.push(format!("year={:04}", dt.year()));
     segments.push(format!("month={:02}", dt.month()));
     if matches!(partitioning, Partitioning::Daily) {
@@ -375,6 +423,13 @@ fn partition_path(symbol: &str, timestamp: i64, partitioning: Partitioning) -> R
 
 fn sanitize_symbol(symbol: &str) -> String {
     symbol.replace(':', "_")
+}
+
+fn sanitize_interval(interval: &str) -> String {
+    interval
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 fn datetime_from_ns(timestamp: i64) -> Result<DateTime<Utc>> {
@@ -408,6 +463,7 @@ mod tests {
                 timestamp: TimestampField {
                     col: 0,
                     unit: TimestampUnit::Milliseconds,
+                    format: TimestampFormat::Unix,
                 },
                 open: ValueField { col: 1 },
                 high: ValueField { col: 2 },
@@ -415,6 +471,7 @@ mod tests {
                 close: ValueField { col: 4 },
                 volume: Some(ValueField { col: 5 }),
             },
+            interval: "1m".into(),
         };
         let pipeline = Pipeline::new(mapping);
         let output = dir.path().join("lake");
@@ -428,6 +485,45 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 2);
         assert!(count_files(&output) > 0, "no parquet files written");
+    }
+
+    #[test]
+    fn pipeline_parses_rfc3339_timestamps() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("candles.csv");
+        fs::write(
+            &src,
+            "ts,open,high,low,close,vol\n2024-01-01T00:00:00Z,100,110,90,105,12\n",
+        )
+        .unwrap();
+        let mapping = MappingConfig {
+            csv: CsvConfig::default(),
+            fields: FieldMapping {
+                timestamp: TimestampField {
+                    col: 0,
+                    unit: TimestampUnit::Milliseconds,
+                    format: TimestampFormat::Rfc3339,
+                },
+                open: ValueField { col: 1 },
+                high: ValueField { col: 2 },
+                low: ValueField { col: 3 },
+                close: ValueField { col: 4 },
+                volume: Some(ValueField { col: 5 }),
+            },
+            interval: "1m".into(),
+        };
+        let pipeline = Pipeline::new(mapping);
+        let output = dir.path().join("lake");
+        let rows = pipeline
+            .run(
+                src.to_str().unwrap(),
+                &output,
+                "binance:BTCUSDT",
+                Partitioning::Daily,
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
+        assert!(count_files(&output) > 0);
     }
 
     fn count_files(root: &Path) -> usize {
