@@ -178,8 +178,8 @@ impl BybitDownloader {
 #[async_trait]
 impl MarketDataDownloader for BybitDownloader {
     async fn download_klines(&self, req: &KlineRequest<'_>) -> Result<Vec<Candle>> {
-        let mut cursor = req.start.timestamp_millis();
-        let end_ms = req.end.timestamp_millis();
+        let mut cursor = tesser_core::to_millis(&req.start);
+        let end_ms = tesser_core::to_millis(&req.end);
         if cursor >= end_ms {
             return Err(anyhow!("start must be earlier than end"));
         }
@@ -249,8 +249,8 @@ impl MarketDataDownloader for BybitDownloader {
             let mut batch = Vec::new();
             for entry in result.list {
                 if let Some(candle) = parse_entry(&entry, req.symbol, req.interval) {
-                    if candle.timestamp.timestamp_millis() >= cursor
-                        && candle.timestamp.timestamp_millis() <= end_ms
+                    if tesser_core::to_millis(&candle.timestamp) >= cursor
+                        && tesser_core::to_millis(&candle.timestamp) <= end_ms
                     {
                         batch.push(candle);
                     }
@@ -263,10 +263,10 @@ impl MarketDataDownloader for BybitDownloader {
 
             batch.sort_by_key(|c| c.timestamp);
             let first_ts = batch.first().map(|c| c.timestamp).unwrap();
-            if first_ts.timestamp_millis() > cursor + interval_ms * 10 {
+            if tesser_core::to_millis(&first_ts) > cursor + interval_ms * 10 {
                 warn!(
                     "bybit klines returned first_ts={}ms for cursor={}ms (interval_ms={}, batch_len={})",
-                    first_ts.timestamp_millis(),
+                    tesser_core::to_millis(&first_ts),
                     cursor,
                     interval_ms,
                     batch.len()
@@ -274,7 +274,7 @@ impl MarketDataDownloader for BybitDownloader {
             }
             cursor = batch
                 .last()
-                .map(|c| c.timestamp.timestamp_millis() + interval_ms)
+                .map(|c| tesser_core::to_millis(&c.timestamp) + interval_ms)
                 .unwrap_or(end_ms);
             candles.extend(batch);
         }
@@ -297,8 +297,8 @@ impl MarketDataDownloader for BybitDownloader {
 
 impl BybitDownloader {
     async fn download_trades_rest(&self, req: &TradeRequest<'_>) -> Result<Vec<NormalizedTrade>> {
-        let start_ms = req.start.timestamp_millis();
-        let end_ms = req.end.timestamp_millis();
+        let start_ms = tesser_core::to_millis(&req.start);
+        let end_ms = tesser_core::to_millis(&req.end);
         if start_ms >= end_ms {
             return Err(anyhow!("start must be earlier than end"));
         }
@@ -376,8 +376,8 @@ impl BybitDownloader {
                     continue;
                 }
                 if let Some(trade) = parse_bybit_trade(req.symbol, entry) {
-                    if trade.tick.exchange_timestamp.timestamp_millis() < start_ms
-                        || trade.tick.exchange_timestamp.timestamp_millis() > end_ms
+                    if tesser_core::to_millis(&trade.tick.exchange_timestamp) < start_ms
+                        || tesser_core::to_millis(&trade.tick.exchange_timestamp) > end_ms
                     {
                         continue;
                     }
@@ -474,8 +474,8 @@ impl BybitDownloader {
             let mut day_trades = read_bybit_archive(
                 &cache_path,
                 req.symbol,
-                day_start.timestamp_millis(),
-                day_end.timestamp_millis(),
+                tesser_core::to_millis(&day_start),
+                tesser_core::to_millis(&day_end),
                 &mut seen_ids,
             )
             .await?;
@@ -503,7 +503,7 @@ fn parse_entry(entry: &[String], symbol: &str, interval: Interval) -> Option<Can
         return None;
     }
     let ts = entry.first()?.parse::<i64>().ok()?;
-    let timestamp = DateTime::<Utc>::from_timestamp_millis(ts)?;
+    let timestamp = tesser_core::from_millis(ts)?;
     let open = entry.get(1)?.parse::<Decimal>().ok()?;
     let high = entry.get(2)?.parse::<Decimal>().ok()?;
     let low = entry.get(3)?.parse::<Decimal>().ok()?;
@@ -599,8 +599,8 @@ impl BinanceDownloader {
     }
 
     async fn fetch_agg_trades(&self, req: &TradeRequest<'_>) -> Result<Vec<NormalizedTrade>> {
-        let mut cursor = req.start.timestamp_millis();
-        let end_ms = req.end.timestamp_millis();
+        let mut cursor = tesser_core::to_millis(&req.start);
+        let end_ms = tesser_core::to_millis(&req.end);
         if cursor >= end_ms {
             return Err(anyhow!("start must be earlier than end"));
         }
@@ -653,7 +653,7 @@ impl BinanceDownloader {
                     continue;
                 }
                 if let Some(trade) = parse_binance_trade(req.symbol, entry) {
-                    let ts = trade.tick.exchange_timestamp.timestamp_millis();
+                    let ts = tesser_core::to_millis(&trade.tick.exchange_timestamp);
                     last_ts = Some(last_ts.map_or(ts, |prev| prev.max(ts)));
                     trades.push(trade);
                 }
@@ -732,10 +732,10 @@ impl BinanceDownloader {
                 continue;
             }
             let parsed = read_binance_archive(cache_path.clone(), req.symbol.to_string()).await?;
-            let start_ms = day_start.timestamp_millis();
-            let end_ms = day_end.timestamp_millis();
+            let start_ms = tesser_core::to_millis(&day_start);
+            let end_ms = tesser_core::to_millis(&day_end);
             for trade in parsed {
-                let ts = trade.tick.exchange_timestamp.timestamp_millis();
+                let ts = tesser_core::to_millis(&trade.tick.exchange_timestamp);
                 if ts < start_ms || ts > end_ms {
                     continue;
                 }
@@ -767,8 +767,8 @@ impl BinanceDownloader {
 #[async_trait]
 impl MarketDataDownloader for BinanceDownloader {
     async fn download_klines(&self, req: &KlineRequest<'_>) -> Result<Vec<Candle>> {
-        let mut cursor = req.start.timestamp_millis();
-        let end_ms = req.end.timestamp_millis();
+        let mut cursor = tesser_core::to_millis(&req.start);
+        let end_ms = tesser_core::to_millis(&req.end);
         if cursor >= end_ms {
             return Err(anyhow!("start must be earlier than end"));
         }
@@ -818,8 +818,8 @@ impl MarketDataDownloader for BinanceDownloader {
             let mut batch = Vec::new();
             for entry in entries {
                 if let Some(candle) = parse_binance_entry(&entry, req.symbol, req.interval) {
-                    if candle.timestamp.timestamp_millis() >= cursor
-                        && candle.timestamp.timestamp_millis() <= end_ms
+                    if tesser_core::to_millis(&candle.timestamp) >= cursor
+                        && tesser_core::to_millis(&candle.timestamp) <= end_ms
                     {
                         batch.push(candle);
                     }
@@ -831,7 +831,7 @@ impl MarketDataDownloader for BinanceDownloader {
             batch.sort_by_key(|c| c.timestamp);
             cursor = batch
                 .last()
-                .map(|c| c.timestamp.timestamp_millis() + interval_ms)
+                .map(|c| tesser_core::to_millis(&c.timestamp) + interval_ms)
                 .unwrap_or(end_ms);
             candles.extend(batch);
         }
@@ -856,7 +856,7 @@ fn parse_binance_entry(entry: &[JsonValue], symbol: &str, interval: Interval) ->
         return None;
     }
     let ts = entry.first()?.as_i64()?;
-    let timestamp = DateTime::<Utc>::from_timestamp_millis(ts)?;
+    let timestamp = tesser_core::from_millis(ts)?;
     let open = entry.get(1)?.as_str()?.parse::<Decimal>().ok()?;
     let high = entry.get(2)?.as_str()?.parse::<Decimal>().ok()?;
     let low = entry.get(3)?.as_str()?.parse::<Decimal>().ok()?;
@@ -921,7 +921,7 @@ fn parse_binance_public_line(symbol: &str, line: &str) -> Option<NormalizedTrade
         .trim()
         .parse::<i64>()
         .ok()
-        .and_then(DateTime::<Utc>::from_timestamp_millis)?;
+        .and_then(tesser_core::from_millis)?;
     let maker_flag = columns.next()?.trim();
     let is_buyer_maker = match maker_flag {
         "true" | "True" | "1" => true,
@@ -959,7 +959,7 @@ fn parse_bybit_trade(symbol: &str, entry: BybitTradeEntry) -> Option<NormalizedT
         .time
         .parse::<i64>()
         .ok()
-        .and_then(DateTime::<Utc>::from_timestamp_millis)?;
+        .and_then(tesser_core::from_millis)?;
     let price = entry.price.parse::<Decimal>().ok()?;
     let size = entry.size.parse::<Decimal>().ok()?;
     let side = parse_side(&entry.side)?;
@@ -975,7 +975,7 @@ fn parse_bybit_trade(symbol: &str, entry: BybitTradeEntry) -> Option<NormalizedT
 }
 
 fn parse_binance_trade(symbol: &str, entry: BinanceAggTrade) -> Option<NormalizedTrade> {
-    let timestamp = DateTime::<Utc>::from_timestamp_millis(entry.timestamp)?;
+    let timestamp = tesser_core::from_millis(entry.timestamp)?;
     let price = entry.price.parse::<Decimal>().ok()?;
     let size = entry.quantity.parse::<Decimal>().ok()?;
     let side = if entry.is_buyer_maker {
@@ -1290,7 +1290,7 @@ async fn read_bybit_archive(
         let Some(trade) = parse_bybit_public_line(symbol, line.trim()) else {
             continue;
         };
-        let ts = trade.tick.exchange_timestamp.timestamp_millis();
+        let ts = tesser_core::to_millis(&trade.tick.exchange_timestamp);
         if ts < start_ms || ts > end_ms {
             continue;
         }

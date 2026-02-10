@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 
 /// Precision used for canonical decimal columns.
 pub const CANONICAL_DECIMAL_PRECISION: u8 = 38;
@@ -11,7 +11,11 @@ pub const CANONICAL_DECIMAL_SCALE_U32: u32 = 18;
 /// Arrow schema shared by normalized candle data sets.
 pub fn canonical_candle_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
-        Field::new("timestamp", DataType::Int64, false),
+        Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
         Field::new("symbol", DataType::Utf8, false),
         Field::new("interval", DataType::Utf8, false),
         Field::new("open", canonical_decimal_type(), false),
@@ -38,7 +42,10 @@ mod tests {
         let open_field = schema.field_with_name("open").unwrap();
         assert_eq!(open_field.data_type(), &canonical_decimal_type());
         let ts_field = schema.field_with_name("timestamp").unwrap();
-        assert_eq!(ts_field.data_type(), &DataType::Int64);
+        assert_eq!(
+            ts_field.data_type(),
+            &DataType::Timestamp(TimeUnit::Nanosecond, None)
+        );
         let interval = schema.field_with_name("interval").unwrap();
         assert_eq!(interval.data_type(), &DataType::Utf8);
     }

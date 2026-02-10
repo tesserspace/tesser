@@ -120,7 +120,7 @@ impl TicksWriter {
     /// Finalize the parquet file once all ticks have been queued.
     pub fn finish(mut self) -> Result<()> {
         self.rows
-            .sort_by_key(|tick| tick.exchange_timestamp.timestamp_millis());
+            .sort_by_key(|tick| tesser_core::to_nanos(&tick.exchange_timestamp));
         self.rows.dedup_by(|a, b| {
             a.exchange_timestamp == b.exchange_timestamp
                 && a.price == b.price
@@ -497,7 +497,7 @@ fn timestamp_value(batch: &RecordBatch, column: usize, row: usize) -> Result<Dat
 mod tests {
     use std::fs::File;
 
-    use chrono::{Duration, TimeZone, Utc};
+    use chrono::{Duration, Utc};
     use rust_decimal::{prelude::FromPrimitive, Decimal};
     use tempfile::tempdir;
     use tesser_core::{Side, Symbol};
@@ -578,10 +578,7 @@ mod tests {
     fn sample_tick(ts_ms: i64, price: f64, size: f64, side: Side) -> Tick {
         let price = Decimal::from_f64(price).expect("valid price");
         let size = Decimal::from_f64(size).expect("valid size");
-        let timestamp = Utc
-            .timestamp_millis_opt(ts_ms)
-            .single()
-            .expect("valid timestamp");
+        let timestamp = tesser_core::from_millis(ts_ms).expect("valid timestamp");
         Tick {
             symbol: Symbol::from("BTCUSDT"),
             price,

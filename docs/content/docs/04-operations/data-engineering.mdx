@@ -31,5 +31,6 @@ The validator detects:
 - CSV is used for quick diagnostics and as the staging format before normalization.
 - Canonical candle datasets live in Parquet files emitted by `tesser-cli data normalize`, matching the schema replayed by the backtester.
 - Tick downloads are written as Parquet using the exact schema produced by the flight recorder, so the backtester can consume them without conversion.
+- Timestamp columns in canonical Parquet datasets are stored as Unix nanoseconds for high-frequency replay.
 
 Keep raw downloads immutable and derive normalized datasets via scripts in `research/` so simulations remain reproducible.

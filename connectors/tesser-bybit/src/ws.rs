@@ -6,7 +6,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 use futures::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
 use rust_decimal::Decimal;
@@ -187,7 +187,7 @@ pub async fn connect_private(
         }
     };
 
-    let expires = (Utc::now() + chrono::Duration::seconds(10)).timestamp_millis();
+    let expires = tesser_core::to_millis(&(Utc::now() + chrono::Duration::seconds(10)));
     let payload = format!("GET/realtime{expires}");
     let mut mac = HmacSha256::new_from_slice(creds.api_secret.as_bytes())
         .map_err(|e| BrokerError::Other(format!("failed to init signer: {e}")))?;
@@ -913,7 +913,7 @@ enum BookUpdate {
 }
 
 fn millis_to_datetime(value: i64) -> Option<DateTime<Utc>> {
-    Utc.timestamp_millis_opt(value).single()
+    tesser_core::from_millis(value)
 }
 
 impl Drop for BybitMarketStream {

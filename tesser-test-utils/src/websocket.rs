@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex as StdMutex};
 
 use anyhow::Result;
-use chrono::Utc;
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, TcpStream};
@@ -244,9 +243,9 @@ async fn stream_trades(
             "topic": topic,
             "_topic": topic,
             "type": "snapshot",
-            "ts": tick.exchange_timestamp.timestamp_millis(),
+            "ts": tesser_core::to_millis(&tick.exchange_timestamp),
             "data": [{
-                "T": tick.exchange_timestamp.timestamp_millis(),
+                "T": tesser_core::to_millis(&tick.exchange_timestamp),
                 "s": tick.symbol.code().to_string(),
                 "S": match tick.side { Side::Buy => "Buy", Side::Sell => "Sell" },
                 "v": decimal_to_string(tick.size),
@@ -277,10 +276,10 @@ async fn stream_klines(
             "topic": topic,
             "_topic": topic,
             "type": "snapshot",
-            "ts": candle.timestamp.timestamp_millis(),
+            "ts": tesser_core::to_millis(&candle.timestamp),
             "data": [{
-                "_start": candle.timestamp.timestamp_millis(),
-                "_end": candle.timestamp.timestamp_millis(),
+                "_start": tesser_core::to_millis(&candle.timestamp),
+                "_end": tesser_core::to_millis(&candle.timestamp),
                 "interval": interval,
                 "open": decimal_to_string(candle.open),
                 "high": decimal_to_string(candle.high),
@@ -288,7 +287,7 @@ async fn stream_klines(
                 "close": decimal_to_string(candle.close),
                 "volume": decimal_to_string(candle.volume),
                 "confirm": true,
-                "timestamp": candle.timestamp.timestamp_millis(),
+                "timestamp": tesser_core::to_millis(&candle.timestamp),
             }]
         });
         if tx.send(Message::Text(payload.to_string())).is_err() {
@@ -310,7 +309,7 @@ async fn send_orderbook_snapshot(
         "topic": topic,
         "_topic": topic,
         "type": "snapshot",
-        "ts": Utc::now().timestamp_millis(),
+        "ts": tesser_core::to_millis(&tesser_core::utc_now()),
         "data": {
             "s": symbol,
             "b": bids,

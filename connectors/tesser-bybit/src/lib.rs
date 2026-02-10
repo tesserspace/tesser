@@ -19,7 +19,7 @@ use tesser_broker::{
     RateLimiter, RateLimiterError,
 };
 use tesser_core::{
-    AccountBalance, AssetId, Candle, ExchangeId, Fill, Instrument, InstrumentKind, Order,
+    AccountBalance, AssetId, Candle, ExchangeId, Fill, Instrument, InstrumentKind, NanoTime, Order,
     OrderBook, OrderRequest, OrderStatus, OrderType, OrderUpdateRequest, Position, Quantity, Side,
     Symbol, TimeInForce,
 };
@@ -230,7 +230,7 @@ impl BybitClient {
     {
         let creds = self.creds()?;
         self.throttle_private().await?;
-        let timestamp = Utc::now().timestamp_millis();
+        let timestamp = tesser_core::to_millis(&tesser_core::utc_now());
         let query_string = query
             .as_ref()
             .map(|pairs| serde_urlencoded::to_string(pairs).unwrap_or_default())
@@ -349,11 +349,11 @@ impl BybitClient {
     /// Maps the response into framework-native `Fill` records.
     pub async fn list_executions_since(
         &self,
-        since: chrono::DateTime<chrono::Utc>,
+        since: NanoTime,
     ) -> BrokerResult<Vec<BybitExecution>> {
         let mut out: Vec<BybitExecution> = Vec::new();
-        let mut chunk_start = since.timestamp_millis();
-        let end_ms = chrono::Utc::now().timestamp_millis();
+        let mut chunk_start = tesser_core::to_millis(&since);
+        let end_ms = tesser_core::to_millis(&tesser_core::utc_now());
         let min_start = end_ms.saturating_sub(EXECUTION_MAX_WINDOW_MS);
         if chunk_start < min_start {
             warn!(
@@ -732,12 +732,12 @@ fn preview_json(body: &str) -> String {
     format!("{truncated}… <{} chars total>", body.chars().count())
 }
 
-pub(crate) fn millis_to_datetime(value: &str) -> chrono::DateTime<Utc> {
+pub(crate) fn millis_to_datetime(value: &str) -> NanoTime {
     value
         .parse::<i64>()
         .ok()
-        .and_then(chrono::DateTime::<Utc>::from_timestamp_millis)
-        .unwrap_or_else(Utc::now)
+        .and_then(tesser_core::from_millis)
+        .unwrap_or_else(tesser_core::utc_now)
 }
 
 #[derive(Deserialize)]

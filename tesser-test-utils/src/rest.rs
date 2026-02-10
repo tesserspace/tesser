@@ -251,7 +251,7 @@ async fn handle_positions(parts: http::request::Parts, state: MockExchangeState)
                         "size": decimal_to_string(position.quantity),
                         "avgPrice": position.entry_price.map(decimal_to_string).unwrap_or_else(|| "0".into()),
                         "unrealisedPnl": decimal_to_string(position.unrealized_pnl),
-                        "updatedTime": position.updated_at.timestamp_millis().to_string(),
+                        "updatedTime": tesser_core::to_millis(&position.updated_at).to_string(),
                     })
                 })
                 .collect();
@@ -322,7 +322,7 @@ async fn handle_execution_list(
                         "execPrice": decimal_to_string(fill.fill_price),
                         "execQty": decimal_to_string(fill.fill_quantity),
                         "execFee": fill.fee.map(decimal_to_string).unwrap_or_else(|| "0".into()),
-                        "execTime": fill.timestamp.timestamp_millis().to_string(),
+                        "execTime": tesser_core::to_millis(&fill.timestamp).to_string(),
                     })
                 })
                 .collect();
@@ -367,8 +367,8 @@ async fn handle_open_orders(
                             .avg_fill_price
                             .map(decimal_to_string)
                             .unwrap_or_else(|| "0".into()),
-                        "createdTime": order.created_at.timestamp_millis().to_string(),
-                        "updatedTime": order.updated_at.timestamp_millis().to_string(),
+                        "createdTime": tesser_core::to_millis(&order.created_at).to_string(),
+                        "updatedTime": tesser_core::to_millis(&order.updated_at).to_string(),
                     })
                 })
                 .collect();
@@ -487,10 +487,7 @@ fn parse_query(query: Option<&str>) -> HashMap<String, String> {
 }
 
 fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
-    value
-        .parse::<i64>()
-        .ok()
-        .and_then(DateTime::<Utc>::from_timestamp_millis)
+    value.parse::<i64>().ok().and_then(tesser_core::from_millis)
 }
 
 async fn authenticate(
@@ -546,7 +543,7 @@ fn create_envelope(result: Value, ret_code: i64, ret_msg: &str) -> Value {
         "retMsg": ret_msg,
         "result": result,
         "retExtInfo": Value::Null,
-        "time": Utc::now().timestamp_millis(),
+        "time": tesser_core::to_millis(&tesser_core::utc_now()),
     })
 }
 
@@ -659,7 +656,7 @@ fn order_message(order: &Order) -> PrivateMessage {
             "price": order.request.price.map(decimal_to_string),
             "avgPrice": order.avg_fill_price.map(decimal_to_string).unwrap_or_else(|| "0".into()),
             "orderLinkId": order.request.client_order_id.clone().unwrap_or_default(),
-            "updatedTime": order.updated_at.timestamp_millis().to_string(),
+            "updatedTime": tesser_core::to_millis(&order.updated_at).to_string(),
         }]
     })
 }
@@ -676,7 +673,7 @@ fn execution_message(fill: &Fill) -> PrivateMessage {
             "execPrice": decimal_to_string(fill.fill_price),
             "execQty": decimal_to_string(fill.fill_quantity),
             "execFee": fill.fee.map(decimal_to_string).unwrap_or_else(|| "0".into()),
-            "execTime": fill.timestamp.timestamp_millis().to_string(),
+            "execTime": tesser_core::to_millis(&fill.timestamp).to_string(),
             "cumExecQty": decimal_to_string(fill.fill_quantity),
             "avgPrice": decimal_to_string(fill.fill_price),
         }]

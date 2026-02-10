@@ -11,7 +11,7 @@ use parquet::file::properties::WriterProperties;
 use rust_decimal::{prelude::RoundingStrategy, Decimal};
 use tempfile::tempdir;
 
-use arrow::array::{ArrayRef, Decimal128Builder, Int64Builder, StringBuilder};
+use arrow::array::{ArrayRef, Decimal128Builder, StringBuilder, TimestampNanosecondBuilder};
 use arrow::record_batch::RecordBatch;
 use tesser_core::{Candle, Interval, Symbol};
 use tesser_data::schema::{
@@ -96,7 +96,7 @@ fn run_backtest(strategy: &Path, data: &Path) -> Result<()> {
 fn write_canonical_parquet(path: &Path, candles: &[Candle]) -> Result<()> {
     let schema = canonical_candle_schema();
     let decimal_type = canonical_decimal_type();
-    let mut timestamps = Int64Builder::new();
+    let mut timestamps = TimestampNanosecondBuilder::new();
     let mut symbols = StringBuilder::new();
     let mut intervals = StringBuilder::new();
     let mut open = Decimal128Builder::new().with_data_type(decimal_type.clone());
@@ -105,10 +105,7 @@ fn write_canonical_parquet(path: &Path, candles: &[Candle]) -> Result<()> {
     let mut close = Decimal128Builder::new().with_data_type(decimal_type.clone());
     let mut volume = Decimal128Builder::new().with_data_type(decimal_type.clone());
     for candle in candles {
-        let nanos = candle
-            .timestamp
-            .timestamp_nanos_opt()
-            .ok_or_else(|| anyhow::anyhow!("timestamp overflow"))?;
+        let nanos = tesser_core::to_nanos(&candle.timestamp);
         timestamps.append_value(nanos);
         symbols.append_value(candle.symbol.as_ref());
         intervals.append_value(interval_label(candle.interval));

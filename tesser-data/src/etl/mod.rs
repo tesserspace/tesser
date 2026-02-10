@@ -6,7 +6,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
-use arrow::array::{ArrayRef, Decimal128Builder, Int64Builder, StringBuilder};
+use arrow::array::{ArrayRef, Decimal128Builder, StringBuilder, TimestampNanosecondBuilder};
 use arrow::datatypes::{DataType, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use chrono::{DateTime, Datelike, Utc};
@@ -442,7 +442,7 @@ struct CanonicalCandle {
 
 fn rows_to_batch(rows: &[CanonicalCandle], schema: &SchemaRef) -> Result<RecordBatch> {
     let decimal_type = DataType::Decimal128(CANONICAL_DECIMAL_PRECISION, CANONICAL_DECIMAL_SCALE);
-    let mut timestamps = Int64Builder::new();
+    let mut timestamps = TimestampNanosecondBuilder::new();
     let mut symbols = StringBuilder::new();
     let mut intervals = StringBuilder::new();
     let mut open_builder = Decimal128Builder::new().with_data_type(decimal_type.clone());
