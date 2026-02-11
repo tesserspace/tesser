@@ -9,7 +9,6 @@ use binance_sdk::{
         websocket_streams,
     },
 };
-use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::Value;
@@ -20,7 +19,7 @@ use tesser_broker::{
     RateLimiterError,
 };
 use tesser_core::{
-    AccountBalance, AssetId, Candle, ExchangeId, Fill, Instrument, InstrumentKind, Order,
+    AccountBalance, AssetId, Candle, ExchangeId, Fill, Instrument, InstrumentKind, NanoTime, Order,
     OrderBook, OrderRequest, OrderStatus, OrderType, OrderUpdateRequest, Position, Side, Symbol,
     TimeInForce,
 };
@@ -393,7 +392,7 @@ fn build_order_from_response(response: rest_api::NewOrderResponse, request: Orde
         id: response
             .order_id
             .map(|id| id.to_string())
-            .unwrap_or_else(|| Utc::now().timestamp_millis().to_string()),
+            .unwrap_or_else(|| tesser_core::to_millis(&tesser_core::utc_now()).to_string()),
         request,
         status,
         filled_quantity: parse_decimal_opt(response.executed_qty.as_deref())
@@ -672,10 +671,10 @@ pub fn parse_decimal_opt(value: Option<&str>) -> Option<Decimal> {
     value.and_then(|v| v.parse::<Decimal>().ok())
 }
 
-pub fn timestamp_from_ms(value: Option<i64>) -> DateTime<Utc> {
+pub fn timestamp_from_ms(value: Option<i64>) -> NanoTime {
     value
-        .and_then(DateTime::<Utc>::from_timestamp_millis)
-        .unwrap_or_else(Utc::now)
+        .and_then(tesser_core::from_millis)
+        .unwrap_or_else(tesser_core::utc_now)
 }
 
 pub fn fill_from_update(

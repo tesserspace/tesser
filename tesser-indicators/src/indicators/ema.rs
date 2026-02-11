@@ -57,7 +57,11 @@ where
     fn next(&mut self, input: Self::Input) -> Option<Self::Output> {
         let value = input.value();
 
-        if self.state.is_none() {
+        if let Some(current) = self.state {
+            let next = (value - current) * self.alpha + current;
+            self.state = Some(next);
+            Some(next)
+        } else {
             self.warmup_sum += value;
             self.warmup_count += 1;
 
@@ -70,11 +74,6 @@ where
             } else {
                 None
             }
-        } else {
-            let current = self.state.unwrap();
-            let next = (value - current) * self.alpha + current;
-            self.state = Some(next);
-            Some(next)
         }
     }
 

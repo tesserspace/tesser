@@ -129,12 +129,12 @@ pub fn validate_dataset(
         let mut map = HashMap::with_capacity(reference_data.len());
         for candle in reference_data {
             map.insert(
-                candle.timestamp.timestamp_millis(),
+                tesser_core::to_millis(&candle.timestamp),
                 candle.close.to_f64().unwrap_or(0.0),
             );
         }
         for candle in &candles {
-            if let Some(reference_close) = map.get(&candle.timestamp.timestamp_millis()) {
+            if let Some(reference_close) = map.get(&tesser_core::to_millis(&candle.timestamp)) {
                 let close = candle.close.to_f64().unwrap_or(0.0);
                 let denom = reference_close.abs().max(f64::EPSILON);
                 let diff = (close - reference_close).abs() / denom;

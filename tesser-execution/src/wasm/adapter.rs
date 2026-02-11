@@ -315,7 +315,7 @@ fn to_plugin_tick(tick: &Tick) -> PluginTick {
         price: tick.price,
         size: tick.size,
         side: to_plugin_side(tick.side),
-        timestamp_ms: tick.exchange_timestamp.timestamp_millis(),
+        timestamp_ms: tesser_core::to_millis(&tick.exchange_timestamp),
     }
 }
 
@@ -328,7 +328,7 @@ fn to_plugin_fill(fill: &Fill) -> PluginFill {
         fill_quantity: fill.fill_quantity,
         fee: fill.fee,
         fee_asset: fill.fee_asset.map(|asset| asset.to_string()),
-        timestamp_ms: fill.timestamp.timestamp_millis(),
+        timestamp_ms: tesser_core::to_millis(&fill.timestamp),
     }
 }
 
