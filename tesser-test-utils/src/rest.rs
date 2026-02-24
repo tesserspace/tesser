@@ -315,14 +315,26 @@ async fn handle_execution_list(
             let list: Vec<Value> = fills
                 .into_iter()
                 .map(|fill| {
+                    let exec_time_ms = tesser_core::to_millis(&fill.timestamp).to_string();
+                    // Bybit's REST payload includes a stable execId per fill. The mock exchange
+                    // doesn't persist execution ids, so we derive a deterministic UUID from the
+                    // fill fields to keep reconciliation/deduplication stable across requests.
+                    let exec_id = format!(
+                        "MOCK-EXEC-{}-{}-{}-{}",
+                        fill.order_id,
+                        exec_time_ms,
+                        decimal_to_string(fill.fill_price),
+                        decimal_to_string(fill.fill_quantity)
+                    );
                     json!({
+                        "execId": exec_id,
                         "symbol": fill.symbol.code().to_string(),
                         "orderId": fill.order_id,
                         "side": map_side(fill.side),
                         "execPrice": decimal_to_string(fill.fill_price),
                         "execQty": decimal_to_string(fill.fill_quantity),
                         "execFee": fill.fee.map(decimal_to_string).unwrap_or_else(|| "0".into()),
-                        "execTime": tesser_core::to_millis(&fill.timestamp).to_string(),
+                        "execTime": exec_time_ms,
                     })
                 })
                 .collect();
