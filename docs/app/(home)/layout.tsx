@@ -5,7 +5,7 @@ import type { LinkItemType } from 'fumadocs-ui/layouts/docs';
 import { baseOptions } from '@/lib/layout.shared';
 import { SITE_NAME } from '@/lib/metadata';
 
-export default function Layout({ children }: LayoutProps<'/'>) {
+export default function Layout({ children }: { children: ReactNode }) {
   const options = baseOptions({ includeNavLinks: true });
   const navConfig = options.nav ?? {};
 

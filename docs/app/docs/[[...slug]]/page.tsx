@@ -11,7 +11,10 @@ import type { Metadata } from 'next';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import { SITE_NAME } from '@/lib/metadata';
 
-export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
+type DocPageParams = { slug?: string[] };
+type DocPageProps = { params: Promise<DocPageParams> };
+
+export default async function Page(props: DocPageProps) {
   const params = await props.params;
   const page = source.getPage(params.slug);
   if (!page) notFound();
@@ -39,7 +42,7 @@ export async function generateStaticParams() {
 }
 
 export async function generateMetadata(
-  props: PageProps<'/docs/[[...slug]]'>,
+  props: DocPageProps,
 ): Promise<Metadata> {
   const params = await props.params;
   const page = source.getPage(params.slug);
