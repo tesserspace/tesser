@@ -136,6 +136,10 @@ var/
 .installed.cfg
 *.egg
 
+# The Next.js docs app keeps shared code under `docs/lib/`.
+!docs/lib/
+!docs/lib/**
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
