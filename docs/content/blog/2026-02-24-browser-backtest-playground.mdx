@@ -1,0 +1,61 @@
+---
+title: "New: Browser Backtest Playground (JS + target weight signals)"
+description: "Paste a JavaScript strategy, run a backtest on built-in daily candles, and visualize entries/exits on the chart—directly in the docs site."
+author: "The Tesser Core Team"
+date: "2026-02-24"
+---
+
+We just shipped a **Browser Backtest Playground** to make Tesser easier to try and easier to share.
+
+It’s built for “first 60 seconds” users: pick a dataset, paste a small JS strategy, click run, and immediately see:
+
+- **Candlestick chart** with **buy/sell markers**
+- **Equity curve**
+- **Key metrics** (return, max drawdown, Sharpe, fees, trades)
+
+Try it here: **[/playground/backtest](/playground/backtest)**.
+
+## Signal-style strategies (target weight)
+
+Instead of writing order logic, your strategy returns a **target weight** and the engine handles rebalancing.
+
+- If shorting is disabled: `target ∈ [0, 1]`
+- If shorting is enabled: `target ∈ [-1, 1]`
+
+Returning `null` / `undefined` means “keep current position”.
+
+Here’s a minimal example (SMA cross):
+
+```js
+(ctx, { sma }) => {
+  const fast = sma(ctx.close, 20);
+  const slow = sma(ctx.close, 50);
+  if (fast == null || slow == null) return null;
+  return fast > slow ? 1 : 0;
+}
+```
+
+## Built-in datasets (for demo)
+
+To keep the demo fast, we start with a few **daily candle** snapshots for popular symbols (e.g. BTC/ETH/SOL).
+
+You can tune:
+
+- Initial equity
+- Fees (bps)
+- Slippage (bps)
+- Allow short
+
+> Note: these datasets are provided for product demonstration only. Not financial advice.
+
+## What’s next
+
+This is intentionally a minimal playground. The next upgrades we’re considering:
+
+1. More symbols + longer history + on-demand downloads
+2. Strategy templates (trend, mean-reversion, breakout)
+3. Export / share links (strategy + params + dataset)
+4. A stricter sandbox for user JS (timeouts, memory limits, restricted APIs)
+
+If you want a specific dataset or template strategy added, open an issue or ping the team.
+
