@@ -1,0 +1,33 @@
+{
+  "source": {
+    "name": "Binance public REST API /api/v3/klines",
+    "fetched_at_iso": "2026-02-24T12:10:52.811Z",
+    "note": "Snapshot for demo purposes only. Not financial advice."
+  },
+  "datasets": [
+    {
+      "id": "BTCUSDT_1D_1000",
+      "symbol": "BTCUSDT",
+      "interval": "1d",
+      "limit": 1000,
+      "label": "BTCUSDT · 1D · last 1000 bars",
+      "path": "/datasets/btcusdt_1d_last1000.json"
+    },
+    {
+      "id": "ETHUSDT_1D_1000",
+      "symbol": "ETHUSDT",
+      "interval": "1d",
+      "limit": 1000,
+      "label": "ETHUSDT · 1D · last 1000 bars",
+      "path": "/datasets/ethusdt_1d_last1000.json"
+    },
+    {
+      "id": "SOLUSDT_1D_1000",
+      "symbol": "SOLUSDT",
+      "interval": "1d",
+      "limit": 1000,
+      "label": "SOLUSDT · 1D · last 1000 bars",
+      "path": "/datasets/solusdt_1d_last1000.json"
+    }
+  ]
+}
