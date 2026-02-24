@@ -46,7 +46,7 @@ function SceneLoader() {
 
   return (
     <Loader
-      containerStyles={{ background: '#000000' }}
+      containerStyles={{ background: 'transparent', pointerEvents: 'none' }}
       innerStyles={{ background: '#2563eb', height: 2 }}
       barStyles={{ background: '#e879f9' }}
       dataInterpolation={(p) => `Initializing Tesser... ${p.toFixed(0)}%`}
