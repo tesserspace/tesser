@@ -39,6 +39,8 @@ tesser/
 ├── tesser-events       # In-process pub/sub event bus
 |
 ├── tesser-backtester   # The simulation engine
+├── tesser-backtest-core # Deterministic candle backtest core (browser/CI)
+├── tesser-backtest-wasm # WASM wrapper for the docs playground
 ├── tesser-cli          # The command-line user interface
 |
 └── connectors/         # Directory for specific exchange implementations
@@ -123,6 +125,15 @@ tesser/
 **Responsibility**: An offline engine that simulates a strategy's performance against historical data.
 *   **Contents**: An event loop that reads historical data, feeds it to the `tesser-data` module, and uses the `tesser-paper` connector to simulate order fills. It generates performance reports (Sharpe ratio, max drawdown, etc.).
 *   **Rule**: The backtester's job is to wire the other components together in a simulated environment.
+
+#### `tesser-backtest-core`
+**Responsibility**: Deterministic, synchronous candle backtest core used by the browser playground and lightweight tooling.
+*   **Contents**: Next-open/no-lookahead execution semantics, target-weight rebalancing, fee/slippage model, equity curve + trade list + summary metrics.
+*   **Rule**: Keep it IO-free and WASM-friendly so it can run identically in the browser and native builds.
+
+#### `tesser-backtest-wasm`
+**Responsibility**: WebAssembly wrapper for `tesser-backtest-core` used by the docs playground.
+*   **Contents**: Minimal JSON-in/JSON-out ABI to drive the Rust backtest engine from the Next.js UI.
 
 #### `tesser-cli`
 **Responsibility**: The user-facing application.
