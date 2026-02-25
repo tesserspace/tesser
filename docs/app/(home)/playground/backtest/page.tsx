@@ -9,9 +9,10 @@ import {
   createSeriesMarkers,
 } from 'lightweight-charts';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { runBacktest, type StrategyFn } from '@/lib/playground/backtest';
+import { type StrategyFn } from '@/lib/playground/strategy';
 import { clamp, rsi, sma } from '@/lib/playground/indicators';
 import type { BacktestOptions, BacktestResult, Candle } from '@/lib/playground/types';
+import { runBacktestWasm } from '@/lib/playground/wasm-engine';
 
 type DatasetManifest = {
   source: { name: string; fetched_at_iso: string; note?: string };
@@ -30,6 +31,8 @@ const defaultStrategyCode = `// Return target weight in [-1, 1] (or [0, 1] if sh
 //
 // ctx: { i, bar, close, equity, positionWeight }
 // helpers: { sma, rsi, clamp }
+//
+// Engine semantics: strategy runs on bar close i, trades execute at next bar open (no lookahead).
 (ctx, { sma }) => {
   const fast = sma(ctx.close, 20);
   const slow = sma(ctx.close, 50);
@@ -73,6 +76,7 @@ export default function BrowserBacktestPlaygroundPage() {
   });
 
   const [result, setResult] = useState<BacktestResult | null>(null);
+  const [isRunning, setIsRunning] = useState(false);
 
   const candleChartEl = useRef<HTMLDivElement | null>(null);
   const equityChartEl = useRef<HTMLDivElement | null>(null);
@@ -210,14 +214,15 @@ export default function BrowserBacktestPlaygroundPage() {
     };
   }, [result]);
 
-  function onRun() {
+  async function onRun() {
     setRuntimeError(null);
     const compiled = compileStrategy(strategyCode);
     setCompileError(compiled.error);
     if (!compiled.fn) return;
 
     try {
-      const next = runBacktest({
+      setIsRunning(true);
+      const next = await runBacktestWasm({
         candles,
         strategy: (ctx, h) => {
           try {
@@ -234,6 +239,8 @@ export default function BrowserBacktestPlaygroundPage() {
       setResult(next);
     } catch (err) {
       setRuntimeError(err instanceof Error ? err.message : 'Backtest failed.');
+    } finally {
+      setIsRunning(false);
     }
   }
 
@@ -244,8 +251,9 @@ export default function BrowserBacktestPlaygroundPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight">Browser Backtest Playground</h1>
         <p className="mt-2 text-sm text-zinc-400">
-          Signal-style strategies: return a target weight, the engine handles rebalancing.
+          Signal-style strategies: return a target weight, the engine handles rebalancing (next-open fills).
         </p>
+        <p className="mt-1 text-xs text-zinc-500">Powered by Tesser (Rust/WASM backtest engine).</p>
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[420px_1fr]">
@@ -351,9 +359,9 @@ export default function BrowserBacktestPlaygroundPage() {
                 <button
                   className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-40"
                   onClick={onRun}
-                  disabled={candles.length === 0}
+                  disabled={candles.length === 0 || isRunning}
                 >
-                  Run backtest
+                  {isRunning ? 'Running…' : 'Run backtest'}
                 </button>
               </div>
             </div>
@@ -371,7 +379,14 @@ export default function BrowserBacktestPlaygroundPage() {
             <h2 className="text-sm font-medium text-zinc-200">Results</h2>
             {result ? (
               <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
-                <Stat label="Period" value={`${result.metrics.startIso} → ${result.metrics.endIso}`} />
+                <Stat
+                  label="Period"
+                  value={`${new Date(result.metrics.startTime * 1000).toISOString().slice(0, 10)} → ${new Date(
+                    result.metrics.endTime * 1000,
+                  )
+                    .toISOString()
+                    .slice(0, 10)}`}
+                />
                 <Stat label="Bars" value={`${result.metrics.bars}`} />
                 <Stat label="Trades" value={`${result.metrics.trades}`} />
                 <Stat label="Total return" value={`${formatNumber(result.metrics.totalReturnPct, 2)}%`} />
@@ -396,7 +411,7 @@ export default function BrowserBacktestPlaygroundPage() {
           <section className="rounded-xl border border-zinc-800 bg-zinc-950/30 p-3">
             <div className="flex items-center justify-between px-1 pb-2">
               <div className="text-sm font-medium text-zinc-200">Candles</div>
-              <div className="text-xs text-zinc-500">Markers show rebalances at close</div>
+              <div className="text-xs text-zinc-500">Markers show rebalances at next open</div>
             </div>
             <div ref={candleChartEl} className="w-full" />
           </section>
