@@ -4595,6 +4595,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tesser-backtest-core"
+version = "0.9.3"
+dependencies = [
+ "anyhow",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "tesser-backtest-wasm"
+version = "0.9.3"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tesser-backtest-core",
+]
+
+[[package]]
 name = "tesser-backtester"
 version = "0.9.3"
 dependencies = [

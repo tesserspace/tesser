@@ -1,0 +1,15 @@
+[package]
+name = "tesser-backtest-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Deterministic candle backtest core used by the browser playground and native tooling"
+readme = "README.md"
+
+[dependencies]
+anyhow.workspace = true
+rust_decimal.workspace = true
+serde.workspace = true
+serde_json.workspace = true
