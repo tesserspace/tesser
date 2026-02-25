@@ -34,6 +34,11 @@ pub extern "C" fn alloc(len: usize) -> *mut u8 {
 }
 
 /// Deallocate a buffer previously allocated via `alloc`.
+///
+/// # Safety
+/// - `ptr` must have been allocated by `alloc` in this module.
+/// - `len` must be the exact length used for the allocation.
+/// - The memory region `[ptr, ptr + len)` must not be used after this call.
 #[no_mangle]
 pub unsafe extern "C" fn dealloc(ptr: *mut u8, len: usize) {
     if ptr.is_null() || len == 0 {
@@ -47,6 +52,11 @@ pub unsafe extern "C" fn dealloc(ptr: *mut u8, len: usize) {
 /// `out_ptr` must point to 8 bytes in linear memory. We write:
 /// - `out_ptr[0]`: result pointer
 /// - `out_ptr[1]`: result length
+///
+/// # Safety
+/// - `input_ptr` must point to a valid UTF-8 JSON buffer of length `input_len`.
+/// - `out_ptr` must point to at least 8 writable bytes (two `u32` values) in linear memory.
+/// - The host must eventually call `dealloc(result_ptr, result_len)` on the returned output buffer.
 #[no_mangle]
 pub unsafe extern "C" fn backtest(input_ptr: *const u8, input_len: usize, out_ptr: *mut u32) {
     // Defensive defaults.
@@ -83,7 +93,7 @@ fn run(input_bytes: &[u8]) -> Result<Vec<u8>, String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let _ = input;
-        return Err("tesser-backtest-wasm must be built for wasm32-unknown-unknown".into());
+        Err("tesser-backtest-wasm must be built for wasm32-unknown-unknown".into())
     }
 
     #[cfg(target_arch = "wasm32")]
