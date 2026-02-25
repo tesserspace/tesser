@@ -14,6 +14,14 @@ const homeLinks: LinkItemType[] = [
   },
   {
     type: 'main',
+    text: 'Playground',
+    description: 'Run a JS backtest in the browser',
+    url: '/playground/backtest',
+    on: 'nav',
+    active: 'nested-url',
+  },
+  {
+    type: 'main',
     text: 'Blog',
     description: 'Hear from the Tesser team and community',
     url: '/blog',

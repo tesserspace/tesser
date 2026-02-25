@@ -5,9 +5,13 @@ import { generate as DefaultImage } from 'fumadocs-ui/og';
 
 export const revalidate = false;
 
+type OgRouteContext = {
+  params: Promise<{ slug: string[] }>;
+};
+
 export async function GET(
   _req: Request,
-  { params }: RouteContext<'/og/docs/[...slug]'>,
+  { params }: OgRouteContext,
 ) {
   const { slug } = await params;
   const page = source.getPage(slug.slice(0, -1));

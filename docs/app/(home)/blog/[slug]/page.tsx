@@ -5,6 +5,10 @@ import { PathUtils } from 'fumadocs-core/source';
 import { blog } from '@/lib/source';
 import { getMDXComponents } from '@/mdx-components';
 
+type BlogPostPageProps = {
+  params: Promise<{ slug: string }>;
+};
+
 function resolveDate(path: string, value?: string | Date) {
   if (value) return new Date(value);
 
@@ -15,7 +19,7 @@ function resolveDate(path: string, value?: string | Date) {
 }
 
 export default async function BlogPostPage(
-  props: PageProps<'/blog/[slug]'>,
+  props: BlogPostPageProps,
 ) {
   const params = await props.params;
   const page = blog.getPage([params.slug]);
@@ -70,7 +74,7 @@ export default async function BlogPostPage(
 }
 
 export async function generateMetadata(
-  props: PageProps<'/blog/[slug]'>,
+  props: BlogPostPageProps,
 ): Promise<Metadata> {
   const params = await props.params;
   const page = blog.getPage([params.slug]);

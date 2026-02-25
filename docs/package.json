@@ -6,7 +6,7 @@
     "build": "next build",
     "dev": "next dev",
     "start": "next start",
-    "types:check": "fumadocs-mdx && tsc --noEmit",
+    "types:check": "node -e \"require('fs').rmSync('.next/types',{ recursive:true, force:true })\" && fumadocs-mdx && tsc --noEmit",
     "postinstall": "fumadocs-mdx"
   },
   "dependencies": {
@@ -17,6 +17,7 @@
     "fumadocs-core": "16.0.14",
     "fumadocs-mdx": "14.0.2",
     "fumadocs-ui": "16.0.14",
+    "lightweight-charts": "^5.1.0",
     "lucide-react": "^0.552.0",
     "next": "16.0.7",
     "react": "^19.2.0",
