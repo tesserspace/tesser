@@ -23,6 +23,8 @@ members = [
     "tesser-cortex",
     "tesser-journal", "tesser-wasm",
     "tesser-ledger",
+    "tesser-backtest-core",
+    "tesser-backtest-wasm",
 ]
 
 [workspace.package]

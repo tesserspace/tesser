@@ -33,8 +33,8 @@ export type BacktestOptions = {
 };
 
 export type BacktestMetrics = {
-  startIso: string;
-  endIso: string;
+  startTime: number; // unix seconds
+  endTime: number; // unix seconds
   bars: number;
   trades: number;
   totalReturnPct: number;
@@ -50,4 +50,3 @@ export type BacktestResult = {
   trades: Trade[];
   metrics: BacktestMetrics;
 };
-

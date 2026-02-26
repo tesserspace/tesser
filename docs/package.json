@@ -3,8 +3,8 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "build": "next build",
-    "dev": "next dev",
+    "build": "node scripts/build-playground-wasm.mjs && next build",
+    "dev": "node scripts/build-playground-wasm.mjs && next dev",
     "start": "next start",
     "types:check": "node -e \"require('fs').rmSync('.next/types',{ recursive:true, force:true })\" && fumadocs-mdx && tsc --noEmit",
     "postinstall": "fumadocs-mdx"
