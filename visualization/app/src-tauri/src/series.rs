@@ -17,6 +17,10 @@ use crate::limits;
 use crate::stream_ref::StreamRef;
 use crate::transport::{TransportErrorPublic, TransportState};
 
+const LOD_PROFILE_SERIES_LAST_V1: &str = "series_last_v1";
+const LOD_PROFILE_SERIES_MINMAX_V1: &str = "series_minmax_v1";
+const SCHEMA_ID_SERIES_LAST_F64_V1: &str = "series.ts_ms_value.f64.v1";
+const SCHEMA_ID_SERIES_MINMAX_LAST_F64_V1: &str = "series.ts_ms_minmax_last.f64.v1";
 const MAX_TARGET_POINTS: u32 = 16_384;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -256,8 +260,14 @@ async fn series_query_impl(
 
     let kind = req.kind.as_str();
     let (lod_profile, schema_id, points_per_bucket) = match kind {
-        "synthetic.v1" | "synthetic.last.v1" => ("series_last_v1", "series.ts_ms_value.f64.v1", 1),
-        "synthetic.minmax.v1" => ("series_minmax_v1", "series.ts_ms_minmax_last.f64.v1", 1),
+        "synthetic.v1" | "synthetic.last.v1" => {
+            (LOD_PROFILE_SERIES_LAST_V1, SCHEMA_ID_SERIES_LAST_F64_V1, 1)
+        }
+        "synthetic.minmax.v1" => (
+            LOD_PROFILE_SERIES_MINMAX_V1,
+            SCHEMA_ID_SERIES_MINMAX_LAST_F64_V1,
+            1,
+        ),
         _ => {
             return Err(CommandError::new(
                 "SERIES.KIND_UNSUPPORTED",
@@ -265,6 +275,12 @@ async fn series_query_impl(
                 req.envelope.correlation_id,
             ));
         }
+    };
+
+    // `synthetic.v1` is a compatibility alias of `synthetic.last.v1`; keep outputs identical.
+    let kind_for_seed = match kind {
+        "synthetic.v1" | "synthetic.last.v1" => "synthetic.last.v1",
+        other => other,
     };
 
     let (bucket_ms, lod_level) = choose_bucket_ms(&req.range, req.target_points, points_per_bucket)
@@ -301,10 +317,10 @@ async fn series_query_impl(
     }
     let points_returned = ts.len().min(u32::MAX as usize) as u32;
 
-    let bytes = if lod_profile == "series_last_v1" {
+    let bytes = if lod_profile == LOD_PROFILE_SERIES_LAST_V1 {
         let mut values = Vec::with_capacity(ts.len());
         for t in &ts {
-            let seed = format!("series|{}|{}|{}", kind, bucket_ms, t);
+            let seed = format!("series|{}|{}|{}", kind_for_seed, bucket_ms, t);
             let r = pseudo_u64(seed.as_bytes());
             values.push((r % 1_000_000) as f64 / 1000.0);
         }
@@ -314,7 +330,7 @@ async fn series_query_impl(
         let mut max_value = Vec::with_capacity(ts.len());
         let mut last_value = Vec::with_capacity(ts.len());
         for t in &ts {
-            let seed = format!("series|{}|{}|{}", kind, bucket_ms, t);
+            let seed = format!("series|{}|{}|{}", kind_for_seed, bucket_ms, t);
             let r1 = pseudo_u64(seed.as_bytes());
             let r2 = pseudo_u64(format!("{seed}|x").as_bytes());
             let base = (r1 % 1_000_000) as f64 / 1000.0;
@@ -412,6 +428,75 @@ mod tests {
             .await
             .expect("ws connect");
         ws
+    }
+
+    async fn pull_arrow_bytes(stream_ref: &StreamRef, correlation_id: &str) -> Vec<u8> {
+        let (ws_url, auth_token, stream_id) = match &stream_ref.transport {
+            StreamTransport::LoopbackWs {
+                url, auth_token, ..
+            } => (
+                url.clone(),
+                auth_token.clone(),
+                stream_ref.stream_id.clone(),
+            ),
+        };
+
+        let mut ws = ws_connect(&ws_url, &auth_token).await;
+
+        let mut combined = Vec::new();
+        let mut next_seq = 1u64;
+        loop {
+            ws.send(Message::Text(
+                serde_json::to_string(&serde_json::json!({
+                    "type": "streams.pull",
+                    "stream_id": stream_id,
+                    "next_seq": next_seq,
+                    "max_bytes": limits::MAX_BYTES_PER_PULL,
+                    "correlation_id": correlation_id,
+                    "request_id": Uuid::new_v4().to_string()
+                }))
+                .expect("json"),
+            ))
+            .await
+            .expect("send pull");
+
+            let msg = timeout(std::time::Duration::from_secs(2), ws.next())
+                .await
+                .expect("timeout")
+                .expect("stream ended")
+                .expect("ws msg");
+
+            match msg {
+                Message::Binary(frame) => {
+                    let (kind, seq, _sid, payload) = parse_frame(&frame);
+                    assert_eq!(seq, next_seq);
+                    if kind == 1 {
+                        combined.extend_from_slice(&payload);
+                        next_seq += 1;
+                        continue;
+                    }
+                    if kind == 2 {
+                        assert!(payload.is_empty());
+                        break;
+                    }
+                    panic!("unexpected frame kind: {kind}");
+                }
+                other => panic!("unexpected ws msg: {other:?}"),
+            }
+        }
+
+        let msg = timeout(std::time::Duration::from_secs(2), ws.next())
+            .await
+            .expect("timeout")
+            .expect("stream ended")
+            .expect("ws msg");
+        let Message::Text(text) = msg else {
+            panic!("expected streams.closed");
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(v["type"], "streams.closed");
+
+        combined
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -525,73 +610,9 @@ mod tests {
         assert_eq!(resp.stream_ref.format, "arrow_ipc_stream");
         assert_eq!(
             resp.stream_ref.schema_id.as_deref(),
-            Some("series.ts_ms_minmax_last.f64.v1")
+            Some(SCHEMA_ID_SERIES_MINMAX_LAST_F64_V1)
         );
-
-        let (ws_url, auth_token, stream_id) = match &resp.stream_ref.transport {
-            StreamTransport::LoopbackWs {
-                url, auth_token, ..
-            } => (
-                url.clone(),
-                auth_token.clone(),
-                resp.stream_ref.stream_id.clone(),
-            ),
-        };
-
-        let mut ws = ws_connect(&ws_url, &auth_token).await;
-
-        let mut combined = Vec::new();
-        let mut next_seq = 1u64;
-        loop {
-            ws.send(Message::Text(
-                serde_json::to_string(&serde_json::json!({
-                    "type": "streams.pull",
-                    "stream_id": stream_id,
-                    "next_seq": next_seq,
-                    "max_bytes": 256 * 1024,
-                    "correlation_id": "c4",
-                    "request_id": Uuid::new_v4().to_string()
-                }))
-                .expect("json"),
-            ))
-            .await
-            .expect("send pull");
-
-            let msg = timeout(std::time::Duration::from_secs(2), ws.next())
-                .await
-                .expect("timeout")
-                .expect("stream ended")
-                .expect("ws msg");
-
-            match msg {
-                Message::Binary(frame) => {
-                    let (kind, seq, _sid, payload) = parse_frame(&frame);
-                    assert_eq!(seq, next_seq);
-                    if kind == 1 {
-                        combined.extend_from_slice(&payload);
-                        next_seq += 1;
-                        continue;
-                    }
-                    if kind == 2 {
-                        assert!(payload.is_empty());
-                        break;
-                    }
-                    panic!("unexpected frame kind: {kind}");
-                }
-                other => panic!("unexpected ws msg: {other:?}"),
-            }
-        }
-
-        let msg = timeout(std::time::Duration::from_secs(2), ws.next())
-            .await
-            .expect("timeout")
-            .expect("stream ended")
-            .expect("ws msg");
-        let Message::Text(text) = msg else {
-            panic!("expected streams.closed");
-        };
-        let v: serde_json::Value = serde_json::from_str(&text).expect("json");
-        assert_eq!(v["type"], "streams.closed");
+        let combined = pull_arrow_bytes(&resp.stream_ref, "c4").await;
 
         let mut reader = StreamReader::try_new(Cursor::new(combined), None).expect("arrow reader");
         let mut rows = 0usize;
@@ -634,83 +655,98 @@ mod tests {
         assert_eq!(resp.stream_ref.format, "arrow_ipc_stream");
         assert_eq!(
             resp.stream_ref.schema_id.as_deref(),
-            Some("series.ts_ms_value.f64.v1")
+            Some(SCHEMA_ID_SERIES_LAST_F64_V1)
         );
-
-        let (ws_url, auth_token, stream_id) = match &resp.stream_ref.transport {
-            StreamTransport::LoopbackWs {
-                url, auth_token, ..
-            } => (
-                url.clone(),
-                auth_token.clone(),
-                resp.stream_ref.stream_id.clone(),
-            ),
-        };
-
-        let mut ws = ws_connect(&ws_url, &auth_token).await;
-
-        let mut combined = Vec::new();
-        let mut next_seq = 1u64;
-        loop {
-            ws.send(Message::Text(
-                serde_json::to_string(&serde_json::json!({
-                    "type": "streams.pull",
-                    "stream_id": stream_id,
-                    "next_seq": next_seq,
-                    "max_bytes": 256 * 1024,
-                    "correlation_id": "c3",
-                    "request_id": Uuid::new_v4().to_string()
-                }))
-                .expect("json"),
-            ))
-            .await
-            .expect("send pull");
-
-            let msg = timeout(std::time::Duration::from_secs(2), ws.next())
-                .await
-                .expect("timeout")
-                .expect("stream ended")
-                .expect("ws msg");
-
-            match msg {
-                Message::Binary(frame) => {
-                    let (kind, seq, _sid, payload) = parse_frame(&frame);
-                    assert_eq!(seq, next_seq);
-                    if kind == 1 {
-                        combined.extend_from_slice(&payload);
-                        next_seq += 1;
-                        continue;
-                    }
-                    if kind == 2 {
-                        assert!(payload.is_empty());
-                        break;
-                    }
-                    panic!("unexpected frame kind: {kind}");
-                }
-                other => panic!("unexpected ws msg: {other:?}"),
-            }
-        }
-
-        let msg = timeout(std::time::Duration::from_secs(2), ws.next())
-            .await
-            .expect("timeout")
-            .expect("stream ended")
-            .expect("ws msg");
-        let Message::Text(text) = msg else {
-            panic!("expected streams.closed");
-        };
-        let v: serde_json::Value = serde_json::from_str(&text).expect("json");
-        assert_eq!(v["type"], "streams.closed");
+        let combined = pull_arrow_bytes(&resp.stream_ref, "c3").await;
 
         let mut reader = StreamReader::try_new(Cursor::new(combined), None).expect("arrow reader");
         let mut rows = 0usize;
+        let bucket_ms_i64 = i64::try_from(resp.meta.bucket_ms).expect("bucket_ms fits i64");
         while let Some(batch) = reader.next().transpose().expect("read batch") {
             rows += batch.num_rows();
             let schema = batch.schema();
             let fields = schema.fields();
             assert_eq!(fields[0].name(), "ts_ms");
             assert_eq!(fields[1].name(), "value");
+
+            let ts_col = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<arrow_array::Int64Array>()
+                .expect("ts_ms int64");
+            for i in 0..ts_col.len() {
+                assert_eq!(ts_col.value(i) % bucket_ms_i64, 0);
+            }
         }
         assert_eq!(rows as u32, resp.meta.points_returned);
+        assert!(resp.meta.points_returned <= 512);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn series_query_kind_aliases_are_identical() {
+        let state = TransportState::default();
+        let make_req = |correlation_id: &str, kind: &str| SeriesQueryRequest {
+            envelope: RequestEnvelope {
+                protocol_version: crate::protocol::PROTOCOL_VERSION.to_string(),
+                correlation_id: correlation_id.to_string(),
+                request_id: Uuid::new_v4().to_string(),
+            },
+            kind: kind.to_string(),
+            range: RangeMs {
+                start_ms: 1234,
+                end_ms: 61_234,
+            },
+            target_points: 400,
+        };
+
+        let resp1 = series_query_impl(&state, make_req("c_alias_1", "synthetic.v1"))
+            .await
+            .expect("synthetic.v1");
+        let resp2 = series_query_impl(&state, make_req("c_alias_2", "synthetic.last.v1"))
+            .await
+            .expect("synthetic.last.v1");
+
+        assert_eq!(resp1.meta.lod_profile, resp2.meta.lod_profile);
+        assert_eq!(resp1.meta.lod_level, resp2.meta.lod_level);
+        assert_eq!(resp1.meta.bucket_ms, resp2.meta.bucket_ms);
+        assert_eq!(resp1.meta.points_returned, resp2.meta.points_returned);
+
+        let bytes1 = pull_arrow_bytes(&resp1.stream_ref, "c_alias_1").await;
+        let bytes2 = pull_arrow_bytes(&resp2.stream_ref, "c_alias_2").await;
+        assert_eq!(bytes1, bytes2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn series_query_is_deterministic_for_minmax() {
+        let state = TransportState::default();
+        let make_req = |correlation_id: &str| SeriesQueryRequest {
+            envelope: RequestEnvelope {
+                protocol_version: crate::protocol::PROTOCOL_VERSION.to_string(),
+                correlation_id: correlation_id.to_string(),
+                request_id: Uuid::new_v4().to_string(),
+            },
+            kind: "synthetic.minmax.v1".to_string(),
+            range: RangeMs {
+                start_ms: 0,
+                end_ms: 10_000,
+            },
+            target_points: 256,
+        };
+
+        let resp1 = series_query_impl(&state, make_req("c_det_1"))
+            .await
+            .expect("minmax query 1");
+        let resp2 = series_query_impl(&state, make_req("c_det_2"))
+            .await
+            .expect("minmax query 2");
+
+        assert_eq!(resp1.meta.lod_profile, resp2.meta.lod_profile);
+        assert_eq!(resp1.meta.lod_level, resp2.meta.lod_level);
+        assert_eq!(resp1.meta.bucket_ms, resp2.meta.bucket_ms);
+        assert_eq!(resp1.meta.points_returned, resp2.meta.points_returned);
+
+        let bytes1 = pull_arrow_bytes(&resp1.stream_ref, "c_det_1").await;
+        let bytes2 = pull_arrow_bytes(&resp2.stream_ref, "c_det_2").await;
+        assert_eq!(bytes1, bytes2);
     }
 }
