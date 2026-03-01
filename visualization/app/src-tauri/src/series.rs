@@ -2,7 +2,7 @@
 
 use std::io::Cursor;
 
-use arrow_array::{Float64Array, Int64Array, RecordBatch};
+use arrow_array::{Array, Float64Array, Int64Array, RecordBatch};
 use arrow_ipc::reader::StreamReader;
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
@@ -53,24 +53,33 @@ pub struct SeriesQueryResponse {
 }
 
 fn build_arrow_stream_bytes_last(ts: &[i64], value: &[f64]) -> Result<Vec<u8>, String> {
+    const MAX_ROWS_PER_BATCH: usize = 4096;
+
     let schema = Schema::new(vec![
         Field::new("ts_ms", DataType::Int64, false),
         Field::new("value", DataType::Float64, false),
     ]);
 
-    let batch = RecordBatch::try_new(
-        schema.clone().into(),
-        vec![
-            std::sync::Arc::new(Int64Array::from(ts.to_vec())),
-            std::sync::Arc::new(Float64Array::from(value.to_vec())),
-        ],
-    )
-    .map_err(|e| e.to_string())?;
+    let schema = std::sync::Arc::new(schema);
+    let ts_arr: std::sync::Arc<dyn arrow_array::Array> =
+        std::sync::Arc::new(Int64Array::from(ts.to_vec()));
+    let value_arr: std::sync::Arc<dyn arrow_array::Array> =
+        std::sync::Arc::new(Float64Array::from(value.to_vec()));
 
     let mut out = Vec::new();
     {
         let mut writer = StreamWriter::try_new(&mut out, &schema).map_err(|e| e.to_string())?;
-        writer.write(&batch).map_err(|e| e.to_string())?;
+        let mut offset = 0usize;
+        while offset < ts.len() {
+            let len = (ts.len() - offset).min(MAX_ROWS_PER_BATCH);
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![ts_arr.slice(offset, len), value_arr.slice(offset, len)],
+            )
+            .map_err(|e| e.to_string())?;
+            writer.write(&batch).map_err(|e| e.to_string())?;
+            offset += len;
+        }
         writer.finish().map_err(|e| e.to_string())?;
     }
 
@@ -90,6 +99,8 @@ fn build_arrow_stream_bytes_minmax(
     max_value: &[f64],
     last_value: &[f64],
 ) -> Result<Vec<u8>, String> {
+    const MAX_ROWS_PER_BATCH: usize = 4096;
+
     let schema = Schema::new(vec![
         Field::new("ts_ms", DataType::Int64, false),
         Field::new("min_value", DataType::Float64, false),
@@ -97,21 +108,35 @@ fn build_arrow_stream_bytes_minmax(
         Field::new("last_value", DataType::Float64, false),
     ]);
 
-    let batch = RecordBatch::try_new(
-        schema.clone().into(),
-        vec![
-            std::sync::Arc::new(Int64Array::from(ts.to_vec())),
-            std::sync::Arc::new(Float64Array::from(min_value.to_vec())),
-            std::sync::Arc::new(Float64Array::from(max_value.to_vec())),
-            std::sync::Arc::new(Float64Array::from(last_value.to_vec())),
-        ],
-    )
-    .map_err(|e| e.to_string())?;
+    let schema = std::sync::Arc::new(schema);
+    let ts_arr: std::sync::Arc<dyn arrow_array::Array> =
+        std::sync::Arc::new(Int64Array::from(ts.to_vec()));
+    let min_arr: std::sync::Arc<dyn arrow_array::Array> =
+        std::sync::Arc::new(Float64Array::from(min_value.to_vec()));
+    let max_arr: std::sync::Arc<dyn arrow_array::Array> =
+        std::sync::Arc::new(Float64Array::from(max_value.to_vec()));
+    let last_arr: std::sync::Arc<dyn arrow_array::Array> =
+        std::sync::Arc::new(Float64Array::from(last_value.to_vec()));
 
     let mut out = Vec::new();
     {
         let mut writer = StreamWriter::try_new(&mut out, &schema).map_err(|e| e.to_string())?;
-        writer.write(&batch).map_err(|e| e.to_string())?;
+        let mut offset = 0usize;
+        while offset < ts.len() {
+            let len = (ts.len() - offset).min(MAX_ROWS_PER_BATCH);
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    ts_arr.slice(offset, len),
+                    min_arr.slice(offset, len),
+                    max_arr.slice(offset, len),
+                    last_arr.slice(offset, len),
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            writer.write(&batch).map_err(|e| e.to_string())?;
+            offset += len;
+        }
         writer.finish().map_err(|e| e.to_string())?;
     }
 
@@ -365,6 +390,11 @@ async fn series_query_impl(
             TransportErrorPublic::Unavailable => CommandError::new(
                 "TRANSPORT.UNAVAILABLE",
                 "loopback_ws transport unavailable",
+                req.envelope.correlation_id.clone(),
+            ),
+            TransportErrorPublic::ResourceLimit { message } => CommandError::new(
+                "TRANSPORT.RESOURCE_LIMIT",
+                message,
                 req.envelope.correlation_id.clone(),
             ),
         })?;

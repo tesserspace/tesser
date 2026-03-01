@@ -15,6 +15,7 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "apache-arrow": "^14.0.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.575.0",

@@ -26,6 +26,13 @@ export type StreamsPullRequest = {
   request_id: string;
 };
 
+export type StreamsCancelRequest = {
+  type: "streams.cancel";
+  stream_id: string;
+  correlation_id: string;
+  request_id: string;
+};
+
 export type StreamsClosedMessage = {
   type: "streams.closed";
   stream_id: string;
@@ -246,8 +253,27 @@ export async function pullLoopbackWsStream(
   let closed: StreamsClosedMessage | null = null;
   let totalBytes = 0;
 
+  let cancelSent = false;
+  const sendCancel = () => {
+    if (cancelSent) return;
+    cancelSent = true;
+    if (ws.readyState !== 1) return;
+    try {
+      const cancel: StreamsCancelRequest = {
+        type: "streams.cancel",
+        stream_id: streamId,
+        correlation_id: correlationId,
+        request_id: requestId,
+      };
+      ws.send(JSON.stringify(cancel));
+    } catch {
+      // best-effort
+    }
+  };
+
   // The caller controls backpressure by awaiting this loop; we only pull again after a chunk arrives.
   try {
+    signal?.addEventListener("abort", sendCancel, { once: true });
     while (eofSeq === null && closed === null) {
       if (expectedSeq > BigInt(Number.MAX_SAFE_INTEGER)) {
         throw new Error(
@@ -390,6 +416,7 @@ export async function pullLoopbackWsStream(
       }
     }
   } finally {
+    signal?.removeEventListener("abort", sendCancel);
     q.dispose();
   }
 
