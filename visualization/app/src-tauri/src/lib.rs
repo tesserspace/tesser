@@ -1,4 +1,5 @@
 mod arrow_ipc_chunker;
+mod candles;
 mod command_error;
 mod datasets;
 mod envelope;
@@ -35,6 +36,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             protocol::protocol_get_info,
             series::series_query,
+            candles::candles_query,
             datasets::datasets_create_synthetic,
             datasets::datasets_get,
             datasets::datasets_list,

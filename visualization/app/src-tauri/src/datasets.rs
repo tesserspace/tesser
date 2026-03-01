@@ -868,7 +868,7 @@ fn load_preview(layout: &StorageLayout, dataset_id: &str) -> Result<DatasetPrevi
     })
 }
 
-fn load_pointer_strict(
+pub(crate) fn load_pointer_strict(
     layout: &StorageLayout,
     dataset_id: &str,
 ) -> Result<DatasetPointer, CommandError> {
@@ -890,7 +890,7 @@ fn load_pointer_strict(
     })
 }
 
-fn load_manifest_strict(
+pub(crate) fn load_manifest_strict(
     layout: &StorageLayout,
     dataset_id: &str,
     manifest_hash: &str,
