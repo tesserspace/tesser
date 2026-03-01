@@ -27,6 +27,7 @@ enum TransportError {
 #[derive(Debug, Clone)]
 pub enum TransportErrorPublic {
     Unavailable,
+    ResourceLimit { message: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -46,6 +47,10 @@ pub struct DemoStreamRef {
 pub struct TransportState {
     inner: Mutex<TransportInner>,
 }
+
+const MAX_PENDING_STREAMS: usize = 32;
+const MAX_PENDING_BYTES_PER_STREAM: usize = 64 * 1024 * 1024;
+const MAX_PENDING_BYTES_TOTAL: usize = 256 * 1024 * 1024;
 
 struct TransportInner {
     ws_url: Option<String>,
@@ -88,6 +93,15 @@ impl TransportState {
         let auth_token = new_auth_token_hex();
         let expires_at_ms = now_ms() + 60_000;
 
+        let bytes_total: usize = chunks.iter().map(|c| c.len()).sum();
+        if bytes_total > MAX_PENDING_BYTES_PER_STREAM {
+            return Err(TransportErrorPublic::ResourceLimit {
+                message: format!(
+                    "pending stream too large: bytes_total={bytes_total} max={MAX_PENDING_BYTES_PER_STREAM}"
+                ),
+            });
+        }
+
         let stream = DemoStream {
             stream_id,
             expected_next_seq: limits::STREAM_SEQ_START,
@@ -101,13 +115,32 @@ impl TransportState {
                 .registry
                 .lock()
                 .map_err(|_| TransportErrorPublic::Unavailable)?;
+            reg.retain_unexpired(now_ms());
+            if reg.pending_by_token.len() >= MAX_PENDING_STREAMS {
+                return Err(TransportErrorPublic::ResourceLimit {
+                    message: format!(
+                        "too many pending streams: {} (max {MAX_PENDING_STREAMS})",
+                        reg.pending_by_token.len()
+                    ),
+                });
+            }
+            if reg.pending_bytes_total.saturating_add(bytes_total) > MAX_PENDING_BYTES_TOTAL {
+                return Err(TransportErrorPublic::ResourceLimit {
+                    message: format!(
+                        "pending bytes budget exceeded: total={} add={bytes_total} max={MAX_PENDING_BYTES_TOTAL}",
+                        reg.pending_bytes_total
+                    ),
+                });
+            }
             reg.pending_by_token.insert(
                 auth_token.clone(),
                 PendingStream {
                     stream,
                     expires_at_ms,
+                    bytes_total,
                 },
             );
+            reg.pending_bytes_total = reg.pending_bytes_total.saturating_add(bytes_total);
         }
 
         Ok(StreamRef {
@@ -129,14 +162,17 @@ impl TransportState {
         let stream_id = Uuid::new_v4();
         let auth_token = new_auth_token_hex();
 
+        let chunks = vec![
+            b"DEMO:chunk-1\n".to_vec(),
+            b"DEMO:chunk-2\n".to_vec(),
+            b"DEMO:chunk-3\n".to_vec(),
+        ];
+        let bytes_total: usize = chunks.iter().map(|c| c.len()).sum();
+
         let demo = DemoStream {
             stream_id,
             expected_next_seq: limits::STREAM_SEQ_START,
-            chunks: vec![
-                b"DEMO:chunk-1\n".to_vec(),
-                b"DEMO:chunk-2\n".to_vec(),
-                b"DEMO:chunk-3\n".to_vec(),
-            ],
+            chunks,
             terminal_sent: false,
         };
 
@@ -148,13 +184,16 @@ impl TransportState {
                 .registry
                 .lock()
                 .map_err(|_| TransportError::Unauthorized)?;
+            reg.retain_unexpired(now_ms());
             reg.pending_by_token.insert(
                 auth_token.clone(),
                 PendingStream {
                     stream: demo,
                     expires_at_ms,
+                    bytes_total,
                 },
             );
+            reg.pending_bytes_total = reg.pending_bytes_total.saturating_add(bytes_total);
         }
 
         Ok(DemoStreamRef {
@@ -179,11 +218,13 @@ impl TransportState {
 #[derive(Default)]
 struct StreamRegistry {
     pending_by_token: HashMap<String, PendingStream>,
+    pending_bytes_total: usize,
 }
 
 struct PendingStream {
     stream: DemoStream,
     expires_at_ms: u64,
+    bytes_total: usize,
 }
 
 struct DemoStream {
@@ -241,6 +282,31 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::from_secs(0))
         .as_millis() as u64
+}
+
+impl StreamRegistry {
+    fn retain_unexpired(&mut self, now_ms: u64) {
+        let mut removed_bytes = 0usize;
+        self.pending_by_token.retain(|_, pending| {
+            let keep = pending.expires_at_ms > now_ms;
+            if !keep {
+                removed_bytes = removed_bytes.saturating_add(pending.bytes_total);
+            }
+            keep
+        });
+        self.pending_bytes_total = self.pending_bytes_total.saturating_sub(removed_bytes);
+    }
+
+    fn take_pending(&mut self, token: &str) -> Option<PendingStream> {
+        let pending = self.pending_by_token.remove(token)?;
+        self.pending_bytes_total = self.pending_bytes_total.saturating_sub(pending.bytes_total);
+        Some(pending)
+    }
+
+    fn insert_pending(&mut self, token: String, pending: PendingStream) {
+        self.pending_bytes_total = self.pending_bytes_total.saturating_add(pending.bytes_total);
+        self.pending_by_token.insert(token, pending);
+    }
 }
 
 fn new_auth_token_hex() -> String {
@@ -312,7 +378,7 @@ async fn ensure_transport_started(state: &TransportState) -> Result<String, Tran
                 _ = tick.tick() => {
                     let now = now_ms();
                     if let Ok(mut reg) = registry.lock() {
-                        reg.pending_by_token.retain(|_, pending| pending.expires_at_ms > now);
+                        reg.retain_unexpired(now);
                         if reg.pending_by_token.is_empty()
                             && active_connections.load(Ordering::SeqCst) == 0
                         {
@@ -402,12 +468,10 @@ async fn handle_ws_connection(
             let mut registry_guard = registry_cb
                 .lock()
                 .map_err(|_| error_response(StatusCode::UNAUTHORIZED))?;
-            registry_guard
-                .pending_by_token
-                .retain(|_, pending| pending.expires_at_ms > now);
+            registry_guard.retain_unexpired(now);
 
             for token in candidates {
-                let Some(pending) = registry_guard.pending_by_token.remove(&token) else {
+                let Some(pending) = registry_guard.take_pending(&token) else {
                     continue;
                 };
                 if pending.expires_at_ms <= now {
@@ -417,7 +481,7 @@ async fn handle_ws_connection(
                 let prev = active_cb.fetch_add(1, Ordering::SeqCst);
                 if prev >= limits::MAX_ACTIVE_STREAMS {
                     active_cb.fetch_sub(1, Ordering::SeqCst);
-                    registry_guard.pending_by_token.insert(token, pending);
+                    registry_guard.insert_pending(token, pending);
                     return Err(error_response(StatusCode::TOO_MANY_REQUESTS));
                 }
                 reserved_slot_cb.store(true, Ordering::SeqCst);

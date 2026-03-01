@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { pullLoopbackWsStream, type WsLike } from "@/lib/streaming/loopback_ws";
+import { CandlesPanel } from "@/components/candles/CandlesPanel";
 
 type ProtocolInfo = {
   protocol_version: string;
@@ -155,6 +156,7 @@ function App() {
         <Tabs defaultValue="runs" className="flex-1">
           <TabsList>
             <TabsTrigger value="runs">Runs</TabsTrigger>
+            <TabsTrigger value="candles">Candles</TabsTrigger>
             <TabsTrigger value="datasets">Datasets</TabsTrigger>
             <TabsTrigger value="compare">Compare</TabsTrigger>
             <TabsTrigger value="downloads">Downloads</TabsTrigger>
@@ -195,6 +197,10 @@ function App() {
                 Coming soon: dataset manifests, health checks, and imports.
               </CardContent>
             </Card>
+          </TabsContent>
+
+          <TabsContent value="candles" className="mt-4">
+            <CandlesPanel />
           </TabsContent>
 
           <TabsContent value="compare" className="mt-4">

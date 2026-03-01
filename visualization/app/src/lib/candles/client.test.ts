@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { pullLoopbackWsStream, type WsCloseEvent, type WsLike, type WsMessageEvent } from "./loopback_ws";
+import { tableFromArrays, tableToIPC } from "apache-arrow";
+
+import { candlesQueryAndDecode } from "./client";
+import type { WsCloseEvent, WsLike, WsMessageEvent } from "@/lib/streaming/loopback_ws";
 
 function uuidToBytes(uuid: string): Uint8Array {
   const hex = uuid.replace(/-/g, "");
@@ -12,7 +15,7 @@ function uuidToBytes(uuid: string): Uint8Array {
   return out;
 }
 
-function makeFrame(args: {
+function makeTsr1Frame(args: {
   kind: 1 | 2;
   seq: bigint;
   streamId: string;
@@ -34,6 +37,7 @@ function makeFrame(args: {
 class FakeWs implements WsLike {
   readyState = 0;
   sent: string[] = [];
+
   private listeners = {
     open: new Set<() => void>(),
     message: new Set<(ev: WsMessageEvent) => void>(),
@@ -110,37 +114,87 @@ class FakeWs implements WsLike {
   }
 }
 
-describe("pullLoopbackWsStream", () => {
-  it("pulls chunks then eof then closed without races", async () => {
-    const ws = new FakeWs();
+describe("candlesQueryAndDecode", () => {
+  it("pulls Arrow IPC bytes and decodes ohlcv columns", async () => {
     const streamId = "00112233-4455-6677-8899-aabbccddeeff";
 
-    const p = pullLoopbackWsStream({
-      ws,
-      streamId,
-      correlationId: "c1",
-      maxBytes: 256 * 1024,
-      requestId: "r1",
+    const table = tableFromArrays({
+      ts_ms: new BigInt64Array([0n, 1000n]),
+      open: new Float64Array([1, 2]),
+      high: new Float64Array([2, 3]),
+      low: new Float64Array([0.5, 1.5]),
+      close: new Float64Array([1.2, 1.8]),
+      volume: new Float64Array([10, 20]),
+    });
+    const arrowBytes = tableToIPC(table);
+
+    const ws = new FakeWs();
+    const createWs = () => ws;
+
+    const invoke = async (cmd: string): Promise<any> => {
+      expect(cmd).toBe("candles_query");
+      return {
+        meta: {
+          correlation_id: "c1",
+          manifest_hash: "m1",
+          lod_profile: "candles_ohlcv_v1",
+          lod_level: 0,
+          bucket_ms: 1000,
+          points_returned: 2,
+          data_source: "raw_fallback",
+          cache: "miss",
+        },
+        stream_ref: {
+          stream_id: streamId,
+          format: "arrow_ipc_stream",
+          schema_id: "candles.ohlcv.f64.v1",
+          transport: {
+            kind: "loopback_ws",
+            url: "ws://127.0.0.1:1",
+            auth_token: "token",
+            token_in: "sec-websocket-protocol",
+            expires_at_ms: 9999999999999,
+          },
+        },
+      };
+    };
+
+    const p = candlesQueryAndDecode({
+      invoke,
+      createWs,
+      req: {
+        envelope: {
+          protocol_version: "tesser.viz.ipc.v1",
+          correlation_id: "c1",
+          request_id: "r1",
+        },
+        dataset_id: "ds1",
+        range: { start_ms: 0, end_ms: 2000 },
+        target_points: 100,
+      },
     });
 
     ws.open();
 
-    // First pull request.
+    // First pull -> chunk
     await new Promise((r) => setTimeout(r, 0));
-    expect(ws.sent.length).toBe(1);
+    const pull1 = JSON.parse(ws.sent[0]) as { type: string; next_seq: number };
+    expect(pull1.type).toBe("streams.pull");
+    expect(pull1.next_seq).toBe(1);
     ws.emitMessage(
-      makeFrame({
+      makeTsr1Frame({
         kind: 1,
         seq: 1n,
         streamId,
-        payload: new TextEncoder().encode("abc"),
+        payload: new Uint8Array(arrowBytes),
       }),
     );
 
-    // Second pull request.
+    // Second pull -> eof + closed
     await new Promise((r) => setTimeout(r, 0));
-    expect(ws.sent.length).toBe(2);
-    ws.emitMessage(makeFrame({ kind: 2, seq: 2n, streamId }));
+    const pull2 = JSON.parse(ws.sent[1]) as { type: string; next_seq: number };
+    expect(pull2.next_seq).toBe(2);
+    ws.emitMessage(makeTsr1Frame({ kind: 2, seq: 2n, streamId }));
     ws.emitMessage(
       JSON.stringify({
         type: "streams.closed",
@@ -151,32 +205,14 @@ describe("pullLoopbackWsStream", () => {
     );
 
     const out = await p;
-    expect(new TextDecoder().decode(out.bytes)).toBe("abc");
-    expect(out.eofSeq).toBe(2n);
-  });
-
-  it("sends streams.cancel on abort", async () => {
-    const ws = new FakeWs();
-    const streamId = "00112233-4455-6677-8899-aabbccddeeff";
-    const ac = new AbortController();
-
-    const p = pullLoopbackWsStream({
-      ws,
-      streamId,
-      correlationId: "c_abort",
-      maxBytes: 256 * 1024,
-      requestId: "r_abort",
-      signal: ac.signal,
-      collectBytes: false,
-    });
-    void p.catch(() => {});
-
-    ws.open();
-    await new Promise((r) => setTimeout(r, 0));
-    expect(ws.sent.length).toBe(1);
-    ac.abort();
-    await new Promise((r) => setTimeout(r, 0));
-    expect(ws.sent.some((s) => JSON.parse(s).type === "streams.cancel")).toBe(true);
-    await expect(p).rejects.toMatchObject({ name: "AbortError" });
+    expect(out.meta.points_returned).toBe(2);
+    expect(out.candles.ts_ms[0]).toBe(0);
+    expect(out.candles.ts_ms[1]).toBe(1000);
+    expect(out.candles.open[1]).toBe(2);
+    expect(out.candles.high[0]).toBe(2);
+    expect(out.candles.low[0]).toBe(0.5);
+    expect(out.candles.close[0]).toBe(1.2);
+    expect(out.candles.volume[1]).toBe(20);
   });
 });
+

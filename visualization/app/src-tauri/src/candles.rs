@@ -3,7 +3,7 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use arrow_array::{Float64Array, Int64Array, RecordBatch};
+use arrow_array::{Array, Float64Array, Int64Array, RecordBatch};
 use arrow_ipc::reader::StreamReader;
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
@@ -257,6 +257,8 @@ fn build_arrow_stream_bytes_ohlcv(
     close: &[f64],
     volume: &[f64],
 ) -> Result<Vec<u8>, String> {
+    const MAX_ROWS_PER_BATCH: usize = 2048;
+
     let schema = Schema::new(vec![
         Field::new("ts_ms", DataType::Int64, false),
         Field::new("open", DataType::Float64, false),
@@ -266,23 +268,36 @@ fn build_arrow_stream_bytes_ohlcv(
         Field::new("volume", DataType::Float64, false),
     ]);
 
-    let batch = RecordBatch::try_new(
-        Arc::new(schema.clone()),
-        vec![
-            Arc::new(Int64Array::from(ts.to_vec())),
-            Arc::new(Float64Array::from(open.to_vec())),
-            Arc::new(Float64Array::from(high.to_vec())),
-            Arc::new(Float64Array::from(low.to_vec())),
-            Arc::new(Float64Array::from(close.to_vec())),
-            Arc::new(Float64Array::from(volume.to_vec())),
-        ],
-    )
-    .map_err(|e| e.to_string())?;
+    let schema = Arc::new(schema);
+
+    let ts_arr: Arc<dyn arrow_array::Array> = Arc::new(Int64Array::from(ts.to_vec()));
+    let open_arr: Arc<dyn arrow_array::Array> = Arc::new(Float64Array::from(open.to_vec()));
+    let high_arr: Arc<dyn arrow_array::Array> = Arc::new(Float64Array::from(high.to_vec()));
+    let low_arr: Arc<dyn arrow_array::Array> = Arc::new(Float64Array::from(low.to_vec()));
+    let close_arr: Arc<dyn arrow_array::Array> = Arc::new(Float64Array::from(close.to_vec()));
+    let volume_arr: Arc<dyn arrow_array::Array> = Arc::new(Float64Array::from(volume.to_vec()));
 
     let mut out = Vec::new();
     {
         let mut writer = StreamWriter::try_new(&mut out, &schema).map_err(|e| e.to_string())?;
-        writer.write(&batch).map_err(|e| e.to_string())?;
+        let mut offset = 0usize;
+        while offset < ts.len() {
+            let len = (ts.len() - offset).min(MAX_ROWS_PER_BATCH);
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    ts_arr.slice(offset, len),
+                    open_arr.slice(offset, len),
+                    high_arr.slice(offset, len),
+                    low_arr.slice(offset, len),
+                    close_arr.slice(offset, len),
+                    volume_arr.slice(offset, len),
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            writer.write(&batch).map_err(|e| e.to_string())?;
+            offset += len;
+        }
         writer.finish().map_err(|e| e.to_string())?;
     }
 
@@ -387,6 +402,11 @@ async fn candles_query_impl(
             TransportErrorPublic::Unavailable => CommandError::new(
                 "TRANSPORT.UNAVAILABLE",
                 "loopback_ws transport unavailable",
+                req.envelope.correlation_id.clone(),
+            ),
+            TransportErrorPublic::ResourceLimit { message } => CommandError::new(
+                "TRANSPORT.RESOURCE_LIMIT",
+                message,
                 req.envelope.correlation_id.clone(),
             ),
         })?;
@@ -588,6 +608,118 @@ mod tests {
             }
         }
         assert!(saw_alignment);
+        assert_eq!(rows as u32, resp.meta.points_returned);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn candles_query_large_result_streams_and_decodes() {
+        let transport = TransportState::default();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let layout = StorageLayout {
+            workspace_root: tmp.path().join("ws"),
+            dataset_root: tmp.path().join("ds"),
+            cache_root: tmp.path().join("cache"),
+        };
+        layout.ensure().expect("ensure");
+
+        let dataset_id = "crypto.synthetic.spot.demo.series.1s.v1";
+        let preview = crate::datasets::create_synthetic_dataset(&layout, dataset_id).expect("ds");
+
+        let resp = candles_query_impl(
+            &transport,
+            &layout,
+            CandlesQueryRequest {
+                envelope: envelope("c_large"),
+                dataset_id: dataset_id.to_string(),
+                dataset_manifest_ref: Some(DatasetManifestRef {
+                    manifest_hash: preview.active_manifest_hash.clone().expect("hash"),
+                    uri: None,
+                }),
+                range: RangeMs {
+                    start_ms: 0,
+                    end_ms: (MAX_TARGET_POINTS as i64) * 1_000,
+                },
+                target_points: MAX_TARGET_POINTS,
+                prefer_tiles: Some(true),
+                allow_raw_fallback: Some(true),
+            },
+        )
+        .await
+        .expect("query");
+
+        assert!(resp.meta.points_returned <= MAX_TARGET_POINTS);
+        assert_eq!(resp.meta.correlation_id, "c_large");
+
+        let (ws_url, auth_token, stream_id) = match &resp.stream_ref.transport {
+            StreamTransport::LoopbackWs {
+                url, auth_token, ..
+            } => (
+                url.clone(),
+                auth_token.clone(),
+                resp.stream_ref.stream_id.clone(),
+            ),
+        };
+
+        let mut ws = ws_connect(&ws_url, &auth_token).await;
+
+        let mut combined = Vec::new();
+        let mut next_seq = 1u64;
+        loop {
+            ws.send(Message::Text(
+                serde_json::to_string(&serde_json::json!({
+                    "type": "streams.pull",
+                    "stream_id": stream_id,
+                    "next_seq": next_seq,
+                    "max_bytes": limits::MAX_BYTES_PER_PULL,
+                    "correlation_id": "c_large",
+                    "request_id": Uuid::new_v4().to_string()
+                }))
+                .expect("json"),
+            ))
+            .await
+            .expect("send pull");
+
+            let msg = timeout(std::time::Duration::from_secs(2), ws.next())
+                .await
+                .expect("timeout")
+                .expect("stream ended")
+                .expect("ws msg");
+
+            match msg {
+                Message::Binary(frame) => {
+                    let (kind, seq, _sid, payload) = parse_frame(&frame);
+                    assert_eq!(seq, next_seq);
+                    if kind == 1 {
+                        combined.extend_from_slice(&payload);
+                        next_seq += 1;
+                        continue;
+                    }
+                    if kind == 2 {
+                        assert!(payload.is_empty());
+                        break;
+                    }
+                    panic!("unexpected frame kind: {kind}");
+                }
+                other => panic!("unexpected ws msg: {other:?}"),
+            }
+        }
+
+        let msg = timeout(std::time::Duration::from_secs(2), ws.next())
+            .await
+            .expect("timeout")
+            .expect("stream ended")
+            .expect("ws msg");
+        let Message::Text(text) = msg else {
+            panic!("expected streams.closed");
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(v["type"], "streams.closed");
+
+        let mut reader = StreamReader::try_new(Cursor::new(combined), None).expect("arrow reader");
+        let mut rows = 0usize;
+        while let Some(batch) = reader.next().transpose().expect("read batch") {
+            rows += batch.num_rows();
+        }
         assert_eq!(rows as u32, resp.meta.points_returned);
     }
 
