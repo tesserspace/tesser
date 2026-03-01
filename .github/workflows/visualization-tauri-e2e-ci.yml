@@ -1,0 +1,133 @@
+name: Visualization Tauri E2E (WebDriver)
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "visualization/app/src-tauri/**"
+      - "visualization/app/src/**"
+      - "visualization/app/e2e/tauri/**"
+      - "visualization/app/package.json"
+      - "visualization/app/pnpm-lock.yaml"
+      - ".github/workflows/visualization-tauri-e2e-ci.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "visualization/app/src-tauri/**"
+      - "visualization/app/src/**"
+      - "visualization/app/e2e/tauri/**"
+      - "visualization/app/package.json"
+      - "visualization/app/pnpm-lock.yaml"
+      - ".github/workflows/visualization-tauri-e2e-ci.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  e2e_tauri:
+    name: visualization/app E2E (tauri-driver)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10"
+
+      - name: Install Linux dependencies (Tauri + WebDriver)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            curl \
+            wget \
+            file \
+            xvfb
+
+          # WebKitGTK dev package name differs across Ubuntu versions.
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev || \
+            sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.0-dev
+
+          # AppIndicator package name differs across distros.
+          sudo apt-get install -y --no-install-recommends libayatana-appindicator3-dev || \
+            sudo apt-get install -y --no-install-recommends libappindicator3-dev
+
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev \
+            librsvg2-dev \
+            patchelf
+
+          # Provides the `WebKitWebDriver` binary required by `tauri-driver` on Linux.
+          sudo apt-get install -y --no-install-recommends webkit2gtk-driver
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-visualization-tauri-e2e-${{ hashFiles('visualization/app/pnpm-lock.yaml', 'visualization/app/e2e/tauri/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-visualization-tauri-e2e-
+
+      - name: Cache Cargo (src-tauri + tauri-driver)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            visualization/app/src-tauri/target/
+          key: ${{ runner.os }}-cargo-visualization-tauri-e2e-${{ hashFiles('visualization/app/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-visualization-tauri-e2e-
+
+      - name: Install tauri-driver
+        shell: bash
+        run: |
+          set -euxo pipefail
+          want="2.0.5"
+          if cargo install --list | grep -q "^tauri-driver v${want}:"; then
+            exit 0
+          fi
+          cargo install tauri-driver --version "$want" --locked --force
+          cargo install --list | grep -q "^tauri-driver v${want}:"
+
+      - name: Install deps (app)
+        run: pnpm -C visualization/app install --frozen-lockfile
+
+      - name: Install deps (e2e)
+        run: pnpm -C visualization/app/e2e/tauri install --frozen-lockfile
+
+      - name: Run E2E (xvfb)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p visualization/app/e2e/tauri/artifacts
+          xvfb-run -a pnpm -C visualization/app e2e:tauri
+
+      - name: Upload E2E artifacts (screenshots)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visualization-tauri-e2e-artifacts
+          path: visualization/app/e2e/tauri/artifacts/
+          if-no-files-found: ignore

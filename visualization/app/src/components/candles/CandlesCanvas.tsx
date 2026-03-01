@@ -99,6 +99,11 @@ export function CandlesCanvas({ candles }: Props) {
     }
   }, [candles, stats]);
 
-  return <canvas ref={canvasRef} className="h-64 w-full rounded-md border bg-background" />;
+  return (
+    <canvas
+      ref={canvasRef}
+      data-testid="candles-canvas"
+      className="h-64 w-full rounded-md border bg-background"
+    />
+  );
 }
-

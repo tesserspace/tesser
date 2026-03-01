@@ -117,13 +117,27 @@ export function CandlesPanel() {
           <CardTitle className="flex items-center justify-between">
             <span>Candles</span>
             <div className="flex gap-2">
-              <Button variant="secondary" onClick={() => refreshDatasets()} disabled={!protocolVersion}>
+              <Button
+                variant="secondary"
+                onClick={() => refreshDatasets()}
+                disabled={!protocolVersion}
+                data-testid="candles-refresh"
+              >
                 Refresh
               </Button>
-              <Button variant="outline" onClick={() => createSynthetic()} disabled={!protocolVersion}>
+              <Button
+                variant="outline"
+                onClick={() => createSynthetic()}
+                disabled={!protocolVersion}
+                data-testid="candles-create-synthetic"
+              >
                 Create Synthetic Dataset
               </Button>
-              <Button onClick={() => loadCandles()} disabled={!protocolVersion || !selected || loading}>
+              <Button
+                onClick={() => loadCandles()}
+                disabled={!protocolVersion || !selected || loading}
+                data-testid="candles-load"
+              >
                 {loading ? "Loading…" : "Load"}
               </Button>
             </div>
@@ -139,6 +153,7 @@ export function CandlesPanel() {
                 className="w-full rounded-md border bg-background p-2"
                 value={selected}
                 onChange={(e) => setSelected(e.target.value)}
+                data-testid="candles-dataset-select"
               >
                 {datasets.map((d) => (
                   <option key={d.dataset_id} value={d.dataset_id}>
@@ -150,7 +165,10 @@ export function CandlesPanel() {
 
             <div className="space-y-1">
               <div className="text-muted-foreground">meta</div>
-              <div className="rounded-md border p-2 font-mono text-xs whitespace-pre-wrap">
+              <div
+                className="rounded-md border p-2 font-mono text-xs whitespace-pre-wrap"
+                data-testid="candles-meta"
+              >
                 {meta ? JSON.stringify(meta, null, 2) : "—"}
               </div>
             </div>
@@ -162,4 +180,3 @@ export function CandlesPanel() {
     </div>
   );
 }
-
