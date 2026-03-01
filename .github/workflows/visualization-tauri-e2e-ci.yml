@@ -107,15 +107,11 @@ jobs:
         run: |
           set -euxo pipefail
           want="2.0.5"
-          if command -v tauri-driver >/dev/null 2>&1; then
-            have="$(tauri-driver --version | awk '{print $2}' || true)"
-            if [ "$have" = "$want" ]; then
-              tauri-driver --version
-              exit 0
-            fi
+          if cargo install --list | grep -q "^tauri-driver v${want}:"; then
+            exit 0
           fi
           cargo install tauri-driver --version "$want" --locked --force
-          tauri-driver --version
+          cargo install --list | grep -q "^tauri-driver v${want}:"
 
       - name: Install deps (app)
         run: pnpm -C visualization/app install --frozen-lockfile
