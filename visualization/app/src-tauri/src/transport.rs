@@ -90,7 +90,7 @@ impl TransportState {
 
         let stream = DemoStream {
             stream_id,
-            expected_next_seq: 1,
+            expected_next_seq: limits::STREAM_SEQ_START,
             chunks,
             terminal_sent: false,
         };
@@ -131,7 +131,7 @@ impl TransportState {
 
         let demo = DemoStream {
             stream_id,
-            expected_next_seq: 1,
+            expected_next_seq: limits::STREAM_SEQ_START,
             chunks: vec![
                 b"DEMO:chunk-1\n".to_vec(),
                 b"DEMO:chunk-2\n".to_vec(),
@@ -483,6 +483,11 @@ async fn handle_ws_connection(
         {
             Ok(v) => v,
             Err(_) => {
+                info!(
+                    stream_id = %stream.stream_id,
+                    expected_next_seq = stream.expected_next_seq,
+                    "closing stream due to idle_timeout"
+                );
                 if stream.terminal_sent {
                     break;
                 }
@@ -568,7 +573,8 @@ async fn handle_ws_connection(
                             break;
                         }
 
-                        if next_seq != stream.expected_next_seq {
+                        let replay_window = limits::REPLAY_WINDOW_CHUNKS as u64;
+                        if next_seq > stream.expected_next_seq {
                             let err = ServerMessage::Error {
                                 stream_id: stream.stream_id.to_string(),
                                 code: "STREAM.SEQ_INVALID".to_string(),
@@ -582,6 +588,36 @@ async fn handle_ws_connection(
                                 let _ = write.send(Message::Text(text)).await;
                             }
                             continue;
+                        }
+                        if next_seq < stream.expected_next_seq {
+                            let delta = stream.expected_next_seq.saturating_sub(next_seq);
+                            if replay_window == 0 || delta > replay_window {
+                                let err = ServerMessage::Error {
+                                    stream_id: stream.stream_id.to_string(),
+                                    code: "STREAM.SEQ_TOO_OLD".to_string(),
+                                    message: "next_seq too old for replay window".to_string(),
+                                    terminal: true,
+                                    seq: next_seq,
+                                    correlation_id: correlation_id.clone(),
+                                    request_id: request_id.clone(),
+                                };
+                                if let Ok(text) = serde_json::to_string(&err) {
+                                    let _ = write.send(Message::Text(text)).await;
+                                }
+                                let closed = ServerMessage::Closed {
+                                    stream_id: stream.stream_id.to_string(),
+                                    reason_code: "error".to_string(),
+                                    error_code: Some("STREAM.SEQ_TOO_OLD".to_string()),
+                                    seq: stream.expected_next_seq,
+                                    correlation_id,
+                                    request_id,
+                                };
+                                if let Ok(text) = serde_json::to_string(&closed) {
+                                    let _ = write.send(Message::Text(text)).await;
+                                }
+                                stream.terminal_sent = true;
+                                break;
+                            }
                         }
 
                         if max_bytes == 0 {
@@ -600,9 +636,25 @@ async fn handle_ws_connection(
                             continue;
                         }
 
-                        let next_index = (stream.expected_next_seq - 1) as usize;
-                        if next_index < stream.chunks.len() {
-                            let payload = &stream.chunks[next_index];
+                        if next_seq < limits::STREAM_SEQ_START {
+                            let err = ServerMessage::Error {
+                                stream_id: stream.stream_id.to_string(),
+                                code: "STREAM.SEQ_INVALID".to_string(),
+                                message: "next_seq before seq_start".to_string(),
+                                terminal: false,
+                                seq: next_seq,
+                                correlation_id,
+                                request_id,
+                            };
+                            if let Ok(text) = serde_json::to_string(&err) {
+                                let _ = write.send(Message::Text(text)).await;
+                            }
+                            continue;
+                        }
+
+                        let idx = next_seq.saturating_sub(limits::STREAM_SEQ_START) as usize;
+                        if idx < stream.chunks.len() {
+                            let payload = &stream.chunks[idx];
                             let effective_max = max_bytes.min(limits::MAX_BYTES_PER_PULL);
                             if payload.len() > effective_max as usize {
                                 let err = ServerMessage::Error {
@@ -620,27 +672,19 @@ async fn handle_ws_connection(
                                 continue;
                             }
 
-                            let frame = build_binary_frame(
-                                1,
-                                stream.expected_next_seq,
-                                stream.stream_id,
-                                payload,
-                            );
+                            let frame = build_binary_frame(1, next_seq, stream.stream_id, payload);
                             let _ = write.send(Message::Binary(frame)).await;
-                            stream.expected_next_seq += 1;
+                            if next_seq == stream.expected_next_seq {
+                                stream.expected_next_seq += 1;
+                            }
                         } else {
-                            let eof_frame = build_binary_frame(
-                                2,
-                                stream.expected_next_seq,
-                                stream.stream_id,
-                                &[],
-                            );
+                            let eof_frame = build_binary_frame(2, next_seq, stream.stream_id, &[]);
                             let _ = write.send(Message::Binary(eof_frame)).await;
                             let closed = ServerMessage::Closed {
                                 stream_id: stream.stream_id.to_string(),
                                 reason_code: "eof".to_string(),
                                 error_code: None,
-                                seq: stream.expected_next_seq,
+                                seq: next_seq,
                                 correlation_id,
                                 request_id,
                             };
@@ -979,6 +1023,113 @@ mod tests {
         assert_eq!(seq, 1);
         assert_eq!(stream_id, Uuid::parse_str(&demo.stream_id).expect("uuid"));
         assert_eq!(payload, b"DEMO:chunk-1\n");
+
+        state.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn old_seq_beyond_replay_window_is_terminal() {
+        let state = TransportState::default();
+        let transport = state.start().await.expect("transport start");
+
+        let chunks: Vec<Vec<u8>> = (0..200u64)
+            .map(|i| format!("chunk-{i}\n").into_bytes())
+            .collect();
+
+        let stream_ref = state
+            .open_pending_arrow_stream(chunks, None)
+            .await
+            .expect("open pending stream");
+
+        let (ws_url, auth_token, stream_id) = match stream_ref.transport {
+            StreamTransport::LoopbackWs {
+                url, auth_token, ..
+            } => (url, auth_token, stream_ref.stream_id),
+        };
+        assert_eq!(ws_url, transport.ws_url);
+
+        let mut ws = connect_with_token(&ws_url, &auth_token).await;
+
+        for seq in 1..=200u64 {
+            ws.send(Message::Text(
+                serde_json::to_string(&ClientMessage::Pull {
+                    stream_id: stream_id.clone(),
+                    next_seq: seq,
+                    max_bytes: 256 * 1024,
+                    correlation_id: Some("test".to_string()),
+                    request_id: Some(Uuid::new_v4().to_string()),
+                })
+                .expect("json"),
+            ))
+            .await
+            .expect("send pull");
+
+            let msg = timeout(Duration::from_secs(2), ws.next())
+                .await
+                .expect("timeout")
+                .expect("stream ended")
+                .expect("ws msg");
+            let Message::Binary(frame) = msg else {
+                panic!("expected binary frame");
+            };
+            let (kind, got_seq, _sid, _payload) = parse_frame(&frame);
+            assert_eq!(kind, 1);
+            assert_eq!(got_seq, seq);
+        }
+
+        let expected_next = 201u64;
+        let too_old = expected_next - (limits::REPLAY_WINDOW_CHUNKS as u64) - 1;
+
+        ws.send(Message::Text(
+            serde_json::to_string(&ClientMessage::Pull {
+                stream_id: stream_id.clone(),
+                next_seq: too_old,
+                max_bytes: 256 * 1024,
+                correlation_id: Some("test".to_string()),
+                request_id: Some(Uuid::new_v4().to_string()),
+            })
+            .expect("json"),
+        ))
+        .await
+        .expect("send pull");
+
+        let msg = timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("timeout")
+            .expect("stream ended")
+            .expect("ws msg");
+        let Message::Text(text) = msg else {
+            panic!("expected streams.error");
+        };
+        let err: ServerMessage = serde_json::from_str(&text).expect("error json");
+        match err {
+            ServerMessage::Error { code, terminal, .. } => {
+                assert_eq!(code, "STREAM.SEQ_TOO_OLD");
+                assert!(terminal);
+            }
+            _ => panic!("expected streams.error"),
+        }
+
+        let msg = timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("timeout")
+            .expect("stream ended")
+            .expect("ws msg");
+        let Message::Text(text) = msg else {
+            panic!("expected streams.closed");
+        };
+        let closed: ServerMessage = serde_json::from_str(&text).expect("closed json");
+        match closed {
+            ServerMessage::Closed {
+                reason_code,
+                error_code,
+                ..
+            } => {
+                assert_eq!(reason_code, "error");
+                assert_eq!(error_code.as_deref(), Some("STREAM.SEQ_TOO_OLD"));
+            }
+            _ => panic!("expected streams.closed"),
+        }
 
         state.shutdown().await;
     }
