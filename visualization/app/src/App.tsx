@@ -156,7 +156,9 @@ function App() {
         <Tabs defaultValue="runs" className="flex-1">
           <TabsList>
             <TabsTrigger value="runs">Runs</TabsTrigger>
-            <TabsTrigger value="candles">Candles</TabsTrigger>
+            <TabsTrigger value="candles" data-testid="tab-candles">
+              Candles
+            </TabsTrigger>
             <TabsTrigger value="datasets">Datasets</TabsTrigger>
             <TabsTrigger value="compare">Compare</TabsTrigger>
             <TabsTrigger value="downloads">Downloads</TabsTrigger>
