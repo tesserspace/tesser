@@ -13,15 +13,8 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::limits;
 use crate::stream_ref::{StreamRef, StreamTransport};
-
-const MAX_ACTIVE_STREAMS: usize = 4;
-const MAX_BYTES_PER_PULL: u32 = 256 * 1024;
-
-#[cfg(test)]
-const STREAM_IDLE_TIMEOUT_MS: u64 = 250;
-#[cfg(not(test))]
-const STREAM_IDLE_TIMEOUT_MS: u64 = 20_000;
 
 #[derive(Debug, thiserror::Error)]
 enum TransportError {
@@ -422,7 +415,7 @@ async fn handle_ws_connection(
                 }
 
                 let prev = active_cb.fetch_add(1, Ordering::SeqCst);
-                if prev >= MAX_ACTIVE_STREAMS {
+                if prev >= limits::MAX_ACTIVE_STREAMS {
                     active_cb.fetch_sub(1, Ordering::SeqCst);
                     registry_guard.pending_by_token.insert(token, pending);
                     return Err(error_response(StatusCode::TOO_MANY_REQUESTS));
@@ -482,30 +475,32 @@ async fn handle_ws_connection(
     let mut bad_msg_count: u32 = 0;
 
     loop {
-        let msg =
-            match tokio::time::timeout(Duration::from_millis(STREAM_IDLE_TIMEOUT_MS), read.next())
-                .await
-            {
-                Ok(v) => v,
-                Err(_) => {
-                    if stream.terminal_sent {
-                        break;
-                    }
-                    let closed = ServerMessage::Closed {
-                        stream_id: stream.stream_id.to_string(),
-                        reason_code: "idle_timeout".to_string(),
-                        error_code: None,
-                        seq: stream.expected_next_seq,
-                        correlation_id: None,
-                        request_id: None,
-                    };
-                    if let Ok(text) = serde_json::to_string(&closed) {
-                        let _ = write.send(Message::Text(text)).await;
-                    }
-                    stream.terminal_sent = true;
+        let msg = match tokio::time::timeout(
+            Duration::from_millis(limits::STREAM_IDLE_TIMEOUT_MS),
+            read.next(),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(_) => {
+                if stream.terminal_sent {
                     break;
                 }
-            };
+                let closed = ServerMessage::Closed {
+                    stream_id: stream.stream_id.to_string(),
+                    reason_code: "idle_timeout".to_string(),
+                    error_code: None,
+                    seq: stream.expected_next_seq,
+                    correlation_id: None,
+                    request_id: None,
+                };
+                if let Ok(text) = serde_json::to_string(&closed) {
+                    let _ = write.send(Message::Text(text)).await;
+                }
+                stream.terminal_sent = true;
+                break;
+            }
+        };
 
         let Some(msg) = msg else {
             break;
@@ -608,7 +603,7 @@ async fn handle_ws_connection(
                         let next_index = (stream.expected_next_seq - 1) as usize;
                         if next_index < stream.chunks.len() {
                             let payload = &stream.chunks[next_index];
-                            let effective_max = max_bytes.min(MAX_BYTES_PER_PULL);
+                            let effective_max = max_bytes.min(limits::MAX_BYTES_PER_PULL);
                             if payload.len() > effective_max as usize {
                                 let err = ServerMessage::Error {
                                     stream_id: stream.stream_id.to_string(),

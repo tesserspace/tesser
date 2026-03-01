@@ -2,6 +2,7 @@ mod command_error;
 mod datasets;
 mod envelope;
 mod jobs;
+mod limits;
 mod protocol;
 mod series;
 mod storage;
