@@ -2,6 +2,8 @@ use serde::Serialize;
 
 pub const PROTOCOL_VERSION: &str = "tesser.viz.ipc.v1";
 
+use crate::limits;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ProtocolInfo {
     pub protocol_version: String,
@@ -45,14 +47,14 @@ pub fn protocol_get_info() -> ProtocolInfo {
             arrow_ipc_streaming: true,
         },
         limits: Limits {
-            max_active_streams: 4,
+            max_active_streams: limits::MAX_ACTIVE_STREAMS.min(u32::MAX as usize) as u32,
         },
         stream_pull: StreamPull {
-            seq_start: 1,
-            max_bytes_per_pull: 256 * 1024,
-            max_chunk_bytes: 256 * 1024,
-            replay_window_chunks: 0,
-            stream_idle_timeout_ms: 20_000,
+            seq_start: limits::STREAM_SEQ_START,
+            max_bytes_per_pull: limits::MAX_BYTES_PER_PULL,
+            max_chunk_bytes: limits::MAX_CHUNK_BYTES,
+            replay_window_chunks: limits::REPLAY_WINDOW_CHUNKS,
+            stream_idle_timeout_ms: limits::STREAM_IDLE_TIMEOUT_MS.min(u32::MAX as u64) as u32,
         },
     }
 }
