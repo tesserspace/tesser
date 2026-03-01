@@ -28,8 +28,6 @@ jobs:
   e2e_tauri:
     name: visualization/app E2E (tauri-driver)
     runs-on: ubuntu-24.04
-    env:
-      CARGO_TARGET_DIR: visualization/app/src-tauri/target
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
