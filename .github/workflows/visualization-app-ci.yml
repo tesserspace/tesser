@@ -1,0 +1,57 @@
+name: Visualization App CI
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "visualization/app/**"
+      - ".github/workflows/visualization-app-ci.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "visualization/app/**"
+      - ".github/workflows/visualization-app-ci.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  app_tests:
+    name: visualization/app tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10"
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-visualization-app-${{ hashFiles('visualization/app/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-visualization-app-
+
+      - name: Install deps
+        run: pnpm -C visualization/app install --frozen-lockfile
+
+      - name: Build (typecheck)
+        run: pnpm -C visualization/app build
+
+      - name: Run tests
+        run: pnpm -C visualization/app test

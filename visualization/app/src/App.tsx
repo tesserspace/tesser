@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { pullLoopbackWsStream, type WsLike } from "@/lib/streaming/loopback_ws";
 
 type ProtocolInfo = {
   protocol_version: string;
@@ -80,81 +81,42 @@ function App() {
                       const ref = await invoke<DemoStreamRef>("debug_open_demo_stream");
                       setDemoStreamRef(ref);
 
+                      if (ref.token_in !== "sec-websocket-protocol") {
+                        throw new Error(`unsupported token_in: ${ref.token_in}`);
+                      }
+                      if (Date.now() > ref.expires_at_ms) {
+                        throw new Error("demo stream auth token expired");
+                      }
+
                       const ws = new WebSocket(ref.ws_url, ref.auth_token);
                       ws.binaryType = "arraybuffer";
 
-                      let expectedSeq = 1n;
-
-                      const pull = () => {
-                        ws.send(
-                          JSON.stringify({
-                            type: "streams.pull",
-                            stream_id: ref.stream_id,
-                            next_seq: Number(expectedSeq),
-                            max_bytes: 256 * 1024,
-                            correlation_id: "ui.demo",
-                            request_id: crypto.randomUUID(),
-                          }),
-                        );
-                      };
-
-                      ws.onopen = () => pull();
-                      ws.onmessage = (event) => {
-                        if (typeof event.data === "string") {
-                          try {
-                            const msg = JSON.parse(event.data) as {
-                              type: string;
-                              reason_code?: string;
-                              seq?: number;
-                              code?: string;
-                              message?: string;
-                            };
-                            if (msg.type === "streams.closed") {
-                              setDemoLog((s) => s + `\n[CLOSED] ${msg.reason_code} seq=${msg.seq}`);
-                              ws.close();
-                            } else if (msg.type === "streams.error") {
-                              setDemoLog((s) => s + `\n[ERROR] ${msg.code}: ${msg.message}`);
-                              ws.close();
-                            }
-                          } catch {
-                            setDemoLog((s) => s + `\n[TEXT] ${event.data}`);
-                          }
-                          return;
-                        }
-
-                        const buf = new Uint8Array(event.data as ArrayBuffer);
-                        if (buf.length < 32) {
-                          setDemoLog((s) => s + `\n[BINARY] too short: ${buf.length}`);
-                          return;
-                        }
-                        const magic = new TextDecoder().decode(buf.slice(0, 4));
-                        const kind = buf[4];
-                        const seq = new DataView(buf.buffer, buf.byteOffset + 8, 8).getBigUint64(
-                          0,
-                          false,
-                        );
-                        const payload = buf.slice(32);
-                        if (magic !== "TSR1") {
-                          setDemoLog((s) => s + `\n[BINARY] bad magic: ${magic}`);
-                          return;
-                        }
-                        if (kind === 1) {
-                          setDemoLog(
-                            (s) =>
-                              s +
-                              `\n[CHUNK seq=${seq.toString()}] ${new TextDecoder().decode(payload)}`,
-                          );
-                          expectedSeq = seq + 1n;
-                          pull();
-                        } else if (kind === 2) {
-                          setDemoLog((s) => s + `\n[EOF seq=${seq.toString()}]`);
-                        } else {
-                          setDemoLog((s) => s + `\n[BINARY] unknown kind=${kind}`);
-                        }
-                      };
-                      ws.onerror = () => {
-                        setDemoLog((s) => s + "\n[WS ERROR]");
-                      };
+                      try {
+                        await pullLoopbackWsStream({
+                          ws: ws as unknown as WsLike,
+                          streamId: ref.stream_id,
+                          correlationId: "ui.demo",
+                          maxBytes: 256 * 1024,
+                          requestId: crypto.randomUUID(),
+                          onChunk: ({ seq, payload }) => {
+                            setDemoLog(
+                              (s) =>
+                                s +
+                                `\n[CHUNK seq=${seq.toString()}] ${new TextDecoder().decode(payload)}`,
+                            );
+                          },
+                          onEof: ({ seq }) => {
+                            setDemoLog((s) => s + `\n[EOF seq=${seq.toString()}]`);
+                          },
+                          onClosed: ({ reasonCode, seq }) => {
+                            setDemoLog(
+                              (s) => s + `\n[CLOSED] ${reasonCode} seq=${seq ?? "?"}`,
+                            );
+                          },
+                        });
+                      } finally {
+                        ws.close();
+                      }
                     } catch (e) {
                       setError(String(e));
                     }

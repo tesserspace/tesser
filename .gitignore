@@ -140,6 +140,10 @@ var/
 !docs/lib/
 !docs/lib/**
 
+# The visualization app keeps shared code under `visualization/app/src/lib/`.
+!visualization/app/src/lib/
+!visualization/app/src/lib/**
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
