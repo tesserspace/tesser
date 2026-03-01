@@ -7,6 +7,7 @@ use arrow_schema::{DataType, Field, Schema};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::arrow_ipc_chunker::chunk_arrow_ipc_stream;
 use crate::command_error::CommandError;
 use crate::envelope::{validate_envelope, RequestEnvelope};
 use crate::stream_ref::StreamRef;
@@ -123,8 +124,11 @@ async fn series_query_impl(
         )
     })?;
 
+    let chunks =
+        chunk_arrow_ipc_stream(&bytes, (256 * 1024) as usize, &req.envelope.correlation_id)?;
+
     let stream_ref = transport
-        .open_pending_arrow_stream(vec![bytes], Some("series.ts_ms_value.f64.v1".to_string()))
+        .open_pending_arrow_stream(chunks, Some("series.ts_ms_value.f64.v1".to_string()))
         .await
         .map_err(|e| match e {
             TransportErrorPublic::Unavailable => CommandError::new(
@@ -241,6 +245,24 @@ mod tests {
         assert_eq!(err.correlation_id, "c2");
     }
 
+    #[test]
+    fn arrow_chunker_roundtrips_stream() {
+        let ts = vec![1_i64, 2, 3];
+        let values = vec![1.0_f64, 2.0, 3.0];
+        let bytes = build_arrow_stream_bytes(&ts, &values).expect("encode");
+        let chunks = chunk_arrow_ipc_stream(&bytes, 4096, "c_chunk").expect("chunk");
+        assert!(chunks.len() > 1);
+
+        let mut combined = Vec::new();
+        for c in chunks {
+            combined.extend_from_slice(&c);
+        }
+
+        let mut reader = StreamReader::try_new(Cursor::new(combined), None).expect("reader");
+        let decoded = reader.next().transpose().expect("read one");
+        assert!(decoded.is_some());
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn series_query_stream_decodes_arrow_ipc() {
         let state = TransportState::default();
@@ -282,58 +304,47 @@ mod tests {
 
         let mut ws = ws_connect(&ws_url, &auth_token).await;
 
-        ws.send(Message::Text(
-            serde_json::to_string(&serde_json::json!({
-                "type": "streams.pull",
-                "stream_id": stream_id,
-                "next_seq": 1,
-                "max_bytes": 256 * 1024,
-                "correlation_id": "c3",
-                "request_id": Uuid::new_v4().to_string()
-            }))
-            .expect("json"),
-        ))
-        .await
-        .expect("send pull");
-
-        let msg = timeout(std::time::Duration::from_secs(2), ws.next())
+        let mut combined = Vec::new();
+        let mut next_seq = 1u64;
+        loop {
+            ws.send(Message::Text(
+                serde_json::to_string(&serde_json::json!({
+                    "type": "streams.pull",
+                    "stream_id": stream_id,
+                    "next_seq": next_seq,
+                    "max_bytes": 256 * 1024,
+                    "correlation_id": "c3",
+                    "request_id": Uuid::new_v4().to_string()
+                }))
+                .expect("json"),
+            ))
             .await
-            .expect("timeout")
-            .expect("stream ended")
-            .expect("ws msg");
-        let Message::Binary(frame) = msg else {
-            panic!("expected binary chunk");
-        };
-        let (kind, seq, _sid, payload) = parse_frame(&frame);
-        assert_eq!(kind, 1);
-        assert_eq!(seq, 1);
+            .expect("send pull");
 
-        ws.send(Message::Text(
-            serde_json::to_string(&serde_json::json!({
-                "type": "streams.pull",
-                "stream_id": resp.stream_ref.stream_id,
-                "next_seq": 2,
-                "max_bytes": 256 * 1024,
-                "correlation_id": "c3",
-                "request_id": Uuid::new_v4().to_string()
-            }))
-            .expect("json"),
-        ))
-        .await
-        .expect("send pull");
+            let msg = timeout(std::time::Duration::from_secs(2), ws.next())
+                .await
+                .expect("timeout")
+                .expect("stream ended")
+                .expect("ws msg");
 
-        let msg = timeout(std::time::Duration::from_secs(2), ws.next())
-            .await
-            .expect("timeout")
-            .expect("stream ended")
-            .expect("ws msg");
-        let Message::Binary(frame) = msg else {
-            panic!("expected binary eof");
-        };
-        let (kind, seq, _sid, eof_payload) = parse_frame(&frame);
-        assert_eq!(kind, 2);
-        assert_eq!(seq, 2);
-        assert!(eof_payload.is_empty());
+            match msg {
+                Message::Binary(frame) => {
+                    let (kind, seq, _sid, payload) = parse_frame(&frame);
+                    assert_eq!(seq, next_seq);
+                    if kind == 1 {
+                        combined.extend_from_slice(&payload);
+                        next_seq += 1;
+                        continue;
+                    }
+                    if kind == 2 {
+                        assert!(payload.is_empty());
+                        break;
+                    }
+                    panic!("unexpected frame kind: {kind}");
+                }
+                other => panic!("unexpected ws msg: {other:?}"),
+            }
+        }
 
         let msg = timeout(std::time::Duration::from_secs(2), ws.next())
             .await
@@ -346,7 +357,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&text).expect("json");
         assert_eq!(v["type"], "streams.closed");
 
-        let mut reader = StreamReader::try_new(Cursor::new(payload), None).expect("arrow reader");
+        let mut reader = StreamReader::try_new(Cursor::new(combined), None).expect("arrow reader");
         let mut rows = 0usize;
         while let Some(batch) = reader.next().transpose().expect("read batch") {
             rows += batch.num_rows();
