@@ -1,3 +1,4 @@
+mod arrow_ipc_chunker;
 mod command_error;
 mod datasets;
 mod envelope;
