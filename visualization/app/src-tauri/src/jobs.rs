@@ -11,7 +11,10 @@ use tokio::sync::{Mutex, Semaphore};
 use uuid::Uuid;
 
 use crate::command_error::CommandError;
-use crate::datasets::create_synthetic_dataset_with_cancel_and_commit_state;
+use crate::datasets::{
+    create_synthetic_dataset_with_cancel_and_commit_state, datasets_fingerprint_strict,
+    datasets_health_quick,
+};
 use crate::envelope::{validate_envelope, RequestEnvelope};
 use crate::storage::default_layout;
 
@@ -891,6 +894,177 @@ async fn run_job<R: Runtime>(
             }
             complete_with_result(&app, &jobs, &job_id, result).await;
         }
+        "dataset_health_quick" => {
+            emit_log(&app, &jobs, &job_id, "info", "phase: health_quick").await;
+            let dataset_id = match inputs.get("dataset_id").and_then(|v| v.as_str()) {
+                Some(v) => v.to_string(),
+                None => {
+                    fail_with_error(
+                        &app,
+                        &jobs,
+                        &job_id,
+                        CommandError::new(
+                            "JOB.INPUT_INVALID",
+                            "missing inputs.dataset_id",
+                            correlation_id.clone(),
+                        ),
+                    )
+                    .await;
+                    return;
+                }
+            };
+            let manifest_hash = inputs.get("manifest_hash").and_then(|v| v.as_str());
+
+            emit_progress(&app, &jobs, &job_id, 0, None, Some("health_quick")).await;
+            if mark_canceled_if_requested(&app, &jobs, &job_id).await {
+                return;
+            }
+
+            let cancel = cancel_flag.clone();
+            let layout2 = layout.clone();
+            let dataset_id2 = dataset_id.clone();
+            let hash2 = manifest_hash.map(|s| s.to_string());
+            let res = tokio::task::spawn_blocking(move || {
+                datasets_health_quick(&layout2, &dataset_id2, hash2.as_deref(), cancel.as_ref())
+            })
+            .await;
+
+            let report = match res {
+                Ok(Ok(v)) => v,
+                Ok(Err(mut e)) => {
+                    if e.code == "DATASET.CANCELED" {
+                        set_status(
+                            &app,
+                            &jobs,
+                            &job_id,
+                            JobStatus::Canceled,
+                            "job.canceled",
+                            Some("user_cancel".to_string()),
+                        )
+                        .await;
+                        return;
+                    }
+                    e.correlation_id = correlation_id;
+                    fail_with_error(&app, &jobs, &job_id, e).await;
+                    return;
+                }
+                Err(e) => {
+                    fail_with_error(
+                        &app,
+                        &jobs,
+                        &job_id,
+                        CommandError::new(
+                            "JOB.WORKER_PANIC",
+                            format!("health job panicked: {e}"),
+                            correlation_id,
+                        ),
+                    )
+                    .await;
+                    return;
+                }
+            };
+
+            emit_progress(&app, &jobs, &job_id, 1, Some(1), None).await;
+            if mark_canceled_if_requested(&app, &jobs, &job_id).await {
+                return;
+            }
+            complete_with_result(&app, &jobs, &job_id, report).await;
+        }
+        "dataset_fingerprint_strict" => {
+            emit_log(&app, &jobs, &job_id, "info", "phase: fingerprint_strict").await;
+            let dataset_id = match inputs.get("dataset_id").and_then(|v| v.as_str()) {
+                Some(v) => v.to_string(),
+                None => {
+                    fail_with_error(
+                        &app,
+                        &jobs,
+                        &job_id,
+                        CommandError::new(
+                            "JOB.INPUT_INVALID",
+                            "missing inputs.dataset_id",
+                            correlation_id.clone(),
+                        ),
+                    )
+                    .await;
+                    return;
+                }
+            };
+            let manifest_hash = inputs.get("manifest_hash").and_then(|v| v.as_str());
+
+            emit_progress(&app, &jobs, &job_id, 0, None, Some("fingerprint_strict")).await;
+            if mark_canceled_if_requested(&app, &jobs, &job_id).await {
+                return;
+            }
+
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<(u64, u64)>(16);
+            let cancel = cancel_flag.clone();
+            let layout2 = layout.clone();
+            let dataset_id2 = dataset_id.clone();
+            let hash2 = manifest_hash.map(|s| s.to_string());
+
+            let mut handle = tokio::task::spawn_blocking(move || {
+                let mut progress = |done: u64, total: u64| {
+                    let _ = tx.try_send((done, total));
+                };
+                datasets_fingerprint_strict(
+                    &layout2,
+                    &dataset_id2,
+                    hash2.as_deref(),
+                    cancel.as_ref(),
+                    &mut progress,
+                )
+            });
+
+            let sidecar = loop {
+                tokio::select! {
+                    res = &mut handle => {
+                        break match res {
+                            Ok(Ok(v)) => Ok(v),
+                            Ok(Err(e)) => Err(e),
+                            Err(e) => Err(CommandError::new(
+                                "JOB.WORKER_PANIC",
+                                format!("fingerprint job panicked: {e}"),
+                                correlation_id.clone(),
+                            )),
+                        };
+                    }
+                    msg = rx.recv() => {
+                        let Some((done, total)) = msg else { continue; };
+                        emit_progress(&app, &jobs, &job_id, done, Some(total), Some("fingerprint_strict")).await;
+                        if mark_canceled_if_requested(&app, &jobs, &job_id).await {
+                            // cancellation will be observed by the worker via cancel_flag
+                        }
+                    }
+                }
+            };
+
+            let sidecar = match sidecar {
+                Ok(v) => v,
+                Err(mut e) => {
+                    if e.code == "DATASET.CANCELED" {
+                        set_status(
+                            &app,
+                            &jobs,
+                            &job_id,
+                            JobStatus::Canceled,
+                            "job.canceled",
+                            Some("user_cancel".to_string()),
+                        )
+                        .await;
+                        return;
+                    }
+                    e.correlation_id = correlation_id;
+                    fail_with_error(&app, &jobs, &job_id, e).await;
+                    return;
+                }
+            };
+
+            emit_progress(&app, &jobs, &job_id, 1, Some(1), None).await;
+            if mark_canceled_if_requested(&app, &jobs, &job_id).await {
+                return;
+            }
+            complete_with_result(&app, &jobs, &job_id, sidecar).await;
+        }
         _ => {
             let message = format!("unsupported job_type: {job_type}");
             emit_log(&app, &jobs, &job_id, "error", &message).await;
@@ -1725,6 +1899,88 @@ mod tests {
             .await
             .expect("start 2");
         assert_eq!(r1.job_id, r2.job_id);
+    }
+
+    #[tokio::test]
+    async fn dataset_health_quick_job_writes_sidecar_and_completes() {
+        let _permit = disk_permit().await;
+        let app = tauri::test::mock_app();
+        let state = JobsState::default();
+        let layout = crate::storage::default_layout(app.handle()).expect("layout");
+
+        let dataset_id = format!("crypto.synthetic.spot.demo.series.1s.v1-{}", Uuid::new_v4());
+        let preview =
+            crate::datasets::create_synthetic_dataset(&layout, &dataset_id).expect("dataset");
+        let manifest_hash = preview
+            .active_manifest_hash
+            .as_ref()
+            .expect("manifest hash")
+            .to_string();
+
+        let health_path = layout
+            .dataset_dir(&dataset_id)
+            .join("health")
+            .join(format!("{manifest_hash}.health.json"));
+        assert!(!health_path.exists());
+
+        let started = jobs_start_inner(
+            app.handle().clone(),
+            &state,
+            JobsStartRequest {
+                envelope: envelope("c_health"),
+                job_type: "dataset_health_quick".to_string(),
+                inputs: serde_json::json!({"dataset_id": dataset_id}),
+                idempotency_key: None,
+                reuse_output: false,
+            },
+        )
+        .await
+        .expect("start");
+
+        let record = wait_for_terminal(&state, &started.job_id).await;
+        assert!(matches!(record.status, JobStatus::Completed));
+        assert!(health_path.exists());
+    }
+
+    #[tokio::test]
+    async fn dataset_fingerprint_strict_job_writes_sidecar_and_completes() {
+        let _permit = disk_permit().await;
+        let app = tauri::test::mock_app();
+        let state = JobsState::default();
+        let layout = crate::storage::default_layout(app.handle()).expect("layout");
+
+        let dataset_id = format!("crypto.synthetic.spot.demo.series.1s.v1-{}", Uuid::new_v4());
+        let preview =
+            crate::datasets::create_synthetic_dataset(&layout, &dataset_id).expect("dataset");
+        let manifest_hash = preview
+            .active_manifest_hash
+            .as_ref()
+            .expect("manifest hash")
+            .to_string();
+
+        let strict_path = layout
+            .dataset_dir(&dataset_id)
+            .join("fingerprints")
+            .join(format!("{manifest_hash}.json"));
+        assert!(!strict_path.exists());
+
+        let started = jobs_start_inner(
+            app.handle().clone(),
+            &state,
+            JobsStartRequest {
+                envelope: envelope("c_fp"),
+                job_type: "dataset_fingerprint_strict".to_string(),
+                inputs: serde_json::json!({"dataset_id": dataset_id}),
+                idempotency_key: None,
+                reuse_output: false,
+            },
+        )
+        .await
+        .expect("start");
+
+        let record = wait_for_terminal(&state, &started.job_id).await;
+        assert!(matches!(record.status, JobStatus::Completed));
+        assert!(strict_path.exists());
     }
 
     async fn wait_for_terminal(state: &JobsState, job_id: &str) -> JobRecord {

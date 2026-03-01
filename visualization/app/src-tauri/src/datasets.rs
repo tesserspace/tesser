@@ -40,6 +40,16 @@ pub struct DatasetPreview {
     pub dataset_id: String,
     pub active_manifest_hash: Option<String>,
     pub fast_fingerprint: Option<FastFingerprint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Provenance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_range: Option<TimeRange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row_count_total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partition_count: Option<u64>,
     pub storage_status: StorageStatus,
     pub hints: Vec<String>,
 }
@@ -47,6 +57,10 @@ pub struct DatasetPreview {
 #[derive(Debug, Clone, Serialize)]
 pub struct StorageStatus {
     pub roots_ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub missing_partitions: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_exceeded: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +159,86 @@ fn is_valid_dataset_id(dataset_id: &str) -> bool {
         && dataset_id.bytes().all(|b| {
             b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'_' || b == b'-'
         })
+}
+
+fn validate_dataset_id(dataset_id: &str) -> Result<(), CommandError> {
+    if !is_valid_dataset_id(dataset_id) {
+        return Err(CommandError::new(
+            "DATASET.ID_INVALID",
+            "dataset_id must match [a-z0-9._-]+",
+            "dataset".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_manifest_hash(manifest_hash: &str) -> Result<(), CommandError> {
+    let is_hex = manifest_hash.len() == 64 && manifest_hash.bytes().all(|b| b.is_ascii_hexdigit());
+    if !is_hex {
+        return Err(CommandError::new(
+            "DATASET.MANIFEST_HASH_INVALID",
+            "manifest_hash must be a 64-char hex sha256",
+            "dataset".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_partition_path(
+    layout: &StorageLayout,
+    dataset_id: &str,
+    uri: &str,
+) -> Result<PathBuf, CommandError> {
+    if uri.contains('\\') {
+        return Err(CommandError::new(
+            "DATASET.PARTITION_URI_INVALID",
+            "partition uri must use '/' separators",
+            "dataset".to_string(),
+        ));
+    }
+    if !uri.starts_with("data/partitions/") {
+        return Err(CommandError::new(
+            "DATASET.PARTITION_URI_INVALID",
+            "partition uri must be under data/partitions/",
+            "dataset".to_string(),
+        ));
+    }
+
+    let rel = Path::new(uri);
+    if rel.is_absolute() {
+        return Err(CommandError::new(
+            "DATASET.PARTITION_URI_INVALID",
+            "partition uri must be relative",
+            "dataset".to_string(),
+        ));
+    }
+    for c in rel.components() {
+        match c {
+            std::path::Component::Prefix(_) => {
+                return Err(CommandError::new(
+                    "DATASET.PARTITION_URI_INVALID",
+                    "partition uri must not have a windows prefix",
+                    "dataset".to_string(),
+                ));
+            }
+            std::path::Component::RootDir => {
+                return Err(CommandError::new(
+                    "DATASET.PARTITION_URI_INVALID",
+                    "partition uri must not be absolute",
+                    "dataset".to_string(),
+                ));
+            }
+            std::path::Component::ParentDir => {
+                return Err(CommandError::new(
+                    "DATASET.PARTITION_URI_INVALID",
+                    "partition uri must not contain '..'",
+                    "dataset".to_string(),
+                ));
+            }
+            std::path::Component::CurDir | std::path::Component::Normal(_) => {}
+        }
+    }
+    Ok(layout.dataset_dir(dataset_id).join(rel))
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -291,7 +385,26 @@ fn build_synthetic_manifest(dataset_id: &str) -> DatasetManifest {
                 },
             ],
         },
-        partitions: vec![],
+        partitions: vec![
+            Partition {
+                partition_id: "p0".to_string(),
+                uri: "data/partitions/p0.bin".to_string(),
+                time_range: TimeRange {
+                    start_ms: 0,
+                    end_ms: 1000,
+                },
+                row_count: 1000,
+            },
+            Partition {
+                partition_id: "p1".to_string(),
+                uri: "data/partitions/p1.bin".to_string(),
+                time_range: TimeRange {
+                    start_ms: 1000,
+                    end_ms: 2000,
+                },
+                row_count: 1000,
+            },
+        ],
         fingerprints: Fingerprints {
             fast: FastFingerprint {
                 algo: "jcs_sha256".to_string(),
@@ -302,6 +415,37 @@ fn build_synthetic_manifest(dataset_id: &str) -> DatasetManifest {
             normalize_config_hash: "synthetic.v1".to_string(),
         },
     }
+}
+
+fn summarize_partitions(manifest: &DatasetManifest) -> (Option<TimeRange>, u64) {
+    let mut start: Option<i64> = None;
+    let mut end: Option<i64> = None;
+    let mut rows = 0u64;
+    for p in &manifest.partitions {
+        rows = rows.saturating_add(p.row_count);
+        start = Some(match start {
+            Some(s) => s.min(p.time_range.start_ms),
+            None => p.time_range.start_ms,
+        });
+        end = Some(match end {
+            Some(e) => e.max(p.time_range.end_ms),
+            None => p.time_range.end_ms,
+        });
+    }
+    let tr = match (start, end) {
+        (Some(s), Some(e)) => Some(TimeRange {
+            start_ms: s,
+            end_ms: e,
+        }),
+        _ => None,
+    };
+    (tr, rows)
+}
+
+fn partition_file_exists(layout: &StorageLayout, dataset_id: &str, uri: &str) -> bool {
+    resolve_partition_path(layout, dataset_id, uri)
+        .map(|p| p.exists())
+        .unwrap_or(false)
 }
 
 fn compute_fast_fingerprint(manifest: &DatasetManifest) -> Result<String, CommandError> {
@@ -367,13 +511,7 @@ fn create_synthetic_dataset_inner(
     cancel: Option<&AtomicBool>,
     commit_state: Option<&AtomicU8>,
 ) -> Result<DatasetPreview, CommandError> {
-    if !is_valid_dataset_id(dataset_id) {
-        return Err(CommandError::new(
-            "DATASET.ID_INVALID",
-            "dataset_id must match [a-z0-9._-]+",
-            "dataset".to_string(),
-        ));
-    }
+    validate_dataset_id(dataset_id)?;
 
     layout.ensure().map_err(|e| {
         CommandError::new(
@@ -469,62 +607,30 @@ fn create_synthetic_dataset_inner(
         return Err(cancel_error(dataset_id));
     }
 
-    let health_path = paths
-        .health_dir
-        .join(format!("{manifest_hash}.health.json"));
-    let health = serde_json::json!({
-        "schema_version": 1,
-        "dataset_id": dataset_id,
-        "manifest_hash": manifest_hash,
-        "level": "quick",
-        "generated_at_ms": now_ms(),
-        "summary": { "status": "ok", "issues_total": 0 }
-    });
-    let health_bytes = serde_json::to_vec_pretty(&health).map_err(|e| {
-        CommandError::new(
-            "DATASET.HEALTH_ENCODE_FAILED",
-            format!("failed to encode health report: {e}"),
-            "dataset".to_string(),
-        )
-    })?;
-    atomic_write(&health_path, &health_bytes).map_err(|e| {
-        CommandError::new(
-            "STORAGE.IO_ERROR",
-            format!("failed to write health report: {e}"),
-            "dataset".to_string(),
-        )
-    })?;
-
     if is_canceled(cancel, commit_state) {
         return Err(cancel_error(dataset_id));
     }
 
-    let strict_path = paths.fingerprints_dir.join(format!("{manifest_hash}.json"));
-    let strict = serde_json::json!({
-        "schema_version": 1,
-        "dataset_id": dataset_id,
-        "manifest_hash": manifest_hash,
-        "algo": "strict.sha256.empty.v1",
-        "value": sha256_hex(b""),
-        "generated_at_ms": now_ms()
-    });
-    let strict_bytes = serde_json::to_vec_pretty(&strict).map_err(|e| {
-        CommandError::new(
-            "DATASET.FINGERPRINT_ENCODE_FAILED",
-            format!("failed to encode strict fingerprint: {e}"),
-            "dataset".to_string(),
+    for partition in &manifest.partitions {
+        let path = resolve_partition_path(layout, dataset_id, &partition.uri)?;
+        if path.exists() {
+            continue;
+        }
+        let bytes = format!(
+            "synthetic dataset_id={dataset_id} partition_id={}\n",
+            partition.partition_id
         )
-    })?;
-    atomic_write(&strict_path, &strict_bytes).map_err(|e| {
-        CommandError::new(
-            "STORAGE.IO_ERROR",
-            format!("failed to write strict fingerprint: {e}"),
-            "dataset".to_string(),
-        )
-    })?;
-
-    if is_canceled(cancel, commit_state) {
-        return Err(cancel_error(dataset_id));
+        .into_bytes();
+        atomic_write(&path, &bytes).map_err(|e| {
+            CommandError::new(
+                "STORAGE.IO_ERROR",
+                format!("failed to write partition bytes: {e}"),
+                "dataset".to_string(),
+            )
+        })?;
+        if is_canceled(cancel, commit_state) {
+            return Err(cancel_error(dataset_id));
+        }
     }
 
     if let Some(state) = commit_state {
@@ -570,6 +676,7 @@ fn create_synthetic_dataset_inner(
         state.store(COMMIT_DONE, Ordering::SeqCst);
     }
 
+    let (time_range, row_count_total) = summarize_partitions(&manifest);
     Ok(DatasetPreview {
         dataset_id: dataset_id.to_string(),
         active_manifest_hash: Some(pointer.active_manifest_hash),
@@ -577,8 +684,20 @@ fn create_synthetic_dataset_inner(
             algo: "jcs_sha256".to_string(),
             value: fast,
         }),
-        storage_status: StorageStatus { roots_ok: true },
-        hints: vec![],
+        provenance: Some(manifest.provenance.clone()),
+        schema_id: Some(manifest.schema.schema_id.clone()),
+        time_range,
+        row_count_total: Some(row_count_total),
+        partition_count: Some(manifest.partitions.len() as u64),
+        storage_status: StorageStatus {
+            roots_ok: true,
+            missing_partitions: None,
+            budget_exceeded: None,
+        },
+        hints: vec![
+            "DATASET.HEALTH_MISSING".to_string(),
+            "DATASET.FINGERPRINT_STRICT_MISSING".to_string(),
+        ],
     })
 }
 
@@ -591,7 +710,16 @@ fn load_preview(layout: &StorageLayout, dataset_id: &str) -> Result<DatasetPrevi
             dataset_id: dataset_id.to_string(),
             active_manifest_hash: None,
             fast_fingerprint: None,
-            storage_status: StorageStatus { roots_ok: false },
+            provenance: None,
+            schema_id: None,
+            time_range: None,
+            row_count_total: None,
+            partition_count: None,
+            storage_status: StorageStatus {
+                roots_ok: false,
+                missing_partitions: None,
+                budget_exceeded: None,
+            },
             hints,
         });
     }
@@ -604,7 +732,16 @@ fn load_preview(layout: &StorageLayout, dataset_id: &str) -> Result<DatasetPrevi
                 dataset_id: dataset_id.to_string(),
                 active_manifest_hash: None,
                 fast_fingerprint: None,
-                storage_status: StorageStatus { roots_ok: false },
+                provenance: None,
+                schema_id: None,
+                time_range: None,
+                row_count_total: None,
+                partition_count: None,
+                storage_status: StorageStatus {
+                    roots_ok: false,
+                    missing_partitions: None,
+                    budget_exceeded: None,
+                },
                 hints,
             });
         }
@@ -617,7 +754,16 @@ fn load_preview(layout: &StorageLayout, dataset_id: &str) -> Result<DatasetPrevi
                 dataset_id: dataset_id.to_string(),
                 active_manifest_hash: None,
                 fast_fingerprint: None,
-                storage_status: StorageStatus { roots_ok: false },
+                provenance: None,
+                schema_id: None,
+                time_range: None,
+                row_count_total: None,
+                partition_count: None,
+                storage_status: StorageStatus {
+                    roots_ok: false,
+                    missing_partitions: None,
+                    budget_exceeded: None,
+                },
                 hints,
             });
         }
@@ -634,7 +780,16 @@ fn load_preview(layout: &StorageLayout, dataset_id: &str) -> Result<DatasetPrevi
                 dataset_id: dataset_id.to_string(),
                 active_manifest_hash: None,
                 fast_fingerprint: None,
-                storage_status: StorageStatus { roots_ok: false },
+                provenance: None,
+                schema_id: None,
+                time_range: None,
+                row_count_total: None,
+                partition_count: None,
+                storage_status: StorageStatus {
+                    roots_ok: false,
+                    missing_partitions: None,
+                    budget_exceeded: None,
+                },
                 hints,
             });
         }
@@ -647,19 +802,485 @@ fn load_preview(layout: &StorageLayout, dataset_id: &str) -> Result<DatasetPrevi
                 dataset_id: dataset_id.to_string(),
                 active_manifest_hash: None,
                 fast_fingerprint: None,
-                storage_status: StorageStatus { roots_ok: false },
+                provenance: None,
+                schema_id: None,
+                time_range: None,
+                row_count_total: None,
+                partition_count: None,
+                storage_status: StorageStatus {
+                    roots_ok: false,
+                    missing_partitions: None,
+                    budget_exceeded: None,
+                },
                 hints,
             });
         }
     };
 
+    let (time_range, row_count_total) = summarize_partitions(&manifest);
+    let mut missing = 0u64;
+    let mut budget_exceeded = false;
+    const MAX_PARTITIONS_TO_STAT: usize = 256;
+    for (idx, p) in manifest.partitions.iter().enumerate() {
+        if idx >= MAX_PARTITIONS_TO_STAT {
+            budget_exceeded = true;
+            break;
+        }
+        if !partition_file_exists(layout, dataset_id, &p.uri) {
+            missing = missing.saturating_add(1);
+        }
+    }
+    if missing > 0 {
+        hints.push("DATASET.PARTITIONS_MISSING".to_string());
+    }
+    if budget_exceeded {
+        hints.push("DATASET.PREVIEW_BUDGET_EXCEEDED".to_string());
+    }
+
+    let health_path = paths
+        .health_dir
+        .join(format!("{}.health.json", pointer.active_manifest_hash));
+    if !health_path.exists() {
+        hints.push("DATASET.HEALTH_MISSING".to_string());
+    }
+    let strict_path = paths
+        .fingerprints_dir
+        .join(format!("{}.json", pointer.active_manifest_hash));
+    if !strict_path.exists() {
+        hints.push("DATASET.FINGERPRINT_STRICT_MISSING".to_string());
+    }
+
     Ok(DatasetPreview {
         dataset_id: dataset_id.to_string(),
         active_manifest_hash: Some(pointer.active_manifest_hash),
         fast_fingerprint: Some(manifest.fingerprints.fast),
-        storage_status: StorageStatus { roots_ok: true },
+        provenance: Some(manifest.provenance),
+        schema_id: Some(manifest.schema.schema_id),
+        time_range,
+        row_count_total: Some(row_count_total),
+        partition_count: Some(manifest.partitions.len() as u64),
+        storage_status: StorageStatus {
+            roots_ok: true,
+            missing_partitions: Some(missing),
+            budget_exceeded: Some(budget_exceeded),
+        },
         hints,
     })
+}
+
+fn load_pointer_strict(
+    layout: &StorageLayout,
+    dataset_id: &str,
+) -> Result<DatasetPointer, CommandError> {
+    validate_dataset_id(dataset_id)?;
+    let paths = dataset_paths(layout, dataset_id);
+    let bytes = std::fs::read(&paths.pointer_path).map_err(|e| {
+        CommandError::new(
+            "DATASET.POINTER_READ_FAILED",
+            format!("failed to read dataset pointer: {e}"),
+            "dataset".to_string(),
+        )
+    })?;
+    serde_json::from_slice(&bytes).map_err(|e| {
+        CommandError::new(
+            "DATASET.POINTER_DECODE_FAILED",
+            format!("failed to decode dataset pointer: {e}"),
+            "dataset".to_string(),
+        )
+    })
+}
+
+fn load_manifest_strict(
+    layout: &StorageLayout,
+    dataset_id: &str,
+    manifest_hash: &str,
+) -> Result<DatasetManifest, CommandError> {
+    validate_dataset_id(dataset_id)?;
+    validate_manifest_hash(manifest_hash)?;
+    let paths = dataset_paths(layout, dataset_id);
+    let manifest_path = paths.manifests_dir.join(format!("{manifest_hash}.json"));
+    let bytes = std::fs::read(&manifest_path).map_err(|e| {
+        CommandError::new(
+            "DATASET.MANIFEST_READ_FAILED",
+            format!("failed to read dataset manifest: {e}"),
+            "dataset".to_string(),
+        )
+    })?;
+    serde_json::from_slice(&bytes).map_err(|e| {
+        CommandError::new(
+            "DATASET.MANIFEST_DECODE_FAILED",
+            format!("failed to decode dataset manifest: {e}"),
+            "dataset".to_string(),
+        )
+    })
+}
+
+fn atomic_write_immutable_sidecar(
+    path: &Path,
+    bytes: &[u8],
+    violation_code: &str,
+) -> Result<(), CommandError> {
+    use std::io::Write;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            CommandError::new(
+                "STORAGE.IO_ERROR",
+                format!("failed to create sidecar parent dir: {e}"),
+                "dataset".to_string(),
+            )
+        })?;
+    }
+
+    let tmp = path.with_extension(format!("tmp.{}", uuid::Uuid::new_v4()));
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&tmp)
+            .map_err(|e| {
+                CommandError::new(
+                    "STORAGE.IO_ERROR",
+                    format!("failed to create sidecar tmp: {e}"),
+                    "dataset".to_string(),
+                )
+            })?;
+        file.write_all(bytes).map_err(|e| {
+            CommandError::new(
+                "STORAGE.IO_ERROR",
+                format!("failed to write sidecar tmp: {e}"),
+                "dataset".to_string(),
+            )
+        })?;
+        file.sync_all().map_err(|e| {
+            CommandError::new(
+                "STORAGE.IO_ERROR",
+                format!("failed to fsync sidecar tmp: {e}"),
+                "dataset".to_string(),
+            )
+        })?;
+    }
+
+    match std::fs::hard_link(&tmp, path) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&tmp);
+            fsync_parent_dir(path).map_err(|e| {
+                CommandError::new(
+                    "STORAGE.IO_ERROR",
+                    format!("failed to fsync sidecar parent dir: {e}"),
+                    "dataset".to_string(),
+                )
+            })?;
+            return Ok(());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = std::fs::remove_file(&tmp);
+            let existing = std::fs::read(path).map_err(|e| {
+                CommandError::new(
+                    "STORAGE.IO_ERROR",
+                    format!("failed to read existing sidecar: {e}"),
+                    "dataset".to_string(),
+                )
+            })?;
+            if existing == bytes {
+                return Ok(());
+            }
+            return Err(CommandError::new(
+                violation_code,
+                "sidecar already exists but content differs",
+                "dataset".to_string(),
+            ));
+        }
+        Err(_) => {}
+    }
+
+    let _ = std::fs::remove_file(&tmp);
+    match std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            file.write_all(bytes).map_err(|e| {
+                CommandError::new(
+                    "STORAGE.IO_ERROR",
+                    format!("failed to write sidecar: {e}"),
+                    "dataset".to_string(),
+                )
+            })?;
+            file.sync_all().map_err(|e| {
+                CommandError::new(
+                    "STORAGE.IO_ERROR",
+                    format!("failed to fsync sidecar: {e}"),
+                    "dataset".to_string(),
+                )
+            })?;
+            fsync_parent_dir(path).map_err(|e| {
+                CommandError::new(
+                    "STORAGE.IO_ERROR",
+                    format!("failed to fsync sidecar parent dir: {e}"),
+                    "dataset".to_string(),
+                )
+            })?;
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = std::fs::read(path).map_err(|e| {
+                CommandError::new(
+                    "STORAGE.IO_ERROR",
+                    format!("failed to read existing sidecar: {e}"),
+                    "dataset".to_string(),
+                )
+            })?;
+            if existing == bytes {
+                Ok(())
+            } else {
+                Err(CommandError::new(
+                    violation_code,
+                    "sidecar already exists but content differs",
+                    "dataset".to_string(),
+                ))
+            }
+        }
+        Err(e) => Err(CommandError::new(
+            "STORAGE.IO_ERROR",
+            format!("failed to create sidecar: {e}"),
+            "dataset".to_string(),
+        )),
+    }
+}
+
+pub(crate) fn datasets_health_quick(
+    layout: &StorageLayout,
+    dataset_id: &str,
+    manifest_hash: Option<&str>,
+    cancel: &AtomicBool,
+) -> Result<serde_json::Value, CommandError> {
+    if cancel.load(Ordering::SeqCst) {
+        return Err(cancel_error(dataset_id));
+    }
+
+    let active = load_pointer_strict(layout, dataset_id)?;
+    let hash = manifest_hash.unwrap_or(&active.active_manifest_hash);
+    let manifest = load_manifest_strict(layout, dataset_id, hash)?;
+    if cancel.load(Ordering::SeqCst) {
+        return Err(cancel_error(dataset_id));
+    }
+
+    let mut partitions = manifest.partitions.clone();
+    partitions.sort_by_key(|p| p.time_range.start_ms);
+
+    let mut overlaps = 0u64;
+    let mut gaps = 0u64;
+    let mut missing_files = 0u64;
+    let mut issues: Vec<serde_json::Value> = Vec::new();
+
+    let mut prev_end: Option<i64> = None;
+    for p in &partitions {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(cancel_error(dataset_id));
+        }
+        if !partition_file_exists(layout, dataset_id, &p.uri) {
+            missing_files = missing_files.saturating_add(1);
+            if issues.len() < 32 {
+                issues.push(serde_json::json!({
+                    "code": "DATASET.PARTITION_MISSING",
+                    "severity": "error",
+                    "message": format!("partition file missing: {}", p.uri),
+                    "evidence": { "partition_id": p.partition_id, "uri": p.uri }
+                }));
+            }
+        }
+        if let Some(end_ms) = prev_end {
+            if p.time_range.start_ms < end_ms {
+                overlaps = overlaps.saturating_add(1);
+            } else if p.time_range.start_ms > end_ms {
+                gaps = gaps.saturating_add(1);
+            }
+        }
+        prev_end = Some(p.time_range.end_ms);
+    }
+
+    let (time_range, _rows) = summarize_partitions(&manifest);
+    let empty_partitions = manifest.partitions.is_empty();
+    if empty_partitions && issues.len() < 32 {
+        issues.push(serde_json::json!({
+            "code": "DATASET.EMPTY",
+            "severity": "warn",
+            "message": "dataset has no partitions",
+            "evidence": {}
+        }));
+    }
+    let issues_total = overlaps
+        .saturating_add(gaps)
+        .saturating_add(missing_files)
+        .saturating_add(if empty_partitions { 1 } else { 0 });
+    let status = if missing_files > 0 {
+        "error"
+    } else if overlaps > 0 || gaps > 0 || empty_partitions {
+        "warn"
+    } else {
+        "ok"
+    };
+
+    let report = serde_json::json!({
+        "schema_version": 1,
+        "dataset_id": dataset_id,
+        "manifest_hash": hash,
+        "level": "quick",
+        "generated_at_ms": now_ms(),
+        "summary": {
+            "status": status,
+            "issues_total": issues_total,
+            "partitions_total": manifest.partitions.len(),
+            "missing_files": missing_files,
+            "gaps": gaps,
+            "overlaps": overlaps,
+            "time_range": time_range,
+        },
+        "issues": issues,
+    });
+    let bytes = serde_json::to_vec_pretty(&report).map_err(|e| {
+        CommandError::new(
+            "DATASET.HEALTH_ENCODE_FAILED",
+            format!("failed to encode health report: {e}"),
+            "dataset".to_string(),
+        )
+    })?;
+
+    let paths = dataset_paths(layout, dataset_id);
+    let path = paths.health_dir.join(format!("{hash}.health.json"));
+    atomic_write_immutable_sidecar(&path, &bytes, "DATASET.HEALTH_IMMUTABLE_VIOLATION")?;
+    Ok(report)
+}
+
+fn sha256_file(
+    path: &Path,
+    cancel: &AtomicBool,
+    dataset_id: &str,
+) -> Result<(String, u64), CommandError> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path).map_err(|e| {
+        CommandError::new(
+            "STORAGE.IO_ERROR",
+            format!("failed to open partition file: {e}"),
+            "dataset".to_string(),
+        )
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    let mut size = 0u64;
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(cancel_error(dataset_id));
+        }
+        let n = file.read(&mut buf).map_err(|e| {
+            CommandError::new(
+                "STORAGE.IO_ERROR",
+                format!("failed to read partition file: {e}"),
+                "dataset".to_string(),
+            )
+        })?;
+        if n == 0 {
+            break;
+        }
+        size = size.saturating_add(n as u64);
+        hasher.update(&buf[..n]);
+    }
+    Ok((hex::encode(hasher.finalize()), size))
+}
+
+pub(crate) fn datasets_fingerprint_strict(
+    layout: &StorageLayout,
+    dataset_id: &str,
+    manifest_hash: Option<&str>,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<serde_json::Value, CommandError> {
+    if cancel.load(Ordering::SeqCst) {
+        return Err(cancel_error(dataset_id));
+    }
+
+    let active = load_pointer_strict(layout, dataset_id)?;
+    let hash = manifest_hash.unwrap_or(&active.active_manifest_hash);
+    let manifest = load_manifest_strict(layout, dataset_id, hash)?;
+
+    let mut partitions = manifest.partitions.clone();
+    partitions.sort_by(|a, b| a.partition_id.cmp(&b.partition_id));
+    let total = partitions.len() as u64;
+
+    let mut content_list: Vec<serde_json::Value> = Vec::with_capacity(partitions.len());
+    let mut seen_partition_ids = std::collections::HashSet::<String>::new();
+    let mut agg = Sha256::new();
+
+    for (idx, p) in partitions.iter().enumerate() {
+        if !seen_partition_ids.insert(p.partition_id.clone()) {
+            return Err(CommandError::new(
+                "DATASET.PARTITION_ID_DUPLICATE",
+                format!("duplicate partition_id: {}", p.partition_id),
+                "dataset".to_string(),
+            ));
+        }
+
+        let path = resolve_partition_path(layout, dataset_id, &p.uri)?;
+        if !path.exists() {
+            return Err(CommandError::new(
+                "DATASET.PARTITION_MISSING",
+                format!("partition file missing: {}", p.uri),
+                "dataset".to_string(),
+            ));
+        }
+        let (file_hash, size_bytes) = sha256_file(&path, cancel, dataset_id)?;
+
+        agg.update(p.partition_id.as_bytes());
+        agg.update([0u8]);
+        agg.update(p.uri.as_bytes());
+        agg.update([0u8]);
+        agg.update(p.time_range.start_ms.to_le_bytes());
+        agg.update(p.time_range.end_ms.to_le_bytes());
+        agg.update(p.row_count.to_le_bytes());
+        agg.update(file_hash.as_bytes());
+        agg.update([0u8]);
+
+        content_list.push(serde_json::json!({
+            "partition_id": p.partition_id,
+            "uri": p.uri,
+            "time_range": p.time_range,
+            "row_count": p.row_count,
+            "size_bytes": size_bytes,
+            "sha256": file_hash,
+        }));
+
+        let done = (idx as u64).saturating_add(1);
+        progress(done, total);
+    }
+
+    let sidecar = serde_json::json!({
+        "schema_version": 1,
+        "dataset_id": dataset_id,
+        "manifest_hash": hash,
+        "algo": "strict.sha256.partitions.v1",
+        "value": hex::encode(agg.finalize()),
+        "generated_at_ms": now_ms(),
+        "partitions": content_list,
+    });
+    let bytes = serde_json::to_vec_pretty(&sidecar).map_err(|e| {
+        CommandError::new(
+            "DATASET.FINGERPRINT_ENCODE_FAILED",
+            format!("failed to encode strict fingerprint: {e}"),
+            "dataset".to_string(),
+        )
+    })?;
+
+    let paths = dataset_paths(layout, dataset_id);
+    let path = paths.fingerprints_dir.join(format!("{hash}.json"));
+    atomic_write_immutable_sidecar(
+        &path,
+        &bytes,
+        "DATASET.FINGERPRINT_STRICT_IMMUTABLE_VIOLATION",
+    )?;
+    Ok(sidecar)
 }
 
 #[tauri::command]
@@ -783,8 +1404,24 @@ mod tests {
         let health_path = paths
             .health_dir
             .join(format!("{manifest_hash}.health.json"));
-        assert!(health_path.exists());
+        assert!(!health_path.exists());
         let strict_path = paths.fingerprints_dir.join(format!("{manifest_hash}.json"));
+        assert!(!strict_path.exists());
+
+        let cancel = AtomicBool::new(false);
+        let _ = datasets_health_quick(&layout, dataset_id, Some(manifest_hash), &cancel)
+            .expect("health quick");
+        assert!(health_path.exists());
+
+        let mut progress = |_done: u64, _total: u64| {};
+        let _ = datasets_fingerprint_strict(
+            &layout,
+            dataset_id,
+            Some(manifest_hash),
+            &cancel,
+            &mut progress,
+        )
+        .expect("fingerprint strict");
         assert!(strict_path.exists());
     }
 

@@ -1223,7 +1223,10 @@ mod tests {
         let (kind, got_seq, _sid, payload) = parse_frame(&frame);
         assert_eq!(kind, 1);
         assert_eq!(got_seq, replay_seq);
-        assert_eq!(payload, format!("chunk-{}\n", replay_seq - seq_start).as_bytes());
+        assert_eq!(
+            payload,
+            format!("chunk-{}\n", replay_seq - seq_start).as_bytes()
+        );
 
         ws.send(Message::Text(
             serde_json::to_string(&ClientMessage::Pull {
