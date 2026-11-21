@@ -21,6 +21,8 @@ use binance_sdk::derivatives_trading_usds_futures::{
     },
 };
 use chrono::{DateTime, Utc};
+use crypto_orderbook::orderbook::sync::{handshake, live, Handshake, Live, Market};
+use crypto_orderbook::{parse_depth_update, PriceLevel};
 use futures::{SinkExt, StreamExt};
 use reqwest::Client;
 use rust_decimal::Decimal;
@@ -296,8 +298,20 @@ struct DiffDepthTask {
     http: Client,
     tx: mpsc::Sender<OrderBook>,
     book: LocalOrderBook,
-    last_update_id: u64,
+    sync: DepthSync,
     exchange: ExchangeId,
+}
+
+/// Where the local book stands against the USD-M diff stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DepthSync {
+    /// No snapshot loaded yet.
+    Unsynced,
+    /// Snapshot loaded at this `lastUpdateId`; waiting for the first event
+    /// with `U <= lastUpdateId <= u`.
+    Handshake(u64),
+    /// Following the stream; this is the `u` of the last applied event.
+    Live(u64),
 }
 
 impl DiffDepthTask {
@@ -322,7 +336,7 @@ impl DiffDepthTask {
             http,
             tx,
             book: LocalOrderBook::new(),
-            last_update_id: 0,
+            sync: DepthSync::Unsynced,
             exchange,
         }
     }
@@ -348,7 +362,11 @@ impl DiffDepthTask {
     }
 
     async fn stream_once(&mut self) -> BrokerResult<()> {
-        self.sync_snapshot().await?;
+        self.sync = DepthSync::Unsynced;
+        // Subscribe before taking the snapshot, as Binance's procedure
+        // requires: frames sent while the REST call is in flight queue on the
+        // socket and are replayed through the handshake below, so the first
+        // event that bridges the snapshot is never missed.
         let url = format!(
             "{}/ws/{}@depth@100ms",
             self.ws_base_url.trim_end_matches('/'),
@@ -357,6 +375,7 @@ impl DiffDepthTask {
         let (mut ws, _) = connect_async(&url)
             .await
             .map_err(|err| BrokerError::Transport(err.to_string()))?;
+        self.sync_snapshot().await?;
         while let Some(msg) = ws.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
@@ -390,7 +409,7 @@ impl DiffDepthTask {
         let asks = convert_price_levels(&snapshot.asks)
             .ok_or_else(|| BrokerError::Serialization("invalid snapshot asks".into()))?;
         self.book.load_snapshot(&bids, &asks);
-        self.last_update_id = snapshot.last_update_id;
+        self.sync = DepthSync::Handshake(snapshot.last_update_id);
         self.emit_snapshot(Utc::now()).await;
         Ok(())
     }
@@ -417,46 +436,53 @@ impl DiffDepthTask {
     }
 
     async fn process_message(&mut self, text: &str) -> BrokerResult<()> {
-        let event: DiffDepthEvent = serde_json::from_str(text)
+        let event =
+            parse_depth_update(text).map_err(|err| BrokerError::Serialization(err.to_string()))?;
+        let header: DiffDepthHeader = serde_json::from_str(text)
             .map_err(|err| BrokerError::Serialization(err.to_string()))?;
-        if event.final_update_id <= self.last_update_id {
-            return Ok(());
+        // USD-M futures sequencing: `U` values are not contiguous across
+        // events, so continuity is checked with `pu == previous u`, and the
+        // first event must satisfy `U <= lastUpdateId <= u`.
+        match self.sync {
+            DepthSync::Unsynced => return Ok(()),
+            DepthSync::Handshake(snapshot_id) => {
+                match handshake(Market::UsdM, snapshot_id, &event) {
+                    Handshake::Stale => return Ok(()),
+                    Handshake::Gap => {
+                        self.book.load_snapshot(&[], &[]);
+                        self.sync = DepthSync::Unsynced;
+                        return Err(BrokerError::Other(format!(
+                            "diff depth snapshot too old: lastUpdateId {}, first event U {}",
+                            snapshot_id, event.first_update_id
+                        )));
+                    }
+                    Handshake::Apply => {}
+                }
+            }
+            DepthSync::Live(prev_last) => match live(Market::UsdM, prev_last, &event) {
+                Live::Apply => {}
+                Live::Ignore => return Ok(()),
+                Live::Gap { expected, got } => {
+                    self.book.load_snapshot(&[], &[]);
+                    self.sync = DepthSync::Unsynced;
+                    return Err(BrokerError::Other(format!(
+                        "diff depth gap detected: expected pu {}, got {}",
+                        expected, got
+                    )));
+                }
+            },
         }
-        let expected = self
-            .last_update_id
-            .checked_add(1)
-            .ok_or_else(|| BrokerError::Other("sequence overflow".into()))?;
-        if event.first_update_id > expected {
-            return Err(BrokerError::Other(format!(
-                "diff depth gap detected: expected {}, got {}",
-                expected, event.first_update_id
-            )));
-        }
-        if event.final_update_id < expected {
-            return Ok(());
-        }
-        self.apply_levels(&event.bids, Side::Buy)
-            .map_err(BrokerError::Serialization)?;
-        self.apply_levels(&event.asks, Side::Sell)
-            .map_err(BrokerError::Serialization)?;
-        self.last_update_id = event.final_update_id;
-        self.emit_book(event.event_time).await;
+        self.apply_levels(&event.bids, Side::Buy);
+        self.apply_levels(&event.asks, Side::Sell);
+        self.sync = DepthSync::Live(event.last_update_id);
+        self.emit_book(header.event_time).await;
         Ok(())
     }
 
-    fn apply_levels(&mut self, levels: &[[String; 2]], side: Side) -> Result<(), String> {
-        for entry in levels {
-            let price = entry
-                .first()
-                .ok_or_else(|| "missing price".to_string())
-                .and_then(|v| Decimal::from_str(v).map_err(|err| err.to_string()))?;
-            let qty = entry
-                .get(1)
-                .ok_or_else(|| "missing quantity".to_string())
-                .and_then(|v| Decimal::from_str(v).map_err(|err| err.to_string()))?;
-            self.book.apply_delta(side, price, qty);
+    fn apply_levels(&mut self, levels: &[PriceLevel], side: Side) {
+        for level in levels {
+            self.book.apply_delta(side, level.price, level.quantity);
         }
-        Ok(())
     }
 
     async fn emit_snapshot(&self, ts: DateTime<Utc>) {
@@ -507,16 +533,9 @@ struct DepthSnapshot {
     asks: Vec<[String; 2]>,
 }
 
+/// Fields of a diff depth frame that the sync state machine does not carry.
 #[derive(Debug, Deserialize)]
-struct DiffDepthEvent {
-    #[serde(rename = "U")]
-    first_update_id: u64,
-    #[serde(rename = "u")]
-    final_update_id: u64,
-    #[serde(rename = "b")]
-    bids: Vec<[String; 2]>,
-    #[serde(rename = "a")]
-    asks: Vec<[String; 2]>,
+struct DiffDepthHeader {
     #[serde(rename = "E")]
     event_time: i64,
 }
@@ -616,17 +635,36 @@ mod tests {
         (task, rx)
     }
 
-    #[tokio::test]
-    async fn diff_depth_task_applies_updates() {
-        let (mut task, mut rx) = test_task(5);
+    fn load(task: &mut DiffDepthTask, snapshot_id: u64) {
         task.book.load_snapshot(
             &[(Decimal::from(10), Decimal::from(1))],
             &[(Decimal::from(11), Decimal::from(2))],
         );
-        task.last_update_id = 1;
+        task.sync = DepthSync::Handshake(snapshot_id);
+    }
+
+    fn frame(first: u64, last: u64, prev: u64, bids: serde_json::Value) -> String {
+        json!({
+            "e": "depthUpdate",
+            "E": 1_680_000_000_000i64,
+            "s": "BTCUSDT",
+            "U": first,
+            "u": last,
+            "pu": prev,
+            "b": bids,
+            "a": []
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn diff_depth_task_applies_updates() {
+        let (mut task, mut rx) = test_task(5);
+        load(&mut task, 100);
         let message = json!({
-            "U": 2,
-            "u": 2,
+            "U": 95,
+            "u": 105,
+            "pu": 94,
             "b": [["10","0"], ["9","1"]],
             "a": [["12","3"]],
             "E": 1_680_000_000_000i64
@@ -637,36 +675,68 @@ mod tests {
         assert_eq!(book.symbol, Symbol::from_code(task.exchange, "BTCUSDT"));
         assert_eq!(book.bids[0].price, Decimal::from(9));
         assert_eq!(book.asks[0].price, Decimal::from(11));
+        assert_eq!(task.sync, DepthSync::Live(105));
+    }
+
+    // Real USD-M streams skip ids between events: `U` of the next event is
+    // not `previous u + 1`. The spot rule treated every such event as a gap
+    // and restarted the stream; the futures rule follows `pu`.
+    #[tokio::test]
+    async fn futures_stream_with_non_contiguous_ids_is_not_a_gap() {
+        let (mut task, mut rx) = test_task(5);
+        load(&mut task, 100);
+        task.process_message(&frame(98, 104, 97, json!([])))
+            .await
+            .expect("bridging event applied");
+        let _ = rx.recv().await;
+        task.process_message(&frame(112, 120, 104, json!([["9", "4"]])))
+            .await
+            .expect("pu continues the stream although U skipped ids");
+        let book = rx.recv().await.expect("order book emitted");
+        assert_eq!(book.bids[0].price, Decimal::from(10));
+        assert_eq!(book.bids[1].price, Decimal::from(9));
+        assert_eq!(task.sync, DepthSync::Live(120));
     }
 
     #[tokio::test]
     async fn diff_depth_task_detects_sequence_gap() {
         let (mut task, mut rx) = test_task(5);
-        task.book.load_snapshot(
-            &[(Decimal::from(100), Decimal::from(1))],
-            &[(Decimal::from(101), Decimal::from(1))],
-        );
-        task.last_update_id = 1;
-        let ok = json!({
-            "U": 2,
-            "u": 2,
-            "b": [["100","0"]],
-            "a": [],
-            "E": 1_680_000_000_100i64
-        })
-        .to_string();
-        task.process_message(&ok).await.expect("first diff ok");
+        load(&mut task, 100);
+        task.process_message(&frame(98, 104, 97, json!([])))
+            .await
+            .expect("first diff ok");
         let _ = rx.recv().await;
-        let gap = json!({
-            "U": 5,
-            "u": 5,
-            "b": [],
-            "a": [],
-            "E": 1_680_000_000_200i64
-        })
-        .to_string();
-        let err = task.process_message(&gap).await;
+        // `pu` points at 110, not 104: the event between them was lost.
+        let err = task.process_message(&frame(115, 120, 110, json!([]))).await;
         assert!(err.is_err());
+        assert!(task.book.is_empty());
+        assert_eq!(task.sync, DepthSync::Unsynced);
+    }
+
+    #[tokio::test]
+    async fn handshake_drops_stale_events_and_rejects_old_snapshot() {
+        let (mut task, mut rx) = test_task(5);
+        load(&mut task, 100);
+        // Fully contained in the snapshot (u < lastUpdateId): skipped.
+        task.process_message(&frame(90, 99, 89, json!([["10", "0"]])))
+            .await
+            .expect("stale event dropped");
+        assert!(rx.try_recv().is_err());
+        assert_eq!(task.sync, DepthSync::Handshake(100));
+        // First event starts after the snapshot: updates were missed.
+        let err = task.process_message(&frame(101, 105, 100, json!([]))).await;
+        assert!(err.is_err());
+        assert_eq!(task.sync, DepthSync::Unsynced);
+    }
+
+    #[tokio::test]
+    async fn events_before_snapshot_are_not_applied() {
+        let (mut task, mut rx) = test_task(5);
+        task.process_message(&frame(1, 5, 0, json!([["9", "1"]])))
+            .await
+            .expect("ignored while unsynced");
+        assert!(rx.try_recv().is_err());
+        assert!(task.book.is_empty());
     }
 
     #[test]
