@@ -1254,6 +1254,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "crypto-orderbook"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4c2f0f37afe7b4917a91bd7edf8a9854fb9118385e7e85fa75e2a7209dee6ec"
+dependencies = [
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "csv"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4644,6 +4657,7 @@ dependencies = [
  "async-trait",
  "binance-sdk",
  "chrono",
+ "crypto-orderbook",
  "futures",
  "reqwest",
  "rust_decimal",

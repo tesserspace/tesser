@@ -20,6 +20,7 @@ tokio.workspace = true
 tracing.workspace = true
 tokio-tungstenite.workspace = true
 reqwest.workspace = true
+crypto-orderbook = { version = "0.5.2", default-features = false }
 binance-sdk = { version = "31", features = ["derivatives_trading_usds_futures"] }
 uuid.workspace = true
 tesser-broker = { version = "0.9.3", path = "../../tesser-broker" }
